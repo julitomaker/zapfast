@@ -4268,3 +4268,111 @@ msgstr "Falta la clave de API de la marca"
 #: src/ui/sales.rs
 msgid "Payment pending"
 msgstr "Pendiente"
+
+#: src/ui/leads.rs
+msgid "Transcript"
+msgstr "Transcripción"
+
+#: src/ui/leads.rs
+msgid "Call noted in the history"
+msgstr "Llamada anotada en el historial"
+
+#: src/ui/leads.rs
+msgid "Attach a recorded call (audio or video)"
+msgstr "Adjuntar una llamada grabada (audio o video)"
+
+#: src/ui/leads.rs
+msgid "Call with {name}"
+msgstr "Llamada con {name}"
+
+#: src/ui/leads.rs
+msgid "The recording is no longer in the call library"
+msgstr "La grabación ya no está en la biblioteca de llamadas"
+
+#: src/ui/leads.rs
+msgid "Listen to the call"
+msgstr "Escuchar la llamada"
+
+#: src/ui/leads.rs
+msgid "Transcribe it again"
+msgstr "Transcribirla de nuevo"
+
+#: src/ui/leads.rs
+msgid "Copy the transcript"
+msgstr "Copiar la transcripción"
+
+#: src/ui/leads.rs
+msgid "Transcript copied"
+msgstr "Transcripción copiada"
+
+#: src/ui/leads.rs
+msgid "From the call, next:"
+msgstr "De la llamada, lo que sigue:"
+
+#: src/ui/leads.rs
+msgid "Make it the next action"
+msgstr "Usar como próxima acción"
+
+#: src/ui/leads.rs
+msgid "Transcribing the call…"
+msgstr "Transcribiendo la llamada…"
+
+#: src/ui/leads.rs
+msgid "Summarizing the call…"
+msgstr "Resumiendo la llamada…"
+
+#: src/ui/leads.rs
+msgid "Tell the other person the call is being recorded."
+msgstr "Avisale a la otra persona que la llamada se está grabando."
+
+#: src/ui/leads.rs
+msgid "Record call"
+msgstr "Grabar llamada"
+
+#: src/ui/leads.rs
+msgid "Attach audio"
+msgstr "Adjuntar audio"
+
+#: src/ui/leads.rs
+msgid "Call with {name} {time}"
+msgstr "Llamada con {name} {time}"
+
+#: src/ui/leads.rs
+msgid "Nothing was recorded"
+msgstr "No se grabó nada"
+
+#: src/ui/leads.rs
+msgid "The call is not in the library"
+msgstr "La llamada no está en la biblioteca"
+
+#: src/ui/leads.rs
+msgid "Could not open the microphone"
+msgstr "No se pudo abrir el micrófono"
+
+#: src/ui/leads.rs
+msgid "The microphone did not answer"
+msgstr "El micrófono no respondió"
+
+#: src/ui/leads.rs
+msgid "The recording did not start"
+msgstr "La grabación no arrancó"
+
+#: src/ui/leads.rs
+msgid "Starting the recording…"
+msgstr "Empezando a grabar…"
+
+#: src/ui/leads.rs
+msgid "Choosing a file…"
+msgstr "Eligiendo el archivo…"
+
+#: src/ui/leads.rs
+msgid "Summarize it again"
+msgstr "Resumirla de nuevo"
+
+#: src/ui/leads.rs
+msgid "Only your microphone is being recorded. To record the other side too, allow Whats Pro in System Settings > Privacy & Security > Screen & System Audio Recording."
+msgstr "Solo se está grabando tu micrófono. Para grabar también a la otra persona, permití Whats Pro en Ajustes del Sistema > Privacidad y seguridad > Grabación de pantalla y audio del sistema."
+
+#: src/ui/leads.rs
+msgid "Only your microphone is being recorded: put the call on speaker so the other side is heard too."
+msgstr "Solo se está grabando tu micrófono: poné la llamada en altavoz para que también se escuche a la otra persona."

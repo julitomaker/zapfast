@@ -131,6 +131,98 @@ pub enum Sync {
     Failed(String),
 }
 
+/// What a call's placeholder says until it is transcribed. In Spanish
+/// whatever the interface's language, like the analysis it stands for.
+pub const NOT_TRANSCRIBED: &str = "Todavía sin transcribir";
+
+/// What ElevaLeads takes in a note, less the `[Whats Pro] Llamada: ` that
+/// `eleva` puts before it, with a little room to spare.
+pub const CALL_NOTE_LIMIT: usize = 970;
+
+/// How long a call was, as its note starts: `(4:12)`.
+pub fn call_heading(seconds: u64) -> String {
+    format!("({}:{:02})", seconds / 60, seconds % 60)
+}
+
+/// The heading a call's note starts with: up to the parenthesis that
+/// closes the first one, so a file name with parentheses stays whole.
+pub fn heading_of(text: &str) -> &str {
+    if !text.starts_with('(') {
+        return "";
+    }
+    let mut depth = 0usize;
+    for (index, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[..=index];
+                }
+            }
+            _ => {}
+        }
+    }
+    ""
+}
+
+/// A call's note, what ElevaLeads gets: its summary after `heading`, then
+/// who agreed to what. The summary gives way first when it is too long,
+/// since what was agreed is what the team acts on.
+pub fn call_note(heading: &str, analysis: &crate::call_library::CallAnalysis) -> String {
+    let lines: Vec<String> = analysis
+        .commitments
+        .iter()
+        .filter(|c| !c.what.trim().is_empty())
+        .map(|c| {
+            let mut line = match c.who.trim() {
+                "" => c.what.trim().to_owned(),
+                who => format!("{who}: {}", c.what.trim()),
+            };
+            if let Some(due) = c.due.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                line.push_str(&format!(" ({due})"));
+            }
+            format!("• {line}")
+        })
+        .collect();
+    let heading = if heading.is_empty() {
+        String::new()
+    } else {
+        format!("{heading} ")
+    };
+    // At least this much summary; past it, the last commitments go too.
+    const SUMMARY_FLOOR: usize = 160;
+    let mut lines = lines;
+    let mut agreed;
+    loop {
+        agreed = if lines.is_empty() {
+            String::new()
+        } else {
+            format!("\n\nAcordado:\n{}", lines.join("\n"))
+        };
+        let used = heading.chars().count() + agreed.chars().count() + SUMMARY_FLOOR;
+        if used <= CALL_NOTE_LIMIT || lines.len() <= 1 {
+            break;
+        }
+        lines.pop();
+        if lines.last().is_some_and(|line| line != "• …") {
+            lines.pop();
+            lines.push("• …".to_owned());
+        }
+    }
+    let room = CALL_NOTE_LIMIT
+        .saturating_sub(heading.chars().count() + agreed.chars().count())
+        .max(SUMMARY_FLOOR);
+    let summary = analysis.summary.trim();
+    let summary = if summary.chars().count() > room {
+        let cut: String = summary.chars().take(room - 1).collect();
+        format!("{}…", cut.trim_end())
+    } else {
+        summary.to_owned()
+    };
+    format!("{heading}{summary}{agreed}")
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub id: String,
@@ -139,6 +231,21 @@ pub struct Entry {
     pub text: String,
     #[serde(default)]
     pub sync: Sync,
+    /// A recorded call's full transcript. It stays here: ElevaLeads gets
+    /// the text, the call's summary. Shared, so copying the leads for a
+    /// frame does not copy it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<std::sync::Arc<str>>,
+    /// The call's id in `crate::call_library`, where its audio is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
+}
+
+impl Entry {
+    /// A call kept in the library but not transcribed yet: here only.
+    pub fn waiting(&self) -> bool {
+        self.kind == Kind::Call && self.call.is_some() && self.transcript.is_none()
+    }
 }
 
 /// What to do next with a lead, and on which day (`YYYY-MM-DD`).
@@ -286,9 +393,59 @@ impl Lead {
             } else {
                 Sync::Local
             },
+            transcript: None,
+            call: None,
         });
         self.updated = now;
         self.entries.last().expect("just pushed")
+    }
+
+    /// Notes a recorded call: its summary, and the transcript kept here
+    /// beside the call's id in the library. A call with no transcript yet
+    /// is a placeholder (`NOT_TRANSCRIBED`) that waits here until
+    /// `redo_call` fills it, so ElevaLeads never gets it. Talking to a new
+    /// lead is contacting it, so it moves on, unless ElevaLeads already has
+    /// it further along (or at a stage this app does not know): a call must
+    /// not move a customer back.
+    pub fn add_call(&mut self, summary: &str, transcript: &str, call: &str) -> &Entry {
+        let behind = match &self.eleva {
+            None => true,
+            Some(customer) => customer
+                .stage
+                .as_deref()
+                .and_then(Stage::from_eleva_label)
+                .is_some_and(|there| there <= Stage::Contacted),
+        };
+        if self.stage == Stage::New && behind {
+            self.set_stage(Stage::Contacted, None);
+        }
+        self.add(Kind::Call, summary);
+        let entry = self.entries.last_mut().expect("just added");
+        let transcript = transcript.trim();
+        entry.transcript = (!transcript.is_empty()).then(|| transcript.into());
+        entry.call = (!call.is_empty()).then(|| call.to_owned());
+        if entry.waiting() {
+            entry.sync = Sync::Local;
+        }
+        entry
+    }
+
+    /// A call read again, or read at last: its new summary and transcript,
+    /// sent to ElevaLeads when linked.
+    pub fn redo_call(&mut self, entry: &str, summary: &str, transcript: &str) {
+        let linked = self.eleva.is_some();
+        let Some(entry) = self.entries.iter_mut().find(|e| e.id == entry) else {
+            return;
+        };
+        entry.text = summary.trim().to_owned();
+        let transcript = transcript.trim();
+        entry.transcript = (!transcript.is_empty()).then(|| transcript.into());
+        entry.sync = if linked && !entry.waiting() {
+            Sync::Pending
+        } else {
+            Sync::Local
+        };
+        self.updated = now();
     }
 
     /// Moves the lead to `stage`, noting it in its history.
@@ -348,7 +505,7 @@ impl Lead {
                 Kind::Task => Some(index) == task,
                 _ => true,
             };
-            if wanted && matches!(entry.sync, Sync::Local | Sync::Failed(_)) {
+            if wanted && !entry.waiting() && matches!(entry.sync, Sync::Local | Sync::Failed(_)) {
                 entry.sync = Sync::Pending;
             }
         }
@@ -687,6 +844,166 @@ mod tests {
         assert_eq!(lead.lost_reason.as_deref(), Some("Price"));
         lead.set_stage(Stage::Contacted, None);
         assert_eq!(lead.lost_reason, None);
+    }
+
+    #[test]
+    fn a_recorded_call_keeps_its_transcript_beside_the_summary() {
+        let mut lead = lead("Farmacia Sur", None);
+        let entry = lead.add_call(
+            "(2:05) Wants 500 units",
+            "  Hola, sí, queremos 500…  ",
+            "1760-ab",
+        );
+        assert_eq!(entry.kind, Kind::Call);
+        assert_eq!(entry.text, "(2:05) Wants 500 units");
+        assert_eq!(entry.transcript.as_deref(), Some("Hola, sí, queremos 500…"));
+        assert_eq!(entry.call.as_deref(), Some("1760-ab"));
+        assert_eq!(entry.sync, Sync::Local);
+        assert_eq!(lead.stage, Stage::Contacted, "a call is a contact");
+        assert_eq!(lead.add_call("Short", " ", "").transcript, None);
+        assert_eq!(
+            lead.entries
+                .iter()
+                .filter(|e| e.kind == Kind::Stage)
+                .count(),
+            1
+        );
+        // Entries noted before there were transcripts still read.
+        let old: Entry = serde_json::from_str(
+            r#"{"id":"e","at":1,"kind":"call","text":"Old","sync":{"state":"sent"}}"#,
+        )
+        .unwrap();
+        assert_eq!(old.transcript, None);
+        assert_eq!(old.call, None);
+        assert!(!old.waiting(), "no call in the library: nothing to read");
+        assert!(!serde_json::to_string(&old).unwrap().contains("transcript"));
+    }
+
+    #[test]
+    fn a_call_waits_here_until_it_is_read_then_goes_to_eleva() {
+        let mut lead = lead("Farmacia Sur", None);
+        lead.link(ElevaCustomer {
+            id: "c1".into(),
+            name: "Farmacia Sur".into(),
+            stage: Some("En conversación".into()),
+        });
+        let placeholder = format!("(1:00) {NOT_TRANSCRIBED}");
+        let id = lead.add_call(&placeholder, "", "1760-cd").id.clone();
+        let entry = lead.entries.iter().find(|e| e.id == id).unwrap();
+        assert!(entry.waiting());
+        assert_eq!(entry.sync, Sync::Local, "a placeholder is never sent");
+        assert_eq!(lead.stage, Stage::Contacted);
+        // Linked again, the placeholder still waits.
+        lead.unlink();
+        lead.link(ElevaCustomer {
+            id: "c1".into(),
+            name: "Farmacia Sur".into(),
+            stage: None,
+        });
+        let entry = lead.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.sync, Sync::Local);
+        // Still not heard: still here.
+        lead.redo_call(&id, &placeholder, "");
+        assert_eq!(
+            lead.entries.iter().find(|e| e.id == id).unwrap().sync,
+            Sync::Local
+        );
+        // Read at last: sent, once.
+        lead.redo_call(&id, "(1:00) Wants a quote", "Hola…");
+        let entry = lead.entries.iter().find(|e| e.id == id).unwrap();
+        assert_eq!(entry.text, "(1:00) Wants a quote");
+        assert_eq!(entry.transcript.as_deref(), Some("Hola…"));
+        assert_eq!(entry.sync, Sync::Pending);
+        assert_eq!(entry.call.as_deref(), Some("1760-cd"));
+    }
+
+    #[test]
+    fn a_call_never_moves_a_customer_back_in_eleva() {
+        for (there, moved) in [
+            (Some("Cliente"), false),
+            (Some("Interesado"), false),
+            (Some("algo nuevo"), false),
+            (None, false),
+            (Some("Nuevo"), true),
+            (Some("En conversación"), true),
+        ] {
+            let mut lead = lead("Ana", None);
+            lead.link(ElevaCustomer {
+                id: "c1".into(),
+                name: "Ana".into(),
+                stage: there.map(str::to_owned),
+            });
+            lead.add_call("(0:40) Hola", "Hola", "c");
+            assert_eq!(lead.stage == Stage::Contacted, moved, "{there:?}");
+        }
+    }
+
+    #[test]
+    fn a_call_note_keeps_what_was_agreed_within_elevas_limit() {
+        use crate::call_library::{CallAnalysis, Commitment};
+        let mut analysis = CallAnalysis {
+            summary: " Quieren 500 guardapolvos bordados. ".into(),
+            commitments: vec![
+                Commitment {
+                    who: "Cliente".into(),
+                    what: "Mandar el logo".into(),
+                    due: None,
+                },
+                Commitment {
+                    who: "Yo".into(),
+                    what: "Mandar la cotización".into(),
+                    due: Some("2026-10-20".into()),
+                },
+                Commitment {
+                    who: "Yo".into(),
+                    what: " ".into(),
+                    due: None,
+                },
+            ],
+            ..CallAnalysis::default()
+        };
+        assert_eq!(
+            call_note("(4:12)", &analysis),
+            "(4:12) Quieren 500 guardapolvos bordados.\n\nAcordado:\n\
+             • Cliente: Mandar el logo\n\
+             • Yo: Mandar la cotización (2026-10-20)"
+        );
+        analysis.summary = "palabra ".repeat(300);
+        let note = call_note("(30:00)", &analysis);
+        assert!(note.chars().count() <= CALL_NOTE_LIMIT);
+        assert!(note.ends_with("• Yo: Mandar la cotización (2026-10-20)"));
+        assert!(note.contains("…\n\nAcordado:"));
+        // Many long commitments: the last give way, the note still fits.
+        analysis.commitments = (0..20)
+            .map(|n| Commitment {
+                who: "Yo".into(),
+                what: format!("{n} {}", "detalle ".repeat(10)),
+                due: None,
+            })
+            .collect();
+        let note = call_note("(30:00)", &analysis);
+        assert!(
+            note.chars().count() <= CALL_NOTE_LIMIT,
+            "{}",
+            note.chars().count()
+        );
+        assert!(note.ends_with("• …"));
+        assert!(note.contains("• Yo: 0 detalle"));
+        analysis.commitments.clear();
+        analysis.summary = "Nada pactado".into();
+        assert_eq!(call_note("", &analysis), "Nada pactado");
+    }
+
+    #[test]
+    fn a_heading_is_read_back_whole() {
+        assert_eq!(call_heading(252), "(4:12)");
+        assert_eq!(heading_of("(4:12) Quiere precio"), "(4:12)");
+        assert_eq!(
+            heading_of("(Llamada (Ana) 17-10.m4a) Todavía sin transcribir"),
+            "(Llamada (Ana) 17-10.m4a)"
+        );
+        assert_eq!(heading_of("Sin título"), "");
+        assert_eq!(heading_of("(sin cerrar"), "");
     }
 
     #[test]

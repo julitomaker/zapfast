@@ -2530,9 +2530,10 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.typing.clear();
                 app.scroll_to_bottom = true;
             }
-            "leads" => leads_sample(app, true, false),
-            "leads-panel" => leads_sample(app, false, false),
-            "leads-sale" => leads_sample(app, true, true),
+            "leads" => leads_sample(app, true, false, false),
+            "leads-panel" => leads_sample(app, false, false, false),
+            "leads-sale" => leads_sample(app, true, true, false),
+            "leads-call" => leads_sample(app, true, false, true),
             "es" => app.locale = crate::i18n::Locale::Spanish,
             "settings" => app.page = Page::Settings,
             choice if choice.starts_with("settings-search=") => {
@@ -3967,7 +3968,7 @@ fn call_entries(now: i64) -> Vec<Message> {
 
 /// A sales project: leads in every stage, one linked to ElevaLeads, and the
 /// brand's inbox as it would read, on the Leads tab or on the panel.
-fn leads_sample(app: &mut App, leads_tab: bool, sale: bool) {
+fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
     use crate::eleva::{Inbox, Situation, Waiting};
     use crate::leads::{Brand, ElevaCustomer, Kind, Lead, Leads, Stage};
     let config = app.dirs.config.clone();
@@ -3994,9 +3995,17 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool) {
         Some(SAMPLES[0].id),
         "393331234567",
         &|lead| {
-            lead.add(
-                Kind::Call,
-                "Wants 500 lab coats with the logo embroidered; asked for two fabrics.",
+            lead.add_call(
+                "(4:12) Wants 500 lab coats with the logo embroidered; asked for two fabrics \
+                 and delivery before the 15th.\n\nAcordado:\n\
+                 • Ada: send the logo in vector\n\
+                 • Me: send the quote with both fabrics",
+                "Hi Ada, it's about the lab coats.\n\
+                 Yes, we need 500, with our logo embroidered on the chest.\n\
+                 Do you have two fabrics we could compare?\n\
+                 We do: a light twill and a thicker gabardine.\n\
+                 Send both prices, please; we need them before the 15th.",
+                "demo-call",
             );
             lead.set_stage(Stage::Quoted, None);
             lead.value = Some("$ 850.000".into());
@@ -4154,6 +4163,13 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool) {
         },
     );
     app.page = Page::Projects;
+    if call {
+        crate::ui::leads::demo_call(
+            &selected,
+            "Confirm delivery before the 15th with the workshop",
+            Some(today(3)),
+        );
+    }
     crate::ui::leads::request_open(&project, leads_tab, Some(&selected));
 }
 

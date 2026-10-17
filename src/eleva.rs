@@ -461,6 +461,7 @@ pub fn push(ctx: &egui::Context, config: &Path) {
                                     ),
                                     entry.id.clone(),
                                     entry.kind,
+                                    // A call's summary: its transcript stays here.
                                     entry.text.clone(),
                                 )
                             }),
@@ -482,15 +483,17 @@ pub fn push(ctx: &egui::Context, config: &Path) {
             } else {
                 Sync::Sent
             };
-            results.push((lead, entry, result));
+            results.push((lead, entry, result, text));
         }
         if !results.is_empty() {
             let mut store = Store::open(&config);
-            for (lead, entry, result) in results {
+            for (lead, entry, result, sent) in results {
+                // A call read again meanwhile has new text, still to send.
                 if let Some(entry) = store
                     .get_mut(&lead)
                     .and_then(|lead| lead.entries.iter_mut().find(|e| e.id == entry))
                     && entry.sync == Sync::Pending
+                    && entry.text == sent
                 {
                     entry.sync = result;
                 }
@@ -784,5 +787,8 @@ mod tests {
         assert_eq!(tool, "crear_situacion_manual");
         assert_eq!(args["cliente"], "569");
         assert!(entry_call("c1", "569", Kind::Stage, "nonsense").is_none());
+        let long = "a".repeat(1500);
+        let (_, args) = entry_call("c1", "569", Kind::Call, &long).unwrap();
+        assert_eq!(args["nota"].as_str().unwrap().chars().count(), 1000);
     }
 }

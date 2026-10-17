@@ -80,6 +80,62 @@ struct State {
     inbox_open: bool,
     last_push: Option<Instant>,
     notice: Option<(String, Instant)>,
+    /// Whether each call in the library has been summarized, read from it
+    /// when a call entry is drawn and again once a call is noted.
+    summarized: std::collections::HashMap<String, bool>,
+    /// The demo's view of a call just noted, since when: the history in
+    /// sight for a moment.
+    #[cfg(any(test, feature = "demo"))]
+    demo_view: Option<Instant>,
+}
+
+/// Recording a call or reading one into a lead's history, for the whole
+/// app: it outlives the window (closing it keeps Whats Pro running) and the
+/// project on screen, so a call can always be ended. The thread that reads
+/// a call saves it to the lead itself.
+struct CallJob {
+    /// The lead it is for, and its name.
+    lead: String,
+    name: String,
+    phase: CallPhase,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    /// The lead a call was just noted for: the page says so.
+    noted: Option<String>,
+    /// What a call said to do next: the lead, the action and its day.
+    suggestion: Option<(String, String, Option<String>)>,
+}
+
+#[derive(Clone)]
+enum CallPhase {
+    Idle,
+    /// The file picker is open.
+    Picking,
+    Starting,
+    /// Since when, and whether only the microphone is heard.
+    Recording(Instant, bool),
+    Transcribing,
+    Summarizing,
+    Failed(String),
+}
+
+impl CallPhase {
+    fn busy(&self) -> bool {
+        !matches!(self, CallPhase::Idle | CallPhase::Failed(_))
+    }
+}
+
+static CALL: Mutex<CallJob> = Mutex::new(CallJob {
+    lead: String::new(),
+    name: String::new(),
+    phase: CallPhase::Idle,
+    stop: None,
+    noted: None,
+    suggestion: None,
+});
+
+/// The call job. Never held while calling something that takes it.
+fn job() -> std::sync::MutexGuard<'static, CallJob> {
+    CALL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl Default for State {
@@ -114,6 +170,9 @@ impl Default for State {
             inbox_open: false,
             last_push: None,
             notice: None,
+            summarized: std::collections::HashMap::new(),
+            #[cfg(any(test, feature = "demo"))]
+            demo_view: None,
         }
     }
 }
@@ -249,6 +308,17 @@ fn commit(app: &App, ui: &egui::Ui, state: &mut State, project: &str, changes: V
     }
     let mut store = Store::open(&app.dirs.config);
     for change in changes {
+        if let Change::Remove(id) = &change {
+            // A call being recorded with it ends; it stays the project's.
+            let recording = {
+                let held = job();
+                matches!(held.phase, CallPhase::Recording(..)) && held.lead == *id
+            };
+            if recording {
+                end_call();
+            }
+            forget_calls(&app.dirs.state, id);
+        }
         if let Some(id) = apply(&mut store, project, change) {
             state.selected = Some(id);
         }
@@ -685,6 +755,14 @@ fn collect_answers(app: &App, state: &mut State, project: &Project, changes: &mu
                 ))
             }
         }
+    }
+    let noted = job().noted.take();
+    if noted.is_some() {
+        state.summarized.clear();
+        state.notice = Some((
+            gettext(locale, "Call noted in the history").into_owned(),
+            Instant::now(),
+        ));
     }
     if let Some(result) = state
         .spoken
@@ -1961,9 +2039,17 @@ fn history(
             );
         });
         ui.add_space(6.0);
+        // Room for the call actions spelled out, beside "Note it".
+        let wide = ui.available_width() >= 520.0;
+        let calling = job().phase.busy();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            record_button(app, ui, state);
+            if !calling {
+                record_button(app, ui, state);
+            }
+            if state.recorder.is_none() && !state.transcribing {
+                call_controls(app, ui, state, lead, wide);
+            }
             let summarizing = state.summarizing.as_deref() == Some(lead.id.as_str());
             if summarizing {
                 ui.add(egui::Spinner::new().size(15.0).color(palette.accent));
@@ -1999,6 +2085,17 @@ fn history(
                 }
             });
         });
+        call_lines(app, ui, lead);
+        suggestion_row(app, ui, state, lead, changes);
+        #[cfg(any(test, feature = "demo"))]
+        if let Some(since) = state.demo_view {
+            if since.elapsed() < Duration::from_secs(3) {
+                state.kind = Kind::Call;
+                ui.scroll_to_cursor(Some(Align::Center));
+            } else {
+                state.demo_view = None;
+            }
+        }
     });
     ui.add_space(10.0);
     if lead.entries.is_empty() {
@@ -2070,6 +2167,9 @@ fn history(
                         palette.text
                     },
                 );
+                if entry.kind == Kind::Call && entry.call.is_some() {
+                    call_entry(app, ui, state, lead, entry);
+                }
             });
         });
         ui.add_space(8.0);
@@ -2142,6 +2242,743 @@ fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State) {
         state.recorder = Some(crate::audio::Recorder::start(
             crate::backend::Waker::default(),
         ));
+    }
+}
+
+fn set_phase(ctx: &egui::Context, phase: CallPhase) {
+    job().phase = phase;
+    ctx.request_repaint();
+}
+
+/// What a call's thread needs: the media engines, the state and config
+/// folders, the language for its errors, and the window to wake.
+struct Reader {
+    engines: crate::media_ai::MediaEngines,
+    state: std::path::PathBuf,
+    config: std::path::PathBuf,
+    locale: Locale,
+    ctx: egui::Context,
+}
+
+fn reader(app: &App, ctx: &egui::Context) -> Reader {
+    Reader {
+        engines: app.settings.media_engines.clone(),
+        state: app.dirs.state.clone(),
+        config: app.dirs.config.clone(),
+        locale: app.locale,
+        ctx: ctx.clone(),
+    }
+}
+
+/// A call to keep in the library and read into a lead's history.
+struct CallFile {
+    path: std::path::PathBuf,
+    origin: crate::call_library::Origin,
+    seconds: u64,
+    /// What its note starts with: how long it was, or the file's name.
+    heading: String,
+    lead: String,
+    project: String,
+    name: String,
+}
+
+/// A call in the library to read into a lead's entry.
+struct Kept {
+    call: String,
+    heading: String,
+    lead: String,
+    name: String,
+    entry: String,
+}
+
+/// The recorder's and the call library's errors, in the user's language;
+/// what follows a colon is the system's own words.
+fn translated(locale: Locale, error: String) -> String {
+    let (head, detail) = match error.split_once(": ") {
+        Some((head, detail)) => (head, Some(detail)),
+        None => (error.as_str(), None),
+    };
+    let head = match head {
+        "Nothing was heard in it" => gettext(locale, "Nothing was heard in it"),
+        "Nothing was recorded" => gettext(locale, "Nothing was recorded"),
+        "The call is not in the library" => gettext(locale, "The call is not in the library"),
+        "Could not open the microphone" => gettext(locale, "Could not open the microphone"),
+        "The microphone did not answer" => gettext(locale, "The microphone did not answer"),
+        "The recording did not start" => gettext(locale, "The recording did not start"),
+        _ => return error,
+    };
+    match detail {
+        Some(detail) => format!("{head}: {detail}"),
+        None => head.into_owned(),
+    }
+}
+
+/// Changes lead `id` in the shared store and saves it, from a call's
+/// thread; none when the lead was removed meanwhile.
+fn with_lead<T>(
+    config: &std::path::Path,
+    id: &str,
+    change: impl FnOnce(&mut Lead) -> T,
+) -> Option<T> {
+    let mut store = Store::open(config);
+    let done = store.get_mut(id).map(change);
+    if done.is_some() {
+        store.save();
+    }
+    done
+}
+
+/// A removed lead's calls stay in the library, as its project's.
+fn forget_calls(state: &std::path::Path, lead: &str) {
+    use crate::call_library::Library;
+    for call in Library::load(state)
+        .calls
+        .iter()
+        .filter(|call| call.lead.as_deref() == Some(lead))
+    {
+        if let Err(error) = Library::update(state, &call.id, |call| call.lead = None) {
+            log::warn!("leads: a removed lead's call could not be kept: {error}");
+        }
+    }
+}
+
+/// Keeps the call in the library and notes it in the lead's history at
+/// once, as not transcribed yet: whatever happens while it is read (the
+/// window closed, the app quit), the audio is safe and the lead has it,
+/// to read again.
+fn read_call(reader: Reader, call: CallFile) {
+    use crate::call_library::Library;
+    set_phase(&reader.ctx, CallPhase::Transcribing);
+    let title = gettext(reader.locale, "Call with {name}").replace("{name}", &call.name);
+    let kept = match Library::keep(
+        &reader.state,
+        &call.path,
+        call.origin,
+        call.seconds,
+        &title,
+        Some(&call.project),
+        Some(&call.lead),
+    ) {
+        Ok(kept) => kept,
+        Err(error) => {
+            let error = translated(reader.locale, error);
+            return set_phase(&reader.ctx, CallPhase::Failed(error));
+        }
+    };
+    let placeholder = format!("{} {}", call.heading, leads::NOT_TRANSCRIBED);
+    let entry = with_lead(&reader.config, &call.lead, |lead| {
+        lead.add_call(&placeholder, "", &kept.id).id.clone()
+    });
+    let Some(entry) = entry else {
+        forget_calls(&reader.state, &call.lead);
+        return set_phase(&reader.ctx, CallPhase::Idle);
+    };
+    // The stage it may have moved to.
+    eleva::push(&reader.ctx, &reader.config);
+    let kept = Kept {
+        call: kept.id,
+        heading: call.heading,
+        lead: call.lead,
+        name: call.name,
+        entry,
+    };
+    read_kept(reader, kept);
+}
+
+/// Reads a kept call with the chosen media engine (unless the library
+/// already has its transcript) and has the analysis summarize it, with
+/// what was agreed and what to do next, into its entry. With no model at
+/// hand the call's opening stands in for the summary.
+fn read_kept(reader: Reader, kept: Kept) {
+    use crate::call_library::{self as library, Library};
+    set_phase(&reader.ctx, CallPhase::Transcribing);
+    let heard = Library::load(&reader.state)
+        .get(&kept.call)
+        .and_then(|call| call.transcript())
+        .map(|transcript| transcript.text.clone());
+    let transcript = match heard {
+        Some(text) => text,
+        None => match library::transcribe(&reader.engines, &reader.state, &kept.call) {
+            Ok(text) => text,
+            Err(error) => {
+                log::warn!("leads: a call could not be transcribed");
+                log::debug!("leads: transcription: {error}");
+                let error = translated(reader.locale, error);
+                return set_phase(&reader.ctx, CallPhase::Failed(error));
+            }
+        },
+    };
+    set_phase(&reader.ctx, CallPhase::Summarizing);
+    let today = leads::today();
+    let context = format!(
+        "Lead (posible cliente): {}\nHoy es {today}. En commitments.due escribí la fecha como \
+         AAAA-MM-DD, o dejala vacía si no se dijo un día.\n",
+        kept.name
+    );
+    let (text, next) = match library::analyze(&reader.config, &reader.state, &kept.call, &context) {
+        Ok(analysis) if !analysis.summary.trim().is_empty() => (
+            leads::call_note(&kept.heading, &analysis),
+            next_from(&analysis, &today),
+        ),
+        answer => {
+            if let Err(error) = answer {
+                log::warn!("leads: a call could not be summarized");
+                log::debug!("leads: analysis: {error}");
+            }
+            let mut start: String = transcript.chars().take(280).collect();
+            if start.len() < transcript.len() {
+                start.push('…');
+            }
+            (format!("{} {start}", kept.heading).trim().to_owned(), None)
+        }
+    };
+    with_lead(&reader.config, &kept.lead, |lead| {
+        lead.redo_call(&kept.entry, &text, &transcript)
+    });
+    eleva::push(&reader.ctx, &reader.config);
+    {
+        let mut held = job();
+        held.phase = CallPhase::Idle;
+        held.noted = Some(kept.lead.clone());
+        if let Some((action, due)) = next {
+            held.suggestion = Some((kept.lead, action, due));
+        }
+    }
+    reader.ctx.request_repaint();
+}
+
+/// What the call says to do next: what the user promised (with its day,
+/// when it names one from `today` on), else the first task or next step.
+fn next_from(
+    analysis: &crate::call_library::CallAnalysis,
+    today: &str,
+) -> Option<(String, Option<String>)> {
+    let mine = analysis.commitments.iter().find(|c| {
+        let who = c.who.trim().to_lowercase();
+        !c.what.trim().is_empty()
+            && (matches!(who.as_str(), "yo" | "me" | "i" | "nosotros" | "we")
+                || who.starts_with("yo "))
+    });
+    if let Some(promise) = mine {
+        let due = promise
+            .due
+            .as_deref()
+            .and_then(|due| due.trim().parse::<jiff::civil::Date>().ok())
+            .map(|date| date.to_string())
+            .filter(|date| date.as_str() >= today);
+        return Some((promise.what.trim().to_owned(), due));
+    }
+    analysis
+        .tasks
+        .iter()
+        .chain(&analysis.next_steps)
+        .map(|step| step.trim())
+        .find(|step| !step.is_empty())
+        .map(|step| (step.to_owned(), None))
+}
+
+/// Takes the call job for `lead`, unless another call has it.
+fn claim(lead: &Lead, phase: CallPhase) -> bool {
+    let mut held = job();
+    if held.phase.busy() {
+        return false;
+    }
+    held.lead = lead.id.clone();
+    held.name = lead.name.clone();
+    held.phase = phase;
+    held.stop = None;
+    true
+}
+
+/// Records a call with `lead` until it is ended, then reads it into its
+/// history. The other side comes through the computer's sound on macOS;
+/// elsewhere, or when macOS does not allow it, the microphone alone hears
+/// it (a call on speaker).
+fn record_call(app: &App, ctx: &egui::Context, lead: &Lead) {
+    use crate::recorder::{Recording, Source};
+    if !claim(lead, CallPhase::Starting) {
+        return;
+    }
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    job().stop = Some(stop);
+    let reader = reader(app, ctx);
+    let (id, project, name) = (lead.id.clone(), lead.project.clone(), lead.name.clone());
+    std::thread::spawn(move || {
+        let both = cfg!(target_os = "macos").then(|| Recording::start(&reader.state, Source::Both));
+        let (recording, mic_only) = match both {
+            Some(Ok(recording)) => (recording, false),
+            other => {
+                if let Some(Err(error)) = other {
+                    log::warn!("leads: only the microphone can be recorded: {error}");
+                }
+                match Recording::start(&reader.state, Source::Microphone) {
+                    Ok(recording) => (recording, true),
+                    Err(error) => {
+                        job().stop = None;
+                        let error = translated(reader.locale, error);
+                        return set_phase(&reader.ctx, CallPhase::Failed(error));
+                    }
+                }
+            }
+        };
+        set_phase(&reader.ctx, CallPhase::Recording(Instant::now(), mic_only));
+        let _ = stopped.recv();
+        let seconds = recording.elapsed().as_secs();
+        let path = match recording.stop() {
+            Ok(path) => path,
+            Err(error) => {
+                let error = translated(reader.locale, error);
+                return set_phase(&reader.ctx, CallPhase::Failed(error));
+            }
+        };
+        let call = CallFile {
+            path,
+            origin: crate::call_library::Origin::Recorded,
+            seconds,
+            heading: leads::call_heading(seconds),
+            lead: id,
+            project,
+            name,
+        };
+        read_call(reader, call);
+    });
+}
+
+/// Picks a recorded call (an audio or video file) and reads it into the
+/// history of `lead`.
+fn attach_audio(app: &App, ctx: &egui::Context, lead: &Lead) {
+    if !claim(lead, CallPhase::Picking) {
+        return;
+    }
+    let label = gettext(app.locale, "Audio or video").into_owned();
+    let reader = reader(app, ctx);
+    let (id, project, name) = (lead.id.clone(), lead.project.clone(), lead.name.clone());
+    std::thread::spawn(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                &label,
+                &[
+                    "ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm",
+                ],
+            )
+            .pick_file()
+        else {
+            return set_phase(&reader.ctx, CallPhase::Idle);
+        };
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let call = CallFile {
+            path,
+            origin: crate::call_library::Origin::Uploaded,
+            seconds: 0,
+            // Its own parentheses would end the heading early.
+            heading: format!("({})", file.replace('(', "[").replace(')', "]")),
+            lead: id,
+            project,
+            name,
+        };
+        read_call(reader, call);
+    });
+}
+
+/// Reads again a call that could not be transcribed or summarized.
+fn retry_call(app: &App, ctx: &egui::Context, lead: &Lead, entry: &leads::Entry) {
+    let Some(call) = entry.call.clone() else {
+        return;
+    };
+    if !claim(lead, CallPhase::Transcribing) {
+        return;
+    }
+    let reader = reader(app, ctx);
+    let kept = Kept {
+        call,
+        heading: leads::heading_of(&entry.text).to_owned(),
+        lead: lead.id.clone(),
+        name: lead.name.clone(),
+        entry: entry.id.clone(),
+    };
+    std::thread::spawn(move || read_kept(reader, kept));
+}
+
+/// Ends the call being recorded, whichever lead it is for.
+fn end_call() {
+    let stop = job().stop.take();
+    if let Some(stop) = stop {
+        let _ = stop.send(());
+    }
+}
+
+/// Opens a call's recording with the computer's player.
+fn open_recording(app: &App, call: &str) -> Result<(), String> {
+    let state_dir = &app.dirs.state;
+    let path = crate::call_library::Library::load(state_dir)
+        .get(call)
+        .map(|call| call.path(state_dir))
+        .filter(|path| path.is_file())
+        .ok_or_else(|| {
+            gettext(app.locale, "The recording is no longer in the call library").into_owned()
+        })?;
+    open::that_detached(path).map_err(|e| e.to_string())
+}
+
+/// Whether the library has a summary of `call`. A call it does not have
+/// cannot be read again, so it counts as summarized.
+fn summarized(app: &App, state: &mut State, call: &str) -> bool {
+    if !state.summarized.contains_key(call) {
+        let library = crate::call_library::Library::load(&app.dirs.state);
+        for kept in &library.calls {
+            let summary = kept.analysis.as_ref().map(|a| a.summary.trim());
+            state
+                .summarized
+                .insert(kept.id.clone(), summary.is_some_and(|s| !s.is_empty()));
+        }
+        state.summarized.entry(call.to_owned()).or_insert(true);
+    }
+    state.summarized[call]
+}
+
+/// Below a recorded call: listening to it, reading it again when it could
+/// not be transcribed or summarized, and its transcript to read or copy.
+fn call_entry(app: &App, ui: &mut egui::Ui, state: &mut State, lead: &Lead, entry: &leads::Entry) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let Some(call) = entry.call.as_deref() else {
+        return;
+    };
+    let again = if job().phase.busy() {
+        None
+    } else if entry.waiting() {
+        Some(gettext(locale, "Transcribe it again"))
+    } else if !summarized(app, state, call) {
+        Some(gettext(locale, "Summarize it again"))
+    } else {
+        None
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        if theme::icon_button(
+            ui,
+            Icon::Play,
+            14.0,
+            palette.secondary,
+            palette.text,
+            &gettext(locale, "Listen to the call"),
+        )
+        .clicked()
+            && let Err(error) = open_recording(app, call)
+        {
+            state.notice = Some((error, Instant::now()));
+        }
+        if let Some(again) = again
+            && theme::icon_button(
+                ui,
+                Icon::Refresh,
+                14.0,
+                palette.secondary,
+                palette.text,
+                &again,
+            )
+            .clicked()
+        {
+            retry_call(app, ui.ctx(), lead, entry);
+        }
+        if let Some(transcript) = &entry.transcript
+            && theme::icon_button(
+                ui,
+                Icon::Copy,
+                14.0,
+                palette.secondary,
+                palette.text,
+                &gettext(locale, "Copy the transcript"),
+            )
+            .clicked()
+        {
+            ui.ctx().copy_text(transcript.to_string());
+            state.notice = Some((
+                gettext(locale, "Transcript copied").into_owned(),
+                Instant::now(),
+            ));
+        }
+    });
+    if let Some(transcript) = &entry.transcript {
+        egui::CollapsingHeader::new(
+            egui::RichText::new(gettext(locale, "Transcript"))
+                .font(theme::medium(12.0))
+                .color(palette.secondary),
+        )
+        .id_salt(("lead-transcript", &entry.id))
+        .show(ui, |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(transcript.as_ref())
+                        .font(theme::regular(13.0))
+                        .color(palette.secondary),
+                )
+                .wrap()
+                .selectable(true),
+            );
+        });
+    }
+}
+
+/// What a call said to do next, offered as the lead's next action.
+fn suggestion_row(
+    app: &App,
+    ui: &mut egui::Ui,
+    state: &mut State,
+    lead: &Lead,
+    changes: &mut Vec<Change>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let Some((for_lead, text, due)) = job().suggestion.clone() else {
+        return;
+    };
+    if for_lead != lead.id {
+        return;
+    }
+    if lead.next.as_ref().is_some_and(|next| next.text == text) {
+        job().suggestion = None;
+        return;
+    }
+    ui.add_space(8.0);
+    // Stacked, so a long action never runs under the buttons.
+    field_frame(&palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, Icon::Calendar, 14.0, palette.accent);
+            theme::text(
+                ui,
+                gettext(locale, "From the call, next:"),
+                theme::medium(12.0),
+                palette.secondary,
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::icon_button(
+                    ui,
+                    Icon::X,
+                    14.0,
+                    palette.secondary,
+                    palette.text,
+                    &gettext(locale, "Dismiss"),
+                )
+                .clicked()
+                {
+                    job().suggestion = None;
+                }
+            });
+        });
+        let line = match &due {
+            Some(day) => format!("{text} · {}", due_label(app, day).0),
+            None => text.clone(),
+        };
+        wrapped(ui, &line, theme::regular(13.5), palette.text);
+        ui.add_space(6.0);
+        if button(
+            ui,
+            &palette,
+            gettext(locale, "Make it the next action").as_ref(),
+            true,
+        )
+        .clicked()
+        {
+            // The next action card shows it at once.
+            state.next_text = text.clone();
+            state.next_due = due.clone();
+            changes.push(Change::Next(lead.id.clone(), text, due));
+            job().suggestion = None;
+        }
+    });
+}
+
+/// Recording a call or attaching one, and what that is doing. A call with
+/// another lead shows on a line of its own (`call_lines`). Spelled out
+/// when noting a call and there is room; icons otherwise.
+fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, lead: &Lead, wide: bool) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let (phase, mine) = {
+        let held = job();
+        (held.phase.clone(), held.lead == lead.id)
+    };
+    if phase.busy() && !mine {
+        return;
+    }
+    let working = |ui: &mut egui::Ui, label: std::borrow::Cow<'_, str>| {
+        ui.add(egui::Spinner::new().size(15.0).color(palette.accent));
+        theme::text(ui, label.as_ref(), theme::regular(12.5), palette.secondary);
+    };
+    match phase {
+        CallPhase::Recording(started, _) => {
+            let seconds = started.elapsed().as_secs();
+            ui.painter().circle_filled(
+                ui.cursor().left_center() + vec2(6.0, 0.0),
+                5.0,
+                palette.danger,
+            );
+            ui.add_space(14.0);
+            theme::text(
+                ui,
+                gettext(locale, "Call {time}")
+                    .replace("{time}", &format!("{}:{:02}", seconds / 60, seconds % 60)),
+                theme::medium(13.5),
+                palette.text,
+            );
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
+            if button(ui, &palette, gettext(locale, "End call").as_ref(), true).clicked() {
+                end_call();
+            }
+        }
+        CallPhase::Starting if cfg!(target_os = "macos") => {
+            working(ui, gettext(locale, "Asking macOS for permission…"));
+        }
+        CallPhase::Starting => working(ui, gettext(locale, "Starting the recording…")),
+        CallPhase::Picking => working(ui, gettext(locale, "Choosing a file…")),
+        CallPhase::Transcribing => working(ui, gettext(locale, "Transcribing the call…")),
+        CallPhase::Summarizing => working(ui, gettext(locale, "Summarizing the call…")),
+        CallPhase::Idle | CallPhase::Failed(_) => {
+            let record_tip = gettext(
+                locale,
+                "Record a call (your microphone and the computer's sound)",
+            );
+            let attach_tip = gettext(locale, "Attach a recorded call (audio or video)");
+            let (record, attach) = if state.kind == Kind::Call && wide {
+                (
+                    button(ui, &palette, gettext(locale, "Record call").as_ref(), false)
+                        .on_hover_text(record_tip.as_ref()),
+                    button(
+                        ui,
+                        &palette,
+                        gettext(locale, "Attach audio").as_ref(),
+                        false,
+                    )
+                    .on_hover_text(attach_tip.as_ref()),
+                )
+            } else {
+                (
+                    theme::icon_button(
+                        ui,
+                        Icon::Phone,
+                        17.0,
+                        palette.secondary,
+                        palette.text,
+                        &record_tip,
+                    ),
+                    theme::icon_button(
+                        ui,
+                        Icon::Paperclip,
+                        17.0,
+                        palette.secondary,
+                        palette.text,
+                        &attach_tip,
+                    ),
+                )
+            };
+            if record.clicked() {
+                record_call(app, ui.ctx(), lead);
+            }
+            if attach.clicked() {
+                attach_audio(app, ui.ctx(), lead);
+            }
+        }
+    }
+}
+
+/// Under the history box: a call with another lead (so it can be ended
+/// from here), the reminder to tell the other person, a note when only the
+/// microphone is heard, and what went wrong, each on lines of their own.
+fn call_lines(app: &App, ui: &mut egui::Ui, lead: &Lead) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let (phase, mine, name) = {
+        let held = job();
+        (held.phase.clone(), held.lead == lead.id, held.name.clone())
+    };
+    match phase {
+        phase if phase.busy() && !mine => {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if let CallPhase::Recording(started, _) = phase {
+                    if button(ui, &palette, gettext(locale, "End call").as_ref(), false).clicked() {
+                        end_call();
+                    }
+                    let seconds = started.elapsed().as_secs();
+                    theme::text(
+                        ui,
+                        format!("{}:{:02}", seconds / 60, seconds % 60),
+                        theme::medium(12.5),
+                        palette.danger,
+                    );
+                    ui.ctx().request_repaint_after(Duration::from_millis(500));
+                } else {
+                    ui.add(egui::Spinner::new().size(13.0).color(palette.accent));
+                }
+                // Last, so a long name is what gets cut.
+                theme::text(
+                    ui,
+                    gettext(locale, "Call with {name}").replace("{name}", &name),
+                    theme::regular(12.5),
+                    palette.secondary,
+                );
+            });
+        }
+        CallPhase::Recording(_, mic_only) => {
+            ui.add_space(4.0);
+            wrapped(
+                ui,
+                &gettext(locale, "Tell the other person the call is being recorded."),
+                theme::regular(12.0),
+                palette.dim,
+            );
+            if mic_only {
+                let note = if cfg!(target_os = "macos") {
+                    gettext(
+                        locale,
+                        "Only your microphone is being recorded. To record the other side too, \
+                         allow Whats Pro in System Settings > Privacy & Security > Screen & \
+                         System Audio Recording.",
+                    )
+                } else {
+                    gettext(
+                        locale,
+                        "Only your microphone is being recorded: put the call on speaker so the \
+                         other side is heard too.",
+                    )
+                };
+                wrapped(ui, &note, theme::regular(12.0), palette.warning);
+            }
+        }
+        CallPhase::Failed(error) if mine => {
+            ui.add_space(6.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                theme::icon(ui, Icon::CircleAlert, 14.0, palette.danger);
+                ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width() - 30.0).max(120.0));
+                    wrapped(ui, &error, theme::regular(12.5), palette.danger);
+                });
+                if theme::icon_button(
+                    ui,
+                    Icon::X,
+                    13.0,
+                    palette.secondary,
+                    palette.text,
+                    &gettext(locale, "Dismiss"),
+                )
+                .clicked()
+                {
+                    let mut held = job();
+                    if matches!(held.phase, CallPhase::Failed(_)) {
+                        held.phase = CallPhase::Idle;
+                    }
+                }
+            });
+        }
+        _ => {}
     }
 }
 
@@ -2737,11 +3574,97 @@ pub fn select(ctx: &egui::Context, project: &str, lead: Option<String>) {
     if lead.is_some() {
         state.selected = lead;
     }
+    #[cfg(any(test, feature = "demo"))]
+    if std::mem::take(&mut *DEMO_VIEW.lock().unwrap_or_else(|p| p.into_inner())) {
+        state.demo_view = Some(Instant::now());
+    }
+}
+
+#[cfg(any(test, feature = "demo"))]
+static DEMO_VIEW: Mutex<bool> = Mutex::new(false);
+
+/// Shows, for the demo, what a call suggested doing next with `lead`, with
+/// the history box noting a call and in sight.
+#[cfg(any(test, feature = "demo"))]
+pub fn demo_call(lead: &str, text: &str, due: Option<String>) {
+    job().suggestion = Some((lead.to_owned(), text.to_owned(), due));
+    *DEMO_VIEW.lock().unwrap_or_else(|p| p.into_inner()) = true;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::call_library::{CallAnalysis, Commitment};
+
+    fn analysis() -> CallAnalysis {
+        CallAnalysis {
+            summary: " Quieren 500 guardapolvos bordados. ".into(),
+            commitments: vec![
+                Commitment {
+                    who: "Cliente".into(),
+                    what: "Mandar el logo".into(),
+                    due: None,
+                },
+                Commitment {
+                    who: "Yo".into(),
+                    what: "Mandar la cotización con las dos telas".into(),
+                    due: Some("2026-10-20".into()),
+                },
+                Commitment {
+                    who: "Yo".into(),
+                    what: " ".into(),
+                    due: None,
+                },
+            ],
+            tasks: vec!["Pedir muestras".into()],
+            ..CallAnalysis::default()
+        }
+    }
+
+    #[test]
+    fn call_errors_read_in_the_users_language() {
+        let locale = Locale::Spanish;
+        assert_eq!(
+            translated(locale, "Could not open the microphone: busy".into()),
+            "No se pudo abrir el micrófono: busy"
+        );
+        assert_eq!(
+            translated(locale, "Nothing was heard in it".into()),
+            "No se escuchó nada"
+        );
+        assert_eq!(translated(locale, "Other: x".into()), "Other: x");
+    }
+
+    #[test]
+    fn the_next_action_is_what_the_user_promised() {
+        assert_eq!(
+            next_from(&analysis(), "2026-10-17"),
+            Some((
+                "Mandar la cotización con las dos telas".into(),
+                Some("2026-10-20".into())
+            ))
+        );
+        // A day already gone, or not a date, is left for the user to pick.
+        assert_eq!(next_from(&analysis(), "2026-10-21").unwrap().1, None);
+        let mut vague = analysis();
+        vague.commitments[1].due = Some("el viernes".into());
+        assert_eq!(next_from(&vague, "2026-10-17").unwrap().1, None);
+        // Nothing promised: the first task, then the first next step.
+        let mut tasks = analysis();
+        tasks.commitments.clear();
+        assert_eq!(
+            next_from(&tasks, "2026-10-17"),
+            Some(("Pedir muestras".into(), None))
+        );
+        tasks.tasks.clear();
+        tasks.next_steps = vec!["Volver a llamar".into()];
+        assert_eq!(
+            next_from(&tasks, "2026-10-17").unwrap().0,
+            "Volver a llamar"
+        );
+        tasks.next_steps.clear();
+        assert_eq!(next_from(&tasks, "2026-10-17"), None);
+    }
 
     #[test]
     fn numbers_are_read_one_per_line() {
