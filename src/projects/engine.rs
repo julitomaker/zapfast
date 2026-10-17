@@ -252,6 +252,9 @@ pub struct Status {
 struct Engine {
     status: Status,
     run_now: bool,
+    /// Projects to read again even without new messages: their context,
+    /// sources or notes changed.
+    force: std::collections::HashSet<String>,
     started: bool,
     last: Option<Instant>,
 }
@@ -262,6 +265,7 @@ fn engine() -> &'static Mutex<Engine> {
         Mutex::new(Engine {
             status: Status::default(),
             run_now: false,
+            force: Default::default(),
             started: false,
             last: None,
         })
@@ -279,6 +283,23 @@ pub fn status() -> Status {
 /// Asks for a run as soon as the engine is free.
 pub fn run_now() {
     engine().lock().unwrap_or_else(|p| p.into_inner()).run_now = true;
+}
+
+/// Asks for `project` to be read again as soon as the engine is free, even
+/// with no new messages: its context, sources or notes changed.
+pub fn refresh(project: &str) {
+    let mut state = engine().lock().unwrap_or_else(|p| p.into_inner());
+    state.force.insert(project.to_owned());
+    state.run_now = true;
+}
+
+/// Whether `project` waits to be read again.
+pub fn pending(project: &str) -> bool {
+    engine()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .force
+        .contains(project)
 }
 
 /// Starts the engine's thread once. It checks every half minute whether a
@@ -326,6 +347,11 @@ fn set_status(ctx: &egui::Context, change: impl FnOnce(&mut Status)) {
 /// Analyzes every project with messages newer than its last analysis.
 fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConfig) {
     let map = ProjectMap::load(config);
+    let forced = engine()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .force
+        .clone();
     let now = jiff::Timestamp::now().as_second();
     let mut error = None;
     for project in &map.projects {
@@ -342,11 +368,19 @@ fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConf
             }
         };
         let newest = messages.last().map_or(0, |m| m.timestamp);
-        if messages.is_empty() || previous.as_ref().is_some_and(|p| p.updated >= newest) {
+        let force = forced.contains(&project.id);
+        if !force && (messages.is_empty() || previous.as_ref().is_some_and(|p| p.updated >= newest))
+        {
             continue;
         }
         set_status(ctx, |status| status.running = Some(project.name.clone()));
-        match analyze(config, settings, &map, project, &messages, now) {
+        let result = analyze(config, settings, &map, project, &messages, now);
+        engine()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .force
+            .remove(&project.id);
+        match result {
             Ok(analysis) => {
                 if let Err(failure) = analysis.save(config, &project.id) {
                     error = Some(failure.to_string());
@@ -388,7 +422,11 @@ Reglas:\n\
 - ref es el número entre corchetes del mensaje que lo origina.\n\
 - relevant: los números de los mensajes marcados con ~ (chats mixtos) que SÍ tratan sobre este proyecto. Los demás mensajes ~ no van.\n\
 - No inventes nada que no esté en los mensajes. Si algo ya se resolvió en un mensaje posterior, no lo pongas.\n\
-- Máximo 8 elementos por lista, los más importantes primero.";
+- Máximo 8 elementos por lista, los más importantes primero.\n\
+- Usá el contexto y los integrantes para entender quién es quién, qué rol tiene cada uno y cómo se organiza el proyecto.\n\
+- Las notas del dueño son lo más confiable sobre lo que ya pasó: si una nota dice que algo se resolvió o se hizo, sacalo de todas las listas; si trae un compromiso, una tarea, una llamada o una necesidad nueva, sumalo a la lista que corresponda (con ref null).\n\
+- No vuelvas a poner lo que el dueño marcó como hecho o descartado, salvo que un mensaje posterior lo reabra.\n\
+- Evitá recomendaciones parecidas a las que el dueño marcó como malas; las marcadas como buenas muestran qué le sirve.";
 
 /// What a message says, with the speech or picture text read out of it on
 /// this computer.
@@ -426,6 +464,8 @@ fn prompt(
     map: &ProjectMap,
     project: &super::Project,
     messages: &[&FeedMessage],
+    journal: &super::Journal,
+    ticks: &super::Ticks,
     now: i64,
 ) -> String {
     let mut text = format!(
@@ -439,6 +479,72 @@ fn prompt(
             .collect::<Vec<_>>()
             .join(", ")
     );
+    if !project.context.trim().is_empty() {
+        text.push_str(&format!(
+            "Contexto del proyecto (escrito por el dueño):\n{}\n\n",
+            project.context.trim()
+        ));
+    }
+    if !project.members.is_empty() {
+        text.push_str("Integrantes:\n");
+        for member in &project.members {
+            let phone = member.id.split('@').next().unwrap_or("");
+            if member.role.trim().is_empty() {
+                text.push_str(&format!("- {} ({phone})\n", member.name));
+            } else {
+                text.push_str(&format!(
+                    "- {}: {} ({phone})\n",
+                    member.name,
+                    member.role.trim()
+                ));
+            }
+        }
+        text.push('\n');
+    }
+    let recent: Vec<&super::Note> = journal
+        .notes
+        .iter()
+        .filter(|note| now - note.at < 30 * 86_400)
+        .collect();
+    if !recent.is_empty() {
+        text.push_str("Notas del dueño (bitácora, la más nueva al final):\n");
+        for note in recent.iter().rev().take(40).rev() {
+            text.push_str(&format!("- {}: {}\n", stamp(note.at), clip(&note.text)));
+        }
+        text.push('\n');
+    }
+    let verdicts = |verdicts: &[super::Verdict]| -> Vec<String> {
+        ticks
+            .feedback
+            .iter()
+            .rev()
+            .filter(|f| verdicts.contains(&f.verdict))
+            .take(40)
+            .map(|f| format!("- {}", clip(&f.text)))
+            .collect()
+    };
+    for (title, kinds) in [
+        (
+            "Ya hecho o descartado por el dueño (no repetir):",
+            &[super::Verdict::Done, super::Verdict::Dismissed][..],
+        ),
+        (
+            "Recomendaciones que el dueño marcó como malas:",
+            &[super::Verdict::Bad][..],
+        ),
+        (
+            "Recomendaciones que el dueño marcó como buenas:",
+            &[super::Verdict::Good][..],
+        ),
+    ] {
+        let lines = verdicts(kinds);
+        if !lines.is_empty() {
+            text.push_str(title);
+            text.push('\n');
+            text.push_str(&lines.join("\n"));
+            text.push_str("\n\n");
+        }
+    }
     // What was filed by hand teaches what this project is about.
     let mut examples = Vec::new();
     let by_id: HashMap<(&str, &str), &FeedMessage> = messages
@@ -473,13 +579,19 @@ fn prompt(
             && map
                 .picked(&message.chat, &message.id, &project.id)
                 .is_none();
+        let phone = message.sender.split('@').next().unwrap_or("");
+        let member = project.members.iter().find(|m| {
+            m.id == message.sender || (!phone.is_empty() && m.id.split('@').next() == Some(phone))
+        });
         let who = if message.from_me {
             "Yo".to_owned()
+        } else if let Some(member) = member {
+            member.name.clone()
         } else {
             message
                 .sender_name
                 .clone()
-                .unwrap_or_else(|| message.sender.split('@').next().unwrap_or("").to_owned())
+                .unwrap_or_else(|| phone.to_owned())
         };
         text.push_str(&format!(
             "[{index}]{} {} | {} | {}: {}\n",
@@ -562,7 +674,14 @@ fn analyze(
         config,
         settings,
         SYSTEM,
-        &prompt(map, project, messages, now),
+        &prompt(
+            map,
+            project,
+            messages,
+            &super::Journal::load(config, &project.id),
+            &super::Ticks::load(config, &project.id),
+            now,
+        ),
     )?;
     let reply: Reply = serde_json::from_str(
         json_object(&reply).ok_or_else(|| anyhow::anyhow!("the model answered without JSON"))?,
@@ -1081,7 +1200,17 @@ mod tests {
         let b = message("p@s.whatsapp.net", "b", 200, "las prendas");
         let c = message("p@s.whatsapp.net", "c", 300, "el asado");
         let project = map.project(&id).unwrap().clone();
-        let text = prompt(&map, &project, &[&a, &b, &c], 400);
+        let mut journal = super::super::Journal::default();
+        journal.add("Ya mandé la cotización", false);
+        let text = prompt(
+            &map,
+            &project,
+            &[&a, &b, &c],
+            &journal,
+            &Default::default(),
+            jiff::Timestamp::now().as_second(),
+        );
+        assert!(text.contains("Ya mandé la cotización"), "{text}");
         assert!(text.contains("[0] "));
         assert!(text.contains("[2]~ "), "{text}");
         assert!(

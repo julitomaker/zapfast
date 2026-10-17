@@ -69,6 +69,22 @@ pub struct Project {
     /// The first map's whole chats, moved into `sources` on load.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chats: Vec<String>,
+    /// What the project is about, in the owner's words, for the analysis.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub context: String,
+    /// Who takes part, and in what role.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<Member>,
+}
+
+/// Someone in a project: a WhatsApp id (saved contact or not) or a bare
+/// phone number, the name to call them by, and their role.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Member {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
 }
 
 impl Project {
@@ -164,7 +180,7 @@ impl ProjectMap {
         self.projects.iter().find(|project| project.id == id)
     }
 
-    fn project_mut(&mut self, id: &str) -> Option<&mut Project> {
+    pub fn project_mut(&mut self, id: &str) -> Option<&mut Project> {
         self.projects.iter_mut().find(|project| project.id == id)
     }
 
@@ -341,6 +357,8 @@ impl ProjectMap {
             color: COLORS[self.projects.len() % COLORS.len()].to_owned(),
             sources: Vec::new(),
             chats: Vec::new(),
+            context: String::new(),
+            members: Vec::new(),
         });
         id
     }
@@ -447,13 +465,34 @@ impl Analysis {
     }
 }
 
-/// What the user did with the analysis' findings.
+/// What the user did with the analysis' findings: ticked off, dismissed,
+/// and judged good or bad advice. The texts go back to the analysis, so a
+/// closed item does not come back and bad advice is not repeated.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ticks {
     #[serde(default)]
     pub done: HashSet<String>,
     #[serde(default)]
     pub dismissed: HashSet<String>,
+    #[serde(default)]
+    pub feedback: Vec<Feedback>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verdict {
+    Done,
+    Dismissed,
+    Good,
+    Bad,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Feedback {
+    pub id: String,
+    pub text: String,
+    pub verdict: Verdict,
+    pub at: i64,
 }
 
 impl Ticks {
@@ -481,6 +520,111 @@ impl Ticks {
     pub fn open(&self, id: &str) -> bool {
         !self.done.contains(id) && !self.dismissed.contains(id)
     }
+
+    /// Records what the user made of a finding.
+    pub fn judge(&mut self, finding: &Finding, verdict: Verdict) {
+        match verdict {
+            Verdict::Done => {
+                self.done.insert(finding.id.clone());
+            }
+            Verdict::Dismissed => {
+                self.dismissed.insert(finding.id.clone());
+            }
+            Verdict::Good | Verdict::Bad => {}
+        }
+        self.feedback
+            .retain(|f| !(f.id == finding.id && f.verdict == verdict));
+        self.feedback.push(Feedback {
+            id: finding.id.clone(),
+            text: finding.text.clone(),
+            verdict,
+            at: jiff::Timestamp::now().as_second(),
+        });
+        // The newest 200 are plenty to learn from.
+        if self.feedback.len() > 200 {
+            self.feedback.drain(..self.feedback.len() - 200);
+        }
+    }
+
+    pub fn verdict(&self, id: &str) -> Option<Verdict> {
+        self.feedback
+            .iter()
+            .rev()
+            .find(|f| f.id == id && matches!(f.verdict, Verdict::Good | Verdict::Bad))
+            .map(|f| f.verdict)
+    }
+}
+
+/// A note the owner wrote or said about the project: what was done, a
+/// call, a commitment. The analysis reads them to close items and add new
+/// ones.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Note {
+    pub at: i64,
+    pub text: String,
+    #[serde(default)]
+    pub spoken: bool,
+}
+
+/// A project's notes, oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Journal {
+    #[serde(default)]
+    pub notes: Vec<Note>,
+}
+
+impl Journal {
+    fn file(config: &Path, project: &str) -> PathBuf {
+        config
+            .join("analysis")
+            .join(format!("{project}.journal.json"))
+    }
+
+    pub fn load(config: &Path, project: &str) -> Self {
+        std::fs::read_to_string(Self::file(config, project))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, config: &Path, project: &str) -> std::io::Result<()> {
+        let path = Self::file(config, project);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn add(&mut self, text: &str, spoken: bool) {
+        self.notes.push(Note {
+            at: jiff::Timestamp::now().as_second(),
+            text: text.trim().to_owned(),
+            spoken,
+        });
+    }
+}
+
+/// Mono samples as a 16-bit WAV file, for transcribing a spoken note.
+pub fn wav(samples: &[f32], rate: u32) -> Vec<u8> {
+    let data = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + data as usize);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * 2).to_le_bytes());
+    out.extend_from_slice(&2u16.to_le_bytes());
+    out.extend_from_slice(&16u16.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for sample in samples {
+        let value = (sample.clamp(-1.0, 1.0) * f32::from(i16::MAX)) as i16;
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out
 }
 
 /// What a feed request asks for: these chats, since then. Newer activity in
@@ -664,6 +808,38 @@ mod tests {
                 .map(|s| s.mode),
             Some(Mode::Selected)
         );
+    }
+
+    #[test]
+    fn judging_a_finding_closes_it_and_keeps_why() {
+        let finding = Finding {
+            id: "todo:a@g.us:m1".into(),
+            text: "Mandar la cotización".into(),
+            ..Finding::default()
+        };
+        let mut ticks = Ticks::default();
+        assert!(ticks.open(&finding.id));
+        ticks.judge(&finding, Verdict::Bad);
+        assert!(ticks.open(&finding.id), "bad advice stays until closed");
+        assert_eq!(ticks.verdict(&finding.id), Some(Verdict::Bad));
+        ticks.judge(&finding, Verdict::Done);
+        assert!(!ticks.open(&finding.id));
+        assert_eq!(ticks.feedback.len(), 2);
+        assert_eq!(ticks.feedback[1].text, "Mandar la cotización");
+    }
+
+    #[test]
+    fn notes_and_spoken_notes_round_trip() {
+        let root = tempfile::tempdir().unwrap();
+        let mut journal = Journal::default();
+        journal.add("  Llamé a Diego ", true);
+        journal.save(root.path(), "jas").unwrap();
+        let back = Journal::load(root.path(), "jas");
+        assert_eq!(back.notes[0].text, "Llamé a Diego");
+        assert!(back.notes[0].spoken);
+        let wav = wav(&[0.0, 1.0], 48_000);
+        assert_eq!(&wav[..4], b"RIFF");
+        assert_eq!(wav.len(), 44 + 4);
     }
 
     #[test]

@@ -3448,3 +3448,103 @@ msgstr "Google ya no deja usar Gemini así con cuentas personales; para Gemini u
 #: src/ui/projects.rs
 msgid "Google no longer lets personal accounts sign in to Gemini CLI. Choose Gemini API with a key from Google AI Studio."
 msgstr "Google ya no deja iniciar sesión en Gemini CLI con cuentas personales. Elegí Gemini API con una key de Google AI Studio."
+
+#: src/ui/projects.rs
+msgid "Good recommendation"
+msgstr "Buena recomendación"
+
+#: src/ui/projects.rs
+msgid "Bad recommendation"
+msgstr "Mala recomendación"
+
+#: src/ui/projects.rs
+msgid "What happened"
+msgstr "Qué pasó"
+
+#: src/ui/projects.rs
+msgid "Right-click an item to mark it as a good or bad recommendation: the analysis learns from it."
+msgstr "Hacé clic derecho en un ítem para marcarlo como buena o mala recomendación: el análisis aprende de eso."
+
+#: src/ui/projects.rs
+msgid "Update the analysis"
+msgstr "Actualizar el análisis"
+
+#: src/ui/projects.rs
+msgid "Context"
+msgstr "Contexto"
+
+#: src/ui/projects.rs
+msgid "Journal"
+msgstr "Bitácora"
+
+#: src/ui/projects.rs
+msgid "Tell the project what happened"
+msgstr "Contale al proyecto qué pasó"
+
+#: src/ui/projects.rs
+msgid "A call, what was solved, what you agreed to. It goes to the journal and the panel updates with it."
+msgstr "Una llamada, lo que se resolvió, a qué se comprometieron. Va a la bitácora y el panel se actualiza con eso."
+
+#: src/ui/projects.rs
+msgid "Today I spoke with Diego: we confirmed 15 garments for Friday…"
+msgstr "Hoy hablé con Diego: confirmamos 15 prendas para el viernes…"
+
+#: src/ui/projects.rs
+msgid "Stop"
+msgstr "Detener"
+
+#: src/ui/projects.rs
+msgid "Say it"
+msgstr "Decirlo con la voz"
+
+#: src/ui/projects.rs
+msgid "Save note"
+msgstr "Guardar nota"
+
+#: src/ui/projects.rs
+msgid "Updating the panel…"
+msgstr "Actualizando el panel…"
+
+#: src/ui/projects.rs
+msgid "No notes yet"
+msgstr "Todavía no hay notas"
+
+#: src/ui/projects.rs
+msgid "What you tell the project helps it know what is done and what is new."
+msgstr "Lo que le contás al proyecto lo ayuda a saber qué está hecho y qué es nuevo."
+
+#: src/ui/projects.rs
+msgid "Delete note"
+msgstr "Borrar nota"
+
+#: src/ui/projects.rs
+msgid "About the project"
+msgstr "Sobre el proyecto"
+
+#: src/ui/projects.rs
+msgid "What it is, how it is organized, who decides, what matters now. Mention people with @. The analysis reads this before the messages."
+msgstr "Qué es, cómo se organiza, quién decide, qué importa ahora. Mencioná a las personas con @. El análisis lee esto antes que los mensajes."
+
+#: src/ui/projects.rs
+msgid "JAS is our embroidery shop. @Papá handles payments, @Liz and @Juan are on the machines. Orders come from Bordados JAS…"
+msgstr "JAS es nuestro taller de bordados. @Papá maneja los pagos, @Liz y @Juan están en las máquinas. Los pedidos entran por Bordados JAS…"
+
+#: src/ui/projects.rs
+msgid "Save context"
+msgstr "Guardar contexto"
+
+#: src/ui/projects.rs
+msgid "Members"
+msgstr "Integrantes"
+
+#: src/ui/projects.rs
+msgid "Saved contacts or any number, with their role. The analysis uses it to know who is who."
+msgstr "Contactos agendados o cualquier número, con su rol. El análisis lo usa para saber quién es quién."
+
+#: src/ui/projects.rs
+msgid "Role"
+msgstr "Rol"
+
+#: src/ui/projects.rs
+msgid "Add: a name or a number"
+msgstr "Agregar: un nombre o un número"

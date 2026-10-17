@@ -31,8 +31,8 @@ use crate::i18n::gettext;
 use crate::model::{Action, ChatKind, Page};
 use crate::projects::engine::{self, EngineConfig, Provider};
 use crate::projects::{
-    Analysis, Bucket, Feed, FeedKey, FeedMessage, Finding, Inclusion, Mode, Project, ProjectMap,
-    Ticks,
+    Analysis, Bucket, Feed, FeedKey, FeedMessage, Finding, Inclusion, Journal, Member, Mode,
+    Project, ProjectMap, Ticks, Verdict,
 };
 use crate::theme::{self, Icon};
 use crate::ui::widgets;
@@ -51,6 +51,8 @@ enum Selection {
 enum Tab {
     #[default]
     Panel,
+    Journal,
+    Context,
     Messages,
     Sources,
 }
@@ -88,6 +90,14 @@ struct State {
     /// In a narrow window, whether the project (or bucket) beside the list
     /// is on screen instead of the list.
     picked: bool,
+    /// The note being written, and a spoken one being recorded or read.
+    note: String,
+    recorder: Option<crate::audio::Recorder>,
+    spoken: Arc<Mutex<Option<Result<String, String>>>>,
+    transcribing: bool,
+    /// The context being edited, for which project, and a member search.
+    context: Option<(String, String)>,
+    member_search: String,
 }
 
 impl Default for State {
@@ -113,6 +123,12 @@ impl Default for State {
             key_draft: String::new(),
             model_search: String::new(),
             picked: false,
+            note: String::new(),
+            recorder: None,
+            spoken: Arc::default(),
+            transcribing: false,
+            context: None,
+            member_search: String::new(),
         }
     }
 }
@@ -786,6 +802,9 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
     };
     let mut tab = state.tab;
     let mut remove = false;
+    let mut refresh = false;
+    let analyzing =
+        status.running.as_deref() == Some(project.name.as_str()) || engine::pending(&project.id);
     header(
         app,
         ui,
@@ -812,10 +831,26 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
                         ui.close();
                     }
                 });
+            if analyzing {
+                ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
+            } else if theme::icon_button(
+                ui,
+                Icon::Refresh,
+                17.0,
+                palette.secondary,
+                palette.text,
+                &gettext(locale, "Update the analysis"),
+            )
+            .clicked()
+            {
+                refresh = true;
+            }
             ui.add_space(6.0);
             for (value, label) in [
                 (Tab::Sources, gettext(locale, "Sources")),
                 (Tab::Messages, gettext(locale, "Messages")),
+                (Tab::Context, gettext(locale, "Context")),
+                (Tab::Journal, gettext(locale, "Journal")),
                 (Tab::Panel, gettext(locale, "Panel")),
             ] {
                 if widgets::filter_chip(ui, &palette, label.as_ref(), 0, tab == value).clicked() {
@@ -834,8 +869,13 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
         state.selection = None;
         return;
     }
+    if refresh {
+        engine::refresh(&project.id);
+    }
     match state.tab {
         Tab::Panel => panel(app, ui, state, &project, analysis.as_ref(), &ticks),
+        Tab::Journal => journal(app, ui, state, &project),
+        Tab::Context => context(app, ui, state, &project),
         Tab::Messages => messages(app, ui, state, &project, analysis.as_ref()),
         Tab::Sources => sources(app, ui, state, &project),
     }
@@ -843,117 +883,220 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
 
 // -------------------------------------------------------------------- panel
 
-/// A finding's line under its text: who, the chat, how long ago, when due.
-fn finding_meta(app: &App, finding: &Finding) -> String {
-    let locale = app.locale;
-    let mut parts = Vec::new();
-    if let Some(who) = &finding.who {
-        parts.push(who.clone());
-    }
-    if let Some(chat) = finding.chat.as_ref().and_then(|id| app.chat(id)) {
-        parts.push(chat.name.clone());
-    }
-    if let Some(since) = finding.since {
-        parts.push(ago(locale, since));
-    }
-    parts.join(" · ")
+/// How old a finding is, coloured by how long it has waited.
+fn age_chip(app: &App, since: i64) -> (String, Color32) {
+    let palette = app.palette;
+    let days = (jiff::Timestamp::now().as_second() - since) / 86_400;
+    let color = if days >= 7 {
+        palette.danger
+    } else if days >= 3 {
+        palette.warning
+    } else {
+        palette.dim
+    };
+    (ago(app.locale, since), color)
 }
 
-/// One finding: a tick box where it can be done, its text, who and where,
-/// and on hover a way to dismiss it. Clicking it opens its message's chat.
+/// A small rounded label.
+fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
+    Frame::new()
+        .fill(color.gamma_multiply(0.14))
+        .corner_radius(CornerRadius::same(theme::RADIUS))
+        .inner_margin(Margin::symmetric(7, 2))
+        .show(ui, |ui| {
+            theme::text(ui, text, theme::medium(11.5), color);
+        });
+}
+
+/// What the person did to a finding.
+enum FindingAction {
+    Judge(Finding, Verdict),
+    Open(String),
+}
+
+/// One finding: a tick box where it can be done, its text, and chips for
+/// who, where, how long ago and when due. On hover, a way to open its
+/// message's chat and to dismiss it; a right click also judges it as good
+/// or bad advice. The row's own response is registered before its
+/// contents, from where it was last drawn, so the box and buttons on it
+/// take their own clicks.
 fn finding_row(
-    app: &mut App,
+    app: &App,
     ui: &mut egui::Ui,
     finding: &Finding,
     tickable: bool,
-    tick: &mut Option<(String, bool)>,
+    ticks: &Ticks,
+    action: &mut Option<FindingAction>,
 ) {
     let palette = app.palette;
     let locale = app.locale;
-    let meta = finding_meta(app, finding);
+    let id = ui.id().with(("finding", &finding.id));
+    let previous = ui.ctx().data(|data| data.get_temp::<Rect>(id));
+    let row_response = previous.map(|rect| ui.interact(rect, id, Sense::click()));
+    let hovered = row_response.as_ref().is_some_and(|r| r.hovered())
+        || previous.is_some_and(|rect| ui.rect_contains_pointer(rect));
+    if let Some(rect) = previous
+        && hovered
+    {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS + 2),
+            palette.tint(0.04),
+        );
+    }
+    let verdict = ticks.verdict(&finding.id);
+    let chat_name = finding
+        .chat
+        .as_ref()
+        .and_then(|chat| app.chat(chat))
+        .map(|chat| chat.name.clone());
     let row = Frame::new()
-        .inner_margin(Margin::symmetric(4, 7))
+        .inner_margin(Margin::symmetric(8, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
+            ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 if tickable {
                     let (rect, response) =
-                        ui.allocate_exact_size(Vec2::splat(18.0), Sense::click());
-                    ui.painter().rect_stroke(
-                        rect,
-                        5.0,
-                        egui::Stroke::new(1.5, palette.dim),
-                        egui::StrokeKind::Inside,
+                        ui.allocate_exact_size(Vec2::splat(20.0), Sense::click());
+                    let over = response.hovered();
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        8.5,
+                        egui::Stroke::new(1.6, if over { palette.accent } else { palette.dim }),
                     );
-                    if response.hovered() {
+                    if over {
                         theme::icon(
-                            &mut ui.new_child(egui::UiBuilder::new().max_rect(rect)),
+                            &mut ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(3.0))),
                             Icon::Check,
                             14.0,
                             palette.accent,
                         );
                     }
                     if response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .on_hover_text(gettext(locale, "Mark as done"))
                         .clicked()
                     {
-                        *tick = Some((finding.id.clone(), true));
+                        *action = Some(FindingAction::Judge(finding.clone(), Verdict::Done));
                     }
+                } else {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+                    theme::icon(
+                        &mut ui.new_child(egui::UiBuilder::new().max_rect(rect)),
+                        Icon::Star,
+                        16.0,
+                        palette.warning,
+                    );
                 }
                 ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    let width = ui.available_width() - 30.0;
-                    ui.set_max_width(width.max(80.0));
+                    ui.spacing_mut().item_spacing.y = 5.0;
+                    ui.set_max_width((ui.available_width() - 64.0).max(120.0));
                     wrapped(ui, &finding.text, theme::regular(14.0), palette.text);
-                    let mut line = meta.clone();
-                    if let Some(due) = &finding.due {
-                        line = if line.is_empty() {
-                            due.clone()
-                        } else {
-                            format!("{line} · {due}")
-                        };
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                        if let Some(who) = &finding.who {
+                            chip(ui, who, palette.accent);
+                        }
+                        if let Some(name) = &chat_name {
+                            chip(ui, name, palette.secondary);
+                        }
+                        if let Some(since) = finding.since {
+                            let (label, color) = age_chip(app, since);
+                            chip(ui, &label, color);
+                        }
+                        if let Some(due) = &finding.due {
+                            chip(ui, &format!("⏰ {due}"), palette.warning);
+                        }
+                        match verdict {
+                            Some(Verdict::Good) => chip(ui, "👍", palette.accent),
+                            Some(Verdict::Bad) => chip(ui, "👎", palette.danger),
+                            _ => {}
+                        }
+                    });
+                });
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if !hovered {
+                        return;
                     }
-                    if !line.is_empty() {
-                        theme::text(ui, line, theme::regular(12.0), palette.dim);
+                    if theme::icon_button(
+                        ui,
+                        Icon::X,
+                        14.0,
+                        palette.dim,
+                        palette.text,
+                        &gettext(locale, "Dismiss"),
+                    )
+                    .clicked()
+                    {
+                        *action = Some(FindingAction::Judge(finding.clone(), Verdict::Dismissed));
+                    }
+                    if let Some(chat) = &finding.chat
+                        && theme::icon_button(
+                            ui,
+                            Icon::ExternalLink,
+                            14.0,
+                            palette.dim,
+                            palette.text,
+                            &gettext(locale, "Open the chat"),
+                        )
+                        .clicked()
+                    {
+                        *action = Some(FindingAction::Open(chat.clone()));
                     }
                 });
             });
         });
-    let rect = row.response.rect;
-    let response = ui.interact(rect, ui.id().with(("finding", &finding.id)), Sense::click());
-    if response.hovered() {
-        let close = Rect::from_center_size(
-            pos2(rect.right() - 14.0, rect.top() + 18.0),
-            Vec2::splat(22.0),
-        );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(close));
-        if theme::icon_button(
-            &mut child,
-            Icon::X,
-            14.0,
-            palette.dim,
-            palette.text,
-            &gettext(locale, "Dismiss"),
-        )
-        .clicked()
-        {
-            *tick = Some((finding.id.clone(), false));
-        }
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(id, row.response.rect));
+    if previous.is_none() {
+        ui.ctx().request_repaint();
     }
-    if response
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .clicked()
-        && let Some(chat) = &finding.chat
-    {
-        app.actions.push(Action::Open(Page::Chats));
-        app.actions.push(Action::OpenChat(chat.clone()));
+    if let Some(response) = row_response {
+        let done = gettext(locale, "Mark as done");
+        let dismiss = gettext(locale, "Dismiss");
+        let good = gettext(locale, "Good recommendation");
+        let bad = gettext(locale, "Bad recommendation");
+        let open = gettext(locale, "Open the chat");
+        let labels = [
+            done.as_ref(),
+            dismiss.as_ref(),
+            good.as_ref(),
+            bad.as_ref(),
+            open.as_ref(),
+        ];
+        egui::Popup::context_menu(&response)
+            .width(widgets::menu_width(ui, &labels, true))
+            .frame(widgets::menu_frame(&palette))
+            .show(|ui| {
+                let mut pick = |ui: &mut egui::Ui, icon, label: &str, verdict| {
+                    if widgets::menu_item(ui, &palette, Some(icon), label) {
+                        *action = Some(FindingAction::Judge(finding.clone(), verdict));
+                        ui.close();
+                    }
+                };
+                if tickable {
+                    pick(ui, Icon::Check, &done, Verdict::Done);
+                }
+                pick(ui, Icon::X, &dismiss, Verdict::Dismissed);
+                widgets::menu_separator(ui, &palette);
+                pick(ui, Icon::Heart, &good, Verdict::Good);
+                pick(ui, Icon::Ban, &bad, Verdict::Bad);
+                if let Some(chat) = &finding.chat {
+                    widgets::menu_separator(ui, &palette);
+                    if widgets::menu_item(ui, &palette, Some(Icon::ExternalLink), &open) {
+                        *action = Some(FindingAction::Open(chat.clone()));
+                        ui.close();
+                    }
+                }
+            });
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn findings_card(
-    app: &mut App,
+    app: &App,
     ui: &mut egui::Ui,
     icon: Icon,
     title: &str,
@@ -962,25 +1105,37 @@ fn findings_card(
     ticks: &Ticks,
     tickable: bool,
     empty: &str,
-    tick: &mut Option<(String, bool)>,
+    action: &mut Option<FindingAction>,
 ) {
     let palette = app.palette;
     let open: Vec<&Finding> = findings.iter().filter(|f| ticks.open(&f.id)).collect();
     let closed = findings.len() - open.len();
     card_frame(&palette).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        card_title(ui, &palette, icon, title, color, |ui| {
-            if closed > 0 {
-                theme::text(
-                    ui,
-                    gettext(app.locale, "{n} closed").replace("{n}", &closed.to_string()),
-                    theme::regular(12.0),
-                    palette.dim,
-                );
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, icon, 16.0, color);
+            theme::text(ui, title, theme::semibold(14.5), palette.text);
+            if !open.is_empty() {
+                chip(ui, &open.len().to_string(), color);
             }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if closed > 0 {
+                    theme::text(
+                        ui,
+                        gettext(app.locale, "{n} closed").replace("{n}", &closed.to_string()),
+                        theme::regular(12.0),
+                        palette.dim,
+                    );
+                }
+            });
         });
+        ui.add_space(4.0);
         if open.is_empty() {
-            theme::text(ui, empty, theme::regular(13.0), palette.dim);
+            ui.horizontal(|ui| {
+                theme::icon(ui, Icon::CircleCheck, 14.0, palette.dim);
+                theme::text(ui, empty, theme::regular(13.0), palette.dim);
+            });
         }
         for (index, finding) in open.iter().enumerate() {
             if index > 0 {
@@ -988,13 +1143,20 @@ fn findings_card(
                 let y = ui.cursor().top();
                 ui.painter().hline(x, y, palette.glass_edge());
             }
-            finding_row(app, ui, finding, tickable, tick);
+            finding_row(app, ui, finding, tickable, ticks, action);
         }
     });
     ui.add_space(12.0);
 }
 
-fn metric(ui: &mut egui::Ui, palette: &theme::Palette, label: &str, value: usize, alert: bool) {
+fn metric(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    icon: Icon,
+    label: &str,
+    value: usize,
+    color: Color32,
+) {
     Frame::new()
         .fill(card_fill(palette))
         .stroke(palette.glass_edge())
@@ -1003,16 +1165,16 @@ fn metric(ui: &mut egui::Ui, palette: &theme::Palette, label: &str, value: usize
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 2.0;
-            theme::text(ui, label, theme::regular(12.5), palette.secondary);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                theme::icon(ui, icon, 14.0, if value > 0 { color } else { palette.dim });
+                theme::text(ui, label, theme::regular(12.5), palette.secondary);
+            });
             theme::text(
                 ui,
                 value.to_string(),
-                theme::semibold(22.0),
-                if alert && value > 0 {
-                    palette.danger
-                } else {
-                    palette.text
-                },
+                theme::semibold(24.0),
+                if value > 0 { color } else { palette.dim },
             );
         });
 }
@@ -1032,7 +1194,7 @@ fn panel(
         return;
     };
     let open = |list: &[Finding]| list.iter().filter(|f| ticks.open(&f.id)).count();
-    let mut tick = None;
+    let mut action = None;
     let mut period = state.period;
     egui::ScrollArea::vertical()
         .id_salt(("project-panel", &project.id))
@@ -1042,187 +1204,107 @@ fn panel(
                 .inner_margin(Margin::symmetric(20, 16))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    // The numbers at a glance.
-                    ui.columns(4, |columns| {
-                        metric(
-                            &mut columns[0],
-                            &palette,
-                            gettext(locale, "To do").as_ref(),
-                            open(&analysis.todo),
-                            false,
-                        );
-                        metric(
-                            &mut columns[1],
-                            &palette,
-                            gettext(locale, "To follow up").as_ref(),
-                            open(&analysis.follow_up),
-                            false,
-                        );
-                        metric(
-                            &mut columns[2],
-                            &palette,
-                            gettext(locale, "Slipping").as_ref(),
-                            open(&analysis.leaks),
-                            true,
-                        );
-                        metric(
-                            &mut columns[3],
-                            &palette,
-                            gettext(locale, "New needs").as_ref(),
-                            open(&analysis.needs),
-                            false,
-                        );
-                    });
-                    ui.add_space(14.0);
-                    let left =
-                        |app: &mut App, ui: &mut egui::Ui, tick: &mut Option<(String, bool)>| {
-                            findings_card(
-                                app,
+                    // First what happened, then the numbers, then the work.
+                    card_frame(&palette).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            theme::icon(ui, Icon::Calendar, 16.0, palette.accent);
+                            theme::text(
                                 ui,
-                                Icon::ListChecks,
-                                gettext(locale, "To do · what we committed to").as_ref(),
+                                gettext(locale, "What happened"),
+                                theme::semibold(14.5),
                                 palette.text,
-                                &analysis.todo,
-                                ticks,
-                                true,
-                                gettext(locale, "Nothing pending.").as_ref(),
-                                tick,
                             );
-                            findings_card(
-                                app,
-                                ui,
-                                Icon::Clock,
-                                gettext(locale, "To follow up · waiting on others").as_ref(),
-                                palette.text,
-                                &analysis.follow_up,
-                                ticks,
-                                true,
-                                gettext(locale, "Nobody owes us an answer.").as_ref(),
-                                tick,
-                            );
-                            findings_card(
-                                app,
-                                ui,
-                                Icon::CircleAlert,
-                                gettext(locale, "Slipping").as_ref(),
-                                palette.danger,
-                                &analysis.leaks,
-                                ticks,
-                                true,
-                                gettext(locale, "Nothing is slipping.").as_ref(),
-                                tick,
-                            );
-                        };
-                    let mut right =
-                        |app: &mut App, ui: &mut egui::Ui, tick: &mut Option<(String, bool)>| {
-                            card_frame(&palette).show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                card_title(
-                                    ui,
-                                    &palette,
-                                    Icon::Calendar,
-                                    gettext(locale, "Summary").as_ref(),
-                                    palette.text,
-                                    |ui| {
-                                        let options = [
-                                            ("week", gettext(locale, "Week").into_owned()),
-                                            (
-                                                "yesterday",
-                                                gettext(locale, "Yesterday").into_owned(),
-                                            ),
-                                            ("today", gettext(locale, "Today").into_owned()),
-                                        ];
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        for (value, label) in options {
-                                            if widgets::filter_chip(
-                                                ui,
-                                                &palette,
-                                                &label,
-                                                0,
-                                                period == value,
-                                            )
-                                            .clicked()
-                                            {
-                                                period = value;
-                                            }
-                                        }
-                                    },
-                                );
-                                match analysis.summaries.get(period) {
-                                    Some(text) => {
-                                        wrapped(ui, text, theme::regular(14.0), palette.text)
-                                    }
-                                    None => {
-                                        theme::text(
-                                            ui,
-                                            gettext(locale, "Nothing happened in this period."),
-                                            theme::regular(13.0),
-                                            palette.dim,
-                                        );
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                for (value, label) in [
+                                    ("week", gettext(locale, "Week")),
+                                    ("yesterday", gettext(locale, "Yesterday")),
+                                    ("today", gettext(locale, "Today")),
+                                ] {
+                                    if widgets::filter_chip(ui, &palette, label.as_ref(), 0, period == value)
+                                        .clicked()
+                                    {
+                                        period = value;
                                     }
                                 }
                             });
-                            ui.add_space(12.0);
-                            findings_card(
-                                app,
-                                ui,
-                                Icon::Bell,
-                                gettext(locale, "Needs that came up").as_ref(),
-                                palette.text,
-                                &analysis.needs,
-                                ticks,
-                                true,
-                                gettext(locale, "No new needs.").as_ref(),
-                                tick,
-                            );
-                            findings_card(
-                                app,
-                                ui,
-                                Icon::Star,
-                                gettext(locale, "Messages worth reading").as_ref(),
-                                palette.text,
-                                &analysis.highlights,
-                                ticks,
-                                false,
-                                gettext(locale, "Nothing stands out.").as_ref(),
-                                tick,
-                            );
-                        };
+                        });
+                        ui.add_space(6.0);
+                        match analysis.summaries.get(period) {
+                            Some(text) => wrapped(ui, text, theme::regular(15.0), palette.text),
+                            None => {
+                                theme::text(
+                                    ui,
+                                    gettext(locale, "Nothing happened in this period."),
+                                    theme::regular(13.0),
+                                    palette.dim,
+                                );
+                            }
+                        }
+                    });
+                    ui.add_space(12.0);
+                    ui.columns(4, |columns| {
+                        metric(&mut columns[0], &palette, Icon::ListChecks, gettext(locale, "To do").as_ref(), open(&analysis.todo), palette.text);
+                        metric(&mut columns[1], &palette, Icon::Clock, gettext(locale, "To follow up").as_ref(), open(&analysis.follow_up), palette.warning);
+                        metric(&mut columns[2], &palette, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), open(&analysis.leaks), palette.danger);
+                        metric(&mut columns[3], &palette, Icon::Bell, gettext(locale, "New needs").as_ref(), open(&analysis.needs), palette.accent);
+                    });
+                    ui.add_space(12.0);
+                    let left = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>| {
+                        findings_card(app, ui, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), palette.danger, &analysis.leaks, ticks, true, gettext(locale, "Nothing is slipping.").as_ref(), action);
+                        findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &analysis.todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action);
+                        findings_card(app, ui, Icon::Clock, gettext(locale, "To follow up · waiting on others").as_ref(), palette.warning, &analysis.follow_up, ticks, true, gettext(locale, "Nobody owes us an answer.").as_ref(), action);
+                    };
+                    let right = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>| {
+                        findings_card(app, ui, Icon::Bell, gettext(locale, "Needs that came up").as_ref(), palette.accent, &analysis.needs, ticks, true, gettext(locale, "No new needs.").as_ref(), action);
+                        findings_card(app, ui, Icon::Star, gettext(locale, "Messages worth reading").as_ref(), palette.warning, &analysis.highlights, ticks, false, gettext(locale, "Nothing stands out.").as_ref(), action);
+                    };
                     if ui.available_width() >= TWO_COLUMNS {
                         let width = ui.available_width();
                         let gap = 14.0;
-                        let left_width = (width - gap) * 0.56;
+                        let left_width = (width - gap) * 0.58;
                         ui.horizontal_top(|ui| {
-                            ui.allocate_ui_with_layout(
-                                vec2(left_width, 0.0),
-                                Layout::top_down(Align::Min),
-                                |ui| left(app, ui, &mut tick),
-                            );
+                            ui.allocate_ui_with_layout(vec2(left_width, 0.0), Layout::top_down(Align::Min), |ui| {
+                                left(app, ui, &mut action)
+                            });
                             ui.add_space(gap);
-                            ui.allocate_ui_with_layout(
-                                vec2(width - left_width - gap, 0.0),
-                                Layout::top_down(Align::Min),
-                                |ui| right(app, ui, &mut tick),
-                            );
+                            ui.allocate_ui_with_layout(vec2(width - left_width - gap, 0.0), Layout::top_down(Align::Min), |ui| {
+                                note_card(app, ui, state, project);
+                                ui.add_space(12.0);
+                                right(app, ui, &mut action)
+                            });
                         });
                     } else {
-                        left(app, ui, &mut tick);
-                        right(app, ui, &mut tick);
+                        note_card(app, ui, state, project);
+                        ui.add_space(12.0);
+                        left(app, ui, &mut action);
+                        right(app, ui, &mut action);
                     }
+                    theme::text(
+                        ui,
+                        gettext(locale, "Right-click an item to mark it as a good or bad recommendation: the analysis learns from it."),
+                        theme::regular(12.0),
+                        palette.dim,
+                    );
                 });
         });
     state.period = period;
-    if let Some((id, done)) = tick {
-        let mut ticks = ticks.clone();
-        if done {
-            ticks.done.insert(id);
-        } else {
-            ticks.dismissed.insert(id);
+    match action {
+        Some(FindingAction::Judge(finding, verdict)) => {
+            let mut ticks = ticks.clone();
+            ticks.judge(&finding, verdict);
+            if let Err(error) = ticks.save(&app.dirs.config, &project.id) {
+                log::warn!("projects: ticks could not be saved: {error}");
+            }
+            state.analysis = None;
         }
-        if let Err(error) = ticks.save(&app.dirs.config, &project.id) {
-            log::warn!("projects: ticks could not be saved: {error}");
+        Some(FindingAction::Open(chat)) => {
+            app.actions.push(Action::Open(Page::Chats));
+            app.actions.push(Action::OpenChat(chat));
         }
-        state.analysis = None;
+        None => {}
     }
 }
 
@@ -1281,6 +1363,498 @@ fn no_analysis(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Pr
             }
         }
     });
+}
+
+// ------------------------------------------------------------ notes, context
+
+/// Writing or saying what happened: a call, what was solved, what was
+/// agreed. The note joins the project's journal and the panel is read
+/// again with it.
+fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    // A spoken note comes back as text to review before saving.
+    if let Some(result) = state
+        .spoken
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .take()
+    {
+        state.transcribing = false;
+        match result {
+            Ok(text) => {
+                if !state.note.trim().is_empty() {
+                    state.note.push(' ');
+                }
+                state.note.push_str(text.trim());
+            }
+            Err(error) => log::warn!("projects: a spoken note could not be read: {error}"),
+        }
+    }
+    let mut save = false;
+    card_frame(&palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, Icon::Pencil, 16.0, palette.accent);
+            theme::text(
+                ui,
+                gettext(locale, "Tell the project what happened"),
+                theme::semibold(14.5),
+                palette.text,
+            );
+        });
+        wrapped(
+            ui,
+            gettext(locale, "A call, what was solved, what you agreed to. It goes to the journal and the panel updates with it.").as_ref(),
+            theme::regular(12.5),
+            palette.secondary,
+        );
+        ui.add_space(6.0);
+        Frame::new()
+            .fill(palette.surface)
+            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::multiline(&mut state.note)
+                        .id(egui::Id::new(("project-note", &project.id)))
+                        .hint_text(gettext(locale, "Today I spoke with Diego: we confirmed 15 garments for Friday…").as_ref())
+                        .font(theme::regular(14.0))
+                        .frame(Frame::NONE)
+                        .desired_rows(2)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            if let Some(recorder) = &state.recorder {
+                let seconds = recorder.elapsed().as_secs();
+                ui.painter().circle_filled(
+                    ui.cursor().left_center() + vec2(6.0, 0.0),
+                    5.0,
+                    palette.danger,
+                );
+                ui.add_space(14.0);
+                theme::text(
+                    ui,
+                    format!("{}:{:02}", seconds / 60, seconds % 60),
+                    theme::medium(13.5),
+                    palette.text,
+                );
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                if pill_button(ui, &palette, gettext(locale, "Stop").as_ref(), true).clicked()
+                    && let Some(recorder) = state.recorder.take()
+                {
+                    match recorder.finish() {
+                        Ok(samples) => {
+                            state.transcribing = true;
+                            let wav = crate::projects::wav(&samples, 48_000);
+                            let engines = app.settings.media_engines.clone();
+                            let slot = state.spoken.clone();
+                            let ctx = ui.ctx().clone();
+                            let state_dir = app.dirs.state.clone();
+                            std::thread::spawn(move || {
+                                let file = std::env::temp_dir()
+                                    .join(format!("whatspro-note-{}.wav", std::process::id()));
+                                let result = std::fs::write(&file, wav)
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|()| crate::media_ai::speech(&engines, &state_dir, &file));
+                                let _ = std::fs::remove_file(&file);
+                                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+                                ctx.request_repaint();
+                            });
+                        }
+                        Err(error) => log::warn!("projects: recording failed: {error}"),
+                    }
+                }
+            } else if state.transcribing {
+                ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
+                theme::text(ui, gettext(locale, "Transcribing…"), theme::regular(13.0), palette.secondary);
+            } else if theme::icon_button(
+                ui,
+                Icon::Mic,
+                18.0,
+                palette.secondary,
+                palette.text,
+                &gettext(locale, "Say it"),
+            )
+            .clicked()
+            {
+                state.recorder = Some(crate::audio::Recorder::start(crate::backend::Waker::default()));
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !state.note.trim().is_empty()
+                    && pill_button(ui, &palette, gettext(locale, "Save note").as_ref(), true).clicked()
+                {
+                    save = true;
+                }
+                if engine::pending(&project.id) {
+                    theme::text(
+                        ui,
+                        gettext(locale, "Updating the panel…"),
+                        theme::regular(12.5),
+                        palette.secondary,
+                    );
+                }
+            });
+        });
+    });
+    if save {
+        let mut journal = Journal::load(&app.dirs.config, &project.id);
+        journal.add(&state.note, false);
+        if let Err(error) = journal.save(&app.dirs.config, &project.id) {
+            log::warn!("projects: the journal could not be saved: {error}");
+        }
+        state.note.clear();
+        engine::refresh(&project.id);
+    }
+}
+
+/// The journal: every note, newest first, under the box to add one.
+fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let mut notes = Journal::load(&app.dirs.config, &project.id);
+    let mut remove = None;
+    egui::ScrollArea::vertical()
+        .id_salt(("project-journal", &project.id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(Margin::symmetric(20, 16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width().min(760.0));
+                    note_card(app, ui, state, project);
+                    ui.add_space(14.0);
+                    if notes.notes.is_empty() {
+                        widgets::empty_state(
+                            ui,
+                            &palette,
+                            Icon::Pencil,
+                            gettext(locale, "No notes yet").as_ref(),
+                            gettext(locale, "What you tell the project helps it know what is done and what is new.").as_ref(),
+                        );
+                    }
+                    let mut day = String::new();
+                    for (index, note) in notes.notes.iter().enumerate().rev() {
+                        let label = crate::util::day_label(locale, note.at);
+                        if label != day {
+                            day_chip(ui, &palette, &label);
+                            day = label;
+                        }
+                        card_frame(&palette).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 6.0;
+                                theme::icon(
+                                    ui,
+                                    if note.spoken { Icon::Mic } else { Icon::Pencil },
+                                    13.0,
+                                    palette.dim,
+                                );
+                                theme::text(ui, crate::util::clock(note.at), theme::regular(12.0), palette.dim);
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if theme::icon_button(
+                                        ui,
+                                        Icon::Trash,
+                                        13.0,
+                                        palette.dim,
+                                        palette.text,
+                                        &gettext(locale, "Delete note"),
+                                    )
+                                    .clicked()
+                                    {
+                                        remove = Some(index);
+                                    }
+                                });
+                            });
+                            wrapped(ui, &note.text, theme::regular(14.0), palette.text);
+                        });
+                        ui.add_space(8.0);
+                    }
+                });
+        });
+    if let Some(index) = remove {
+        notes.notes.remove(index);
+        if let Err(error) = notes.save(&app.dirs.config, &project.id) {
+            log::warn!("projects: the journal could not be saved: {error}");
+        }
+        engine::refresh(&project.id);
+    }
+}
+
+/// People who may take part: the members of the project's groups first,
+/// then chats with one person.
+fn people(app: &App, project: &Project) -> Vec<(String, String, String)> {
+    let mut seen = HashSet::new();
+    let mut people = Vec::new();
+    for source in &project.sources {
+        if let Some(chat) = app.chat(&source.chat) {
+            for id in &chat.participants {
+                if seen.insert(id.clone()) {
+                    people.push((id.clone(), app.display_name(id), chat.name.clone()));
+                }
+            }
+        }
+    }
+    for chat in app.chats.iter().filter(|c| c.kind == ChatKind::Direct) {
+        if seen.insert(chat.id.clone()) {
+            people.push((chat.id.clone(), chat.name.clone(), String::new()));
+        }
+    }
+    people
+}
+
+/// Matches for `needle` among `people`, members first; a number typed in
+/// is offered as it is.
+fn suggestions(
+    project: &Project,
+    people: &[(String, String, String)],
+    needle: &str,
+) -> Vec<(String, String, String)> {
+    let needle = crate::util::search_key(needle.trim());
+    let mut found: Vec<(String, String, String)> = project
+        .members
+        .iter()
+        .filter(|m| needle.is_empty() || crate::util::search_key(&m.name).contains(&needle))
+        .map(|m| (m.id.clone(), m.name.clone(), m.role.clone()))
+        .collect();
+    for (id, name, hint) in people {
+        if found.len() >= 8 {
+            break;
+        }
+        let phone = id.split('@').next().unwrap_or("");
+        if !project.members.iter().any(|m| &m.id == id)
+            && (needle.is_empty()
+                || crate::util::search_key(name).contains(&needle)
+                || phone.contains(&needle))
+        {
+            found.push((id.clone(), name.clone(), hint.clone()));
+        }
+    }
+    let digits: String = needle.chars().filter(char::is_ascii_digit).collect();
+    if digits.len() >= 8 && !found.iter().any(|(id, _, _)| id.starts_with(&digits)) {
+        found.push((
+            format!("{digits}@s.whatsapp.net"),
+            format!("+{digits}"),
+            String::new(),
+        ));
+    }
+    found
+}
+
+/// What the project is about and who takes part, for the analysis. Typing
+/// @ in the text offers the members and the people of its chats.
+fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    if state
+        .context
+        .as_ref()
+        .is_none_or(|(id, _)| id != &project.id)
+    {
+        state.context = Some((project.id.clone(), project.context.clone()));
+    }
+    let people = people(app, project);
+    let mut draft = state
+        .context
+        .as_ref()
+        .map(|(_, text)| text.clone())
+        .unwrap_or_default();
+    let mut save_context = false;
+    let mut add: Option<Member> = None;
+    let mut remove = None;
+    let mut roles: Vec<(usize, String)> = Vec::new();
+    egui::ScrollArea::vertical()
+        .id_salt(("project-context", &project.id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(Margin::symmetric(20, 16))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width().min(760.0));
+                    card_frame(&palette).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            theme::icon(ui, Icon::Info, 16.0, palette.accent);
+                            theme::text(ui, gettext(locale, "About the project"), theme::semibold(14.5), palette.text);
+                        });
+                        wrapped(
+                            ui,
+                            gettext(locale, "What it is, how it is organized, who decides, what matters now. Mention people with @. The analysis reads this before the messages.").as_ref(),
+                            theme::regular(12.5),
+                            palette.secondary,
+                        );
+                        ui.add_space(6.0);
+                        Frame::new()
+                            .fill(palette.surface)
+                            .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::multiline(&mut draft)
+                                        .id(egui::Id::new(("project-context-text", &project.id)))
+                                        .hint_text(gettext(locale, "JAS is our embroidery shop. @Papá handles payments, @Liz and @Juan are on the machines. Orders come from Bordados JAS…").as_ref())
+                                        .font(theme::regular(14.0))
+                                        .frame(Frame::NONE)
+                                        .desired_rows(5)
+                                        .desired_width(f32::INFINITY),
+                                );
+                            });
+                        // @ at the end of the text: offer people to mention.
+                        let token = draft
+                            .rsplit(|c: char| c.is_whitespace())
+                            .next()
+                            .filter(|word| word.starts_with('@'))
+                            .map(|word| word.trim_start_matches('@').to_owned());
+                        if let Some(token) = token {
+                            ui.add_space(4.0);
+                            for (id, name, hint) in suggestions(project, &people, &token) {
+                                ui.horizontal(|ui| {
+                                    let label = if hint.is_empty() { name.clone() } else { format!("{name}  ·  {hint}") };
+                                    if ui
+                                        .add(egui::Button::new(egui::RichText::new(format!("@{label}")).font(theme::regular(13.5))).frame(false))
+                                        .clicked()
+                                    {
+                                        let cut = draft.len() - token.len() - 1;
+                                        draft.truncate(cut);
+                                        let first = name.split_whitespace().next().unwrap_or(&name).to_owned();
+                                        draft.push_str(&format!("@{first} "));
+                                        if !project.members.iter().any(|m| m.id == id) {
+                                            add = Some(Member { id: id.clone(), name: name.clone(), role: String::new() });
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if draft.trim() != project.context.trim()
+                                && pill_button(ui, &palette, gettext(locale, "Save context").as_ref(), true).clicked()
+                            {
+                                save_context = true;
+                            }
+                        });
+                    });
+                    ui.add_space(12.0);
+                    card_frame(&palette).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 8.0;
+                            theme::icon(ui, Icon::Users, 16.0, palette.accent);
+                            theme::text(ui, gettext(locale, "Members"), theme::semibold(14.5), palette.text);
+                            if !project.members.is_empty() {
+                                chip(ui, &project.members.len().to_string(), palette.accent);
+                            }
+                        });
+                        wrapped(
+                            ui,
+                            gettext(locale, "Saved contacts or any number, with their role. The analysis uses it to know who is who.").as_ref(),
+                            theme::regular(12.5),
+                            palette.secondary,
+                        );
+                        ui.add_space(6.0);
+                        for (index, member) in project.members.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                let (avatar, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
+                                widgets::paint_avatar(ui, &palette, avatar, &member.name, &member.id, None);
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    theme::text(ui, &member.name, theme::medium(14.0), palette.text);
+                                    let phone = member.id.split('@').next().unwrap_or("");
+                                    theme::text(ui, format!("+{phone}"), theme::regular(11.5), palette.dim);
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if theme::icon_button(ui, Icon::X, 14.0, palette.dim, palette.text, &gettext(locale, "Remove")).clicked() {
+                                        remove = Some(index);
+                                    }
+                                    // The role being typed is kept until the field
+                                    // is left, then saved.
+                                    let key = egui::Id::new(("role", &project.id, &member.id));
+                                    let mut role = ui
+                                        .ctx()
+                                        .data(|d| d.get_temp::<String>(key))
+                                        .unwrap_or_else(|| member.role.clone());
+                                    let field = ui.add(
+                                        egui::TextEdit::singleline(&mut role)
+                                            .hint_text(gettext(locale, "Role").as_ref())
+                                            .desired_width(200.0),
+                                    );
+                                    if field.lost_focus() {
+                                        ui.ctx().data_mut(|d| d.remove_temp::<String>(key));
+                                        if role != member.role {
+                                            roles.push((index, role));
+                                        }
+                                    } else if field.changed() {
+                                        ui.ctx().data_mut(|d| d.insert_temp(key, role));
+                                    }
+                                });
+                            });
+                            ui.add_space(4.0);
+                        }
+                        ui.add_space(4.0);
+                        let width = ui.available_width();
+                        widgets::search_field(
+                            ui,
+                            &palette,
+                            egui::Id::new(("member-search", &project.id)),
+                            &mut state.member_search,
+                            gettext(locale, "Add: a name or a number").as_ref(),
+                            width,
+                        );
+                        if !state.member_search.trim().is_empty() {
+                            for (id, name, hint) in suggestions(project, &people, &state.member_search) {
+                                if project.members.iter().any(|m| m.id == id) {
+                                    continue;
+                                }
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 10.0;
+                                    theme::text(ui, &name, theme::regular(14.0), palette.text);
+                                    if !hint.is_empty() {
+                                        theme::text(ui, &hint, theme::regular(12.0), palette.dim);
+                                    }
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if pill_button(ui, &palette, gettext(locale, "Add").as_ref(), false).clicked() {
+                                            add = Some(Member { id: id.clone(), name: name.clone(), role: String::new() });
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    });
+                });
+        });
+    let mut changed = false;
+    if let Some(project) = state.map.project_mut(&project.id) {
+        if save_context {
+            project.context = draft.trim().to_owned();
+            changed = true;
+        }
+        if let Some(member) = add {
+            project.members.push(member);
+            state.member_search.clear();
+            changed = true;
+        }
+        for (index, role) in roles {
+            if let Some(member) = project.members.get_mut(index) {
+                member.role = role.trim().to_owned();
+                changed = true;
+            }
+        }
+        if let Some(index) = remove {
+            project.members.remove(index);
+            changed = true;
+        }
+    }
+    state.context = Some((project.id.clone(), draft));
+    if changed {
+        save_map(app, state);
+        engine::refresh(&project.id);
+    }
 }
 
 // ----------------------------------------------------------------- messages
@@ -1552,6 +2126,10 @@ fn selection_bar(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
             }
         }
         save_map(app, state);
+        engine::refresh(&project.id);
+        if target != project.id {
+            engine::refresh(&target);
+        }
     }
 }
 
@@ -1823,14 +2401,17 @@ fn sources(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
         Some(SourceChange::Add(chat, mode)) => {
             state.map.add_source(&project.id, &chat, mode);
             save_map(app, state);
+            engine::refresh(&project.id);
         }
         Some(SourceChange::Mode(chat, mode)) => {
             state.map.add_source(&project.id, &chat, mode);
             save_map(app, state);
+            engine::refresh(&project.id);
         }
         Some(SourceChange::Remove(chat)) => {
             state.map.remove_source(&project.id, &chat);
             save_map(app, state);
+            engine::refresh(&project.id);
         }
         Some(SourceChange::Show(chat)) => {
             state.only_chat = Some(chat);
