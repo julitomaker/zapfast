@@ -16,6 +16,7 @@ pub mod backend;
 pub mod bidi;
 pub mod bridge;
 pub mod call_audio;
+pub mod call_library;
 pub mod call_tones;
 pub mod calls;
 pub mod camera;
