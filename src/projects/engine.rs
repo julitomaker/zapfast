@@ -315,6 +315,17 @@ Reglas:\n\
 - No inventes nada que no esté en los mensajes. Si algo ya se resolvió en un mensaje posterior, no lo pongas.\n\
 - Máximo 8 elementos por lista, los más importantes primero.";
 
+/// What a message says, with the speech or picture text read out of it on
+/// this computer.
+fn said(message: &FeedMessage) -> String {
+    match message.transcript.as_deref().map(str::trim) {
+        Some(transcript) if !transcript.is_empty() => {
+            format!("{} [transcripción: {transcript}]", message.text)
+        }
+        _ => message.text.clone(),
+    }
+}
+
 fn clip(text: &str) -> String {
     let flat = text.replace('\n', " ⏎ ");
     if flat.chars().count() > MAX_CHARS {
@@ -370,7 +381,7 @@ fn prompt(
             examples.push(format!(
                 "{} \"{}\"",
                 if pick.include { "SÍ va:" } else { "NO va:" },
-                clip(&message.text)
+                clip(&said(message))
             ));
         }
     }
@@ -401,7 +412,7 @@ fn prompt(
             stamp(message.timestamp),
             message.chat_name,
             who,
-            clip(&message.text)
+            clip(&said(message))
         ));
     }
     text
@@ -705,7 +716,19 @@ mod tests {
             text: text.into(),
             reply_to: None,
             edited: false,
+            transcript: None,
         }
+    }
+
+    #[test]
+    fn a_transcript_reaches_the_prompt() {
+        let mut voice = message("c@g.us", "v", 10, "Voice message");
+        voice.transcript = Some("mañana llega el cemento".into());
+        assert_eq!(
+            said(&voice),
+            "Voice message [transcripción: mañana llega el cemento]"
+        );
+        assert_eq!(said(&message("c@g.us", "t", 10, "hola")), "hola");
     }
 
     #[test]

@@ -593,6 +593,7 @@ mod tests {
             text: "x".into(),
             reply_to: None,
             edited: false,
+            transcript: None,
         }
     }
 

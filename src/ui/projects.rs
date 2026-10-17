@@ -1606,7 +1606,13 @@ fn feed_row(
             .clone()
             .unwrap_or_else(|| app.display_name(&message.sender))
     };
-    let text = app.resolve_mention_tokens(&message.text);
+    let mut text = app.resolve_mention_tokens(&message.text);
+    // Speech or picture text read on this computer (src/transcribe.rs).
+    if let Some(transcript) = message.transcript.as_deref().map(str::trim)
+        && !transcript.is_empty()
+    {
+        text = format!("{text}: «{transcript}»");
+    }
     let media = !matches!(message.kind.as_str(), "text" | "interactive");
     let mut toggled = false;
     let inner = Frame::new()
