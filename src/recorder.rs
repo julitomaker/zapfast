@@ -94,12 +94,28 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Starts recording `source` into `<state>/recordings/`.
+    /// Starts recording `source` into `<state>/recordings/`. A start that
+    /// fails leaves no partial files behind.
     pub fn start(state_dir: &Path, source: Source) -> Result<Self, String> {
+        let tracks = Arc::new(Mutex::new(Tracks::default()));
+        Self::start_with(state_dir, source, Arc::clone(&tracks)).inspect_err(|_| {
+            let tracks = std::mem::take(&mut *tracks.lock().unwrap_or_else(|p| p.into_inner()));
+            for track in [tracks.system, tracks.microphone].into_iter().flatten() {
+                let path = track.path.clone();
+                drop(track);
+                let _ = std::fs::remove_file(path);
+            }
+        })
+    }
+
+    fn start_with(
+        state_dir: &Path,
+        source: Source,
+        tracks: Arc<Mutex<Tracks>>,
+    ) -> Result<Self, String> {
         let folder = state_dir.join("recordings");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
         let stamp = jiff::Timestamp::now().as_second();
-        let tracks = Arc::new(Mutex::new(Tracks::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let mut recording = Self {
             started: Instant::now(),
