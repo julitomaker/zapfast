@@ -1235,9 +1235,9 @@ pub fn bubble_shape(
 /// The text size Messages lays its balloons out for on the Mac: ChatKit's
 /// `CKUIBehaviorMac.balloonTextFont` is the 13 pt system font.
 pub const MESSAGES_TEXT_SIZE: f32 = 13.0;
-/// The size of a message's text in ZapFast, every theme alike.
+/// The size of a message's text in Whats Pro, every theme alike.
 pub const MESSAGE_TEXT_SIZE: f32 = 14.5;
-/// How much larger than Messages' own a ZapFast balloon is drawn: its
+/// How much larger than Messages' own a Whats Pro balloon is drawn: its
 /// geometry keeps Apple's proportions to the text it holds.
 pub const MESSAGES_SCALE: f32 = MESSAGE_TEXT_SIZE / MESSAGES_TEXT_SIZE;
 
@@ -1348,7 +1348,7 @@ pub mod balloon {
     /// The tallest balloon still drawn as a single line. Messages picks the
     /// image by its line count: one line of its 13 pt text is 29.3 points
     /// high with the 7 point insets above and below it
-    /// (`CKUIBehaviorMac.textBalloonPillContentInsets`), two are 44.6; ZapFast
+    /// (`CKUIBehaviorMac.textBalloonPillContentInsets`), two are 44.6; Whats Pro
     /// splits the difference.
     pub const SINGLE_LINE_MAX: f32 = 37.0;
 }
@@ -2311,7 +2311,7 @@ mod tests {
 
     /// The balloon grows with the text it holds: at twice the scale, a body
     /// twice the size has a tail reaching twice as far and four times the
-    /// area. ZapFast's scale is its text size over Messages' 13 points.
+    /// area. Whats Pro's scale is its text size over Messages' 13 points.
     #[test]
     fn messages_balloons_scale_with_text_size() {
         assert_eq!(MESSAGES_SCALE, MESSAGE_TEXT_SIZE / MESSAGES_TEXT_SIZE);

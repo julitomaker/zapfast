@@ -957,13 +957,13 @@ fn invite_error(error: &str) -> String {
 /// unconfirmed. A healthy sync answers well within this.
 const PRIVACY_GRACE: Duration = Duration::from_secs(10);
 
-/// How long ZapFast stays "available" after the window loses focus.
+/// How long Whats Pro stays "available" after the window loses focus.
 const PRESENCE_LINGER: Duration = Duration::from_secs(10);
 
 /// The window owns every presence transition (#461). Left at the default
 /// `Automatic` policy, the client announces "available" whenever it connects
 /// or the push name syncs, so an account whose window sits in the tray still
-/// shows online and the phone holds back its own notifications. ZapFast
+/// shows online and the phone holds back its own notifications. Whats Pro
 /// announces through `Command::SetOnline` instead.
 ///
 /// Public so the integration test in `tests/presence.rs` drives the same
@@ -1201,7 +1201,7 @@ struct Worker {
     favorites_pushing: bool,
     /// More favorite changes arrived while a push was running.
     favorites_again: bool,
-    /// The phone's favorites from before ZapFast followed them were replayed.
+    /// The phone's favorites from before Whats Pro followed them were replayed.
     favorites_recovered: bool,
     /// That replay is running.
     favorites_recovering: bool,
@@ -3327,7 +3327,7 @@ impl Worker {
             }
             E::ClientOutdated(_) => {
                 self.set_status(LinkStatus::Failed(
-                    "WhatsApp rejected this version of ZapFast. Update the app".to_owned(),
+                    "WhatsApp rejected this version of Whats Pro. Update the app".to_owned(),
                 ));
             }
             E::Messages(batch) => {
@@ -5897,7 +5897,7 @@ impl Worker {
         if let Some(chat) = destination
             && !self.destination_writable(chat)
         {
-            let error = "This conversation is read-only in ZapFast".to_owned();
+            let error = "This conversation is read-only in Whats Pro".to_owned();
             if matches!(&command, Command::CreatePoll { .. }) {
                 self.emit(Event::PollCreated {
                     chat: chat.clone(),
@@ -6866,7 +6866,7 @@ impl Worker {
                 let Some(client) = self.client.clone() else {
                     self.emit(Event::InvitePreview {
                         code,
-                        result: Err("ZapFast is not connected to WhatsApp".to_owned()),
+                        result: Err("Whats Pro is not connected to WhatsApp".to_owned()),
                     });
                     return;
                 };
@@ -6895,7 +6895,7 @@ impl Worker {
                 let Some(client) = self.client.clone() else {
                     self.emit(Event::InviteJoined {
                         code,
-                        result: Err("ZapFast is not connected to WhatsApp".to_owned()),
+                        result: Err("Whats Pro is not connected to WhatsApp".to_owned()),
                     });
                     return;
                 };
@@ -7179,7 +7179,7 @@ impl Worker {
                         // The phone has cleared it; say so rather than leave
                         // the messages here looking as if nothing happened.
                         self.emit(Event::Error(
-                            "The phone cleared this chat, but ZapFast could not clear it here"
+                            "The phone cleared this chat, but Whats Pro could not clear it here"
                                 .to_owned(),
                         ));
                     }
@@ -8174,7 +8174,7 @@ impl Worker {
             self.emit_chat(&job.0);
             if !reported_read_only {
                 self.emit(Event::Error(
-                    "This conversation is read-only in ZapFast".to_owned(),
+                    "This conversation is read-only in Whats Pro".to_owned(),
                 ));
                 reported_read_only = true;
             }
@@ -9584,7 +9584,7 @@ impl Worker {
                 }
             }
             Err(_) => self.emit(Event::Error(
-                "WhatsApp accepted the deletion, but ZapFast could not remove its copy. Local cleanup is saved for restart or reconnect".to_owned(),
+                "WhatsApp accepted the deletion, but Whats Pro could not remove its copy. Local cleanup is saved for restart or reconnect".to_owned(),
             )),
         }
     }
@@ -14268,7 +14268,7 @@ mod tests {
         client
             .persistence_manager()
             .process_command(whatsapp_rust::store::commands::DeviceCommand::SetPushName(
-                "ZapFast".to_owned(),
+                "Whats Pro".to_owned(),
             ))
             .await;
         worker.client = Some(client);
@@ -16320,7 +16320,7 @@ mod receipt_tests {
         assert_eq!(id, "allowed");
         assert_eq!(job.0, PEER);
         let errors = std::iter::from_fn(|| events.try_recv().ok())
-            .filter(|event| matches!(event, Event::Error(reason) if reason == "This conversation is read-only in ZapFast"))
+            .filter(|event| matches!(event, Event::Error(reason) if reason == "This conversation is read-only in Whats Pro"))
             .count();
         assert_eq!(errors, 1, "skipped jobs report one error per advance");
         assert_eq!(
@@ -18981,7 +18981,7 @@ mod receipt_tests {
         let archived = |worker: &Worker| worker.archive.chat(PEER).unwrap().unwrap().archived;
         worker.store_message(incoming("before", 100), None, None);
         worker.archive.set_archived_at(PEER, true, 200_000).unwrap();
-        // Kept archived, the default, as ZapFast always behaved.
+        // Kept archived, the default, as Whats Pro always behaved.
         worker.store_message(incoming("kept", 300), None, None);
         assert!(archived(&worker));
 

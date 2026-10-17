@@ -6,7 +6,7 @@
 //! second, for as long as the stream lived, and rodio's default error callback
 //! printed each one to stderr. cpal 0.18 recovers that one, but a backend that
 //! repeats an error must still not hold a core or fill the log, so every
-//! stream ZapFast opens reports to a [`Health`] instead. It logs the first error and then a count at most every
+//! stream Whats Pro opens reports to a [`Health`] instead. It logs the first error and then a count at most every
 //! [`LOG_EVERY`], and once errors arrive faster than a working stream reports
 //! them it marks the stream failed and slows the audio thread down, until the
 //! stream's owner sees [`Health::failed`], drops it and opens another.

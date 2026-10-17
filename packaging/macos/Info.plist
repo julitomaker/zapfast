@@ -2,10 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>ZapFast Julito</string>
-    <key>CFBundleDisplayName</key><string>ZapFast Julito</string>
+    <key>CFBundleName</key><string>Whats Pro</string>
+    <key>CFBundleDisplayName</key><string>Whats Pro</string>
     <!-- Fork: its own identity, so macOS keeps its notifications, keychain
-         access and permissions apart from ZapFast's. -->
+         access and permissions apart from Whats Pro's. -->
     <key>CFBundleIdentifier</key><string>com.julitomaker.zapfast</string>
     <key>CFBundleExecutable</key><string>zapfast</string>
     <key>CFBundleIconFile</key><string>zapfast</string>
@@ -15,8 +15,8 @@
     <key>LSMinimumSystemVersion</key><string>11.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.social-networking</string>
     <key>NSHighResolutionCapable</key><true/>
-    <key>NSMicrophoneUsageDescription</key><string>ZapFast uses the microphone for calls and for the voice messages you choose to send.</string>
-    <key>NSCameraUsageDescription</key><string>ZapFast uses the camera for the video calls you make and answer.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Whats Pro uses the microphone for calls and for the voice messages you choose to send.</string>
+    <key>NSCameraUsageDescription</key><string>Whats Pro uses the camera for the video calls you make and answer.</string>
     <key>NSHumanReadableCopyright</key><string>© 2026 Carmine Paolino. Not affiliated with WhatsApp or Meta.</string>
 </dict>
 </plist>

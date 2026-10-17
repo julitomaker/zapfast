@@ -5601,7 +5601,7 @@ mod tests {
             .filter_map(|(_, node)| node.label().or_else(|| node.value()))
             .collect();
         assert!(
-            labels.contains(&"Locked chats are read-only in ZapFast"),
+            labels.contains(&"Locked chats are read-only in Whats Pro"),
             "{labels:?}"
         );
         assert!(!labels.contains(&"admins"));
@@ -6157,7 +6157,7 @@ mod tests {
         }
     }
 
-    /// With the title bar ZapFast draws on Windows and Linux, no header
+    /// With the title bar Whats Pro draws on Windows and Linux, no header
     /// control lies under the caption buttons, at either end of the top edge
     /// and in each layout: GNOME's buttons at the right or the left, and
     /// Windows' taller row. Headers that reach a corner leave the buttons
@@ -16258,7 +16258,7 @@ mod tests {
         );
     }
 
-    /// A video sent before ZapFast made thumbnails has none. With its file
+    /// A video sent before Whats Pro made thumbnails has none. With its file
     /// here it still shows as a video; only without either is it a file card.
     #[test]
     fn a_video_without_a_thumbnail_shows_from_its_file() {
@@ -17008,7 +17008,7 @@ mod bubble_detail_tests {
 
     /// The `bubbles` page in both Messages palettes: every message of the
     /// sample is drawn, and only each run's last balloon curls a tail out of
-    /// its side, as far as Apple's reaches at ZapFast's text size; a lone
+    /// its side, as far as Apple's reaches at Whats Pro's text size; a lone
     /// photo leaves the tail to the balloon after it. All of it fits a 1280
     /// by 800 window.
     #[test]

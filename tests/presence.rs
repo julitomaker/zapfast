@@ -46,7 +46,7 @@ async fn zapfast_bots_leave_presence_to_the_window() {
     // missing push name.
     client
         .persistence_manager()
-        .process_command(DeviceCommand::SetPushName("ZapFast".to_owned()))
+        .process_command(DeviceCommand::SetPushName("Whats Pro".to_owned()))
         .await;
     for online in [true, false] {
         let presence = client.presence();

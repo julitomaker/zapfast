@@ -1,4 +1,4 @@
-//! ZapFast internals exposed for diagnostics and tests.
+//! Whats Pro internals exposed for diagnostics and tests.
 
 pub mod account;
 pub mod animation;

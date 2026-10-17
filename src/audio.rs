@@ -56,8 +56,8 @@ impl Output {
 /// errors to `health` (#507).
 ///
 /// rodio reports the sink's drop and every stream error through `stderr` by
-/// default. A desktop launch can have that closed: ZapFast inherits `stderr`
-/// from whatever started it, and that process can exit while ZapFast runs on.
+/// default. A desktop launch can have that closed: Whats Pro inherits `stderr`
+/// from whatever started it, and that process can exit while Whats Pro runs on.
 /// Rust ignores `SIGPIPE`, so the next write there fails with `Broken pipe`
 /// and the print macro panics, which aborts the whole app in a release build.
 /// Keep it off, and report failures of our own through the log instead.

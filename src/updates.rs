@@ -3,7 +3,7 @@
 //! The crate checks for a newer release, refuses package-managed copies,
 //! downloads and verifies the update against the publisher signature, and
 //! hands it to a helper that installs it and rolls back if it does not start.
-//! ZapFast keeps its names, its key, its proxy and its interface.
+//! Whats Pro keeps its names, its key, its proxy and its interface.
 
 pub use fastframe_update::{
     CHECK_INTERVAL, DownloadState, Installation, Kind, Prepared, Release, Source, Unsupported,
@@ -15,7 +15,7 @@ use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 /// it never checks for or downloads updates. Pull upstream changes with git.
 pub const ENABLED: bool = false;
 
-/// ZapFast's releases and the names its installations have had.
+/// Whats Pro's releases and the names its installations have had.
 pub const CONFIG: UpdateConfig = UpdateConfig {
     // Cask and bundle names from before the rename. This also accepts
     // fastsapp-* marker files and `fastsapp <version>` answers, which no
@@ -32,7 +32,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     additional_publisher_keys: &[include_str!("../assets/update-public-key-next.hex")],
     ..UpdateConfig::new(
         "crmne/zapfast",
-        "ZapFast",
+        "Whats Pro",
         "zapfast",
         env!("CARGO_PKG_VERSION"),
     )

@@ -314,7 +314,7 @@ impl Notifications {
 const RECEIVE: &[u8] = include_bytes!("../assets/sounds/receive.wav");
 const ALERT: &[u8] = include_bytes!("../assets/sounds/alert.wav");
 
-/// Whether the notification itself plays the sound, instead of ZapFast. On
+/// Whether the notification itself plays the sound, instead of Whats Pro. On
 /// macOS a sound the notification plays is silenced along with the banner by
 /// Do Not Disturb, Focus, and the app's notification settings, so Pidgin's
 /// sounds go with it when the application bundle carries them.
@@ -396,7 +396,7 @@ impl<T: std::io::Read + std::io::Seek + Send + Sync> ReadSeek for T {}
 /// ("Type a message").
 pub fn locked_lines(locale: crate::i18n::Locale) -> (String, String) {
     (
-        "ZapFast".to_owned(),
+        "Whats Pro".to_owned(),
         // Translators: the body of a notification that hides who wrote and
         // what: a message has arrived.
         crate::i18n::pgettext(locale, "notification", "New message").into_owned(),
@@ -414,7 +414,7 @@ pub fn lines(chat_name: &str, is_group: bool, sender: &str, summary: &str) -> (S
 }
 
 /// Fastframe owns the platform adapters and one bounded native worker. This
-/// thread only keeps ZapFast's account-scoped cancellation and click routing.
+/// thread only keeps Whats Pro's account-scoped cancellation and click routing.
 #[expect(clippy::too_many_arguments)]
 fn deliver(
     title: &str,
@@ -754,7 +754,7 @@ mod tests {
         let mut notifications = Notifications::default();
         notifications.show(
             "Ada Lovelace".into(),
-            "A test from ZapFast, with a picture".into(),
+            "A test from Whats Pro, with a picture".into(),
             picture,
             NotificationSound::System,
             NotificationTarget {

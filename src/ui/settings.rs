@@ -217,7 +217,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     let palette = app.palette;
     let locale = app.locale;
-    // The caption buttons ZapFast draws, beside the column's title row when
+    // The caption buttons Whats Pro draws, beside the column's title row when
     // it reaches the top-right corner, or above it when the window is narrow.
     // Measured where the row stands unscrolled, so scrolling moves it away.
     let page = ui.max_rect();
@@ -305,7 +305,7 @@ const COLUMN_WIDTH: f32 = 640.0;
 const SIDE_MARGIN: f32 = 32.0;
 /// Space above and below the settings column.
 const TOP_MARGIN: f32 = 24.0;
-/// What the title row needs beside the caption buttons ZapFast draws: Back
+/// What the title row needs beside the caption buttons Whats Pro draws: Back
 /// and the title.
 const TITLE_MIN_CONTENT: f32 = 220.0;
 
@@ -415,13 +415,13 @@ fn sections(app: &App) -> Vec<Section> {
         },
     );
     appearance.row(translated(locale, "Language"), "", language_picker);
-    // macOS keeps its own traffic lights over ZapFast's headers.
+    // macOS keeps its own traffic lights over Whats Pro's headers.
     if cfg!(any(windows, target_os = "linux")) {
         appearance.row(
             translated(locale, "Custom title bar"),
             translated(
                 locale,
-                "Draw ZapFast's own title bar and window buttons instead of the desktop's.",
+                "Draw Whats Pro's own title bar and window buttons instead of the desktop's.",
             ),
             custom_titlebar_switch,
         );
@@ -597,7 +597,7 @@ fn sections(app: &App) -> Vec<Section> {
     let note = if app.account_privacy.fetch_failed {
         Some(crate::i18n::gettext(
             locale,
-            "Could not load your account privacy. Trying again when ZapFast reconnects.",
+            "Could not load your account privacy. Trying again when Whats Pro reconnects.",
         ))
     } else if !app.is_connected() {
         Some(crate::i18n::gettext(
@@ -685,7 +685,7 @@ fn sections(app: &App) -> Vec<Section> {
         translated(locale, "Check for updates"),
         translated(
             locale,
-            "Asks GitHub once a day, sending only the ZapFast version.",
+            "Asks GitHub once a day, sending only the Whats Pro version.",
         ),
         |settings| &mut settings.check_for_updates,
     );
@@ -693,7 +693,7 @@ fn sections(app: &App) -> Vec<Section> {
         translated(locale, "Download updates automatically"),
         translated(
             locale,
-            "You still choose when to restart. Package managers and Flatpak update ZapFast themselves.",
+            "You still choose when to restart. Package managers and Flatpak update Whats Pro themselves.",
         ),
         |settings| &mut settings.download_updates_automatically,
     );
@@ -869,7 +869,7 @@ fn sections(app: &App) -> Vec<Section> {
     let mut about_section = Section::new(translated(locale, "About"));
     about_section.block(
         vec![
-            "ZapFast".into(),
+            "Whats Pro".into(),
             translated(locale, "Keyboard shortcuts"),
             translated(locale, "Source code"),
         ],
@@ -888,7 +888,7 @@ fn sections(app: &App) -> Vec<Section> {
     ]
 }
 
-/// The app lock: a password, how long ZapFast may go unused, and the form
+/// The app lock: a password, how long Whats Pro may go unused, and the form
 /// that sets, changes, or removes the password.
 fn app_lock_rows(app: &App, privacy: &mut Section) {
     use crate::app_lock::FormMode;
@@ -934,7 +934,7 @@ fn app_lock_rows(app: &App, privacy: &mut Section) {
             translated(locale, "Lock after"),
             keyed(translated(
                 locale,
-                "Time without using ZapFast, also counted while it is in the tray. Ctrl+Shift+L locks it at once.",
+                "Time without using Whats Pro, also counted while it is in the tray. Ctrl+Shift+L locks it at once.",
             )),
             move |ui, app| {
                 let selected = app.settings.app_lock_after;
@@ -1778,7 +1778,7 @@ fn profile_field(
     response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
 }
 
-/// The version, links to more about ZapFast, and who made it.
+/// The version, links to more about Whats Pro, and who made it.
 fn about(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     ui.horizontal(|ui| {
@@ -1788,7 +1788,7 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
         ui.vertical(|ui| {
             theme::text(
                 ui,
-                format!("ZapFast {}", env!("CARGO_PKG_VERSION")),
+                format!("Whats Pro {}", env!("CARGO_PKG_VERSION")),
                 theme::semibold(16.0),
                 palette.text,
             );

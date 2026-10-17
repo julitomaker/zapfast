@@ -32,7 +32,7 @@ pub enum Script {
     /// The 41-second launch tour: search, replies, GIFs, stickers, themes.
     #[default]
     Launch,
-    /// What ZapFast 0.16 added, about 90 seconds.
+    /// What Whats Pro 0.16 added, about 90 seconds.
     WhatsNew,
 }
 

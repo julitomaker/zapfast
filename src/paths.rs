@@ -1,4 +1,4 @@
-//! Where ZapFast keeps its files.
+//! Where Whats Pro keeps its files.
 //!
 //! Configuration, session state, and caches use separate standard platform
 //! directories. Clearing a cache does not remove device keys.
@@ -18,13 +18,13 @@ pub struct AppDirs {
     pub runtime: PathBuf,
 }
 
-/// This fork's folder name. It differs from ZapFast's so the fork keeps its
+/// This fork's folder name. It differs from Whats Pro's so the fork keeps its
 /// own linked device, archive, keyring entry and single-instance slot, and
 /// both apps can be installed side by side.
 pub const APP_NAME: &str = "zapfast-julito";
 
 /// The name shown for this fork: window, notifications, linked device.
-pub const APP_TITLE: &str = "ZapFast Julito";
+pub const APP_TITLE: &str = "Whats Pro";
 
 impl AppDirs {
     pub fn discover() -> Self {
@@ -200,7 +200,7 @@ impl AppDirs {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!(
-                    "{} holds a single-account setup, but {} already exists. Nothing was moved; move one of them away and start ZapFast again",
+                    "{} holds a single-account setup, but {} already exists. Nothing was moved; move one of them away and start Whats Pro again",
                     self.state.display(),
                     blocked[0].display()
                 ),
@@ -266,7 +266,7 @@ impl AppDirs {
         self.state.join("stickers")
     }
 
-    /// ZapFast's copy of the chosen chat wallpaper image. User data, so it
+    /// Whats Pro's copy of the chosen chat wallpaper image. User data, so it
     /// sits beside saved stickers rather than in the cache.
     pub fn wallpaper_file(&self, extension: &str) -> PathBuf {
         self.state.join(format!("wallpaper.{extension}"))
@@ -352,7 +352,7 @@ impl AccountDirs {
         self.state.join("stickers")
     }
 
-    /// ZapFast's copy of the chosen chat wallpaper image for this account.
+    /// Whats Pro's copy of the chosen chat wallpaper image for this account.
     pub fn wallpaper_file(&self, extension: &str) -> PathBuf {
         self.state.join(format!("wallpaper.{extension}"))
     }

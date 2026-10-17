@@ -500,7 +500,7 @@ fn drop_target(app: &mut App, ctx: &egui::Context) {
 }
 
 /// Connection and history-sync banner.
-/// What the banner needs beside the caption buttons ZapFast draws: its line
+/// What the banner needs beside the caption buttons Whats Pro draws: its line
 /// and a button.
 const BANNER_MIN_CONTENT: f32 = 320.0;
 
@@ -522,7 +522,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui) {
             let update = update.as_ref().expect("checked above");
             (
                 Icon::Info,
-                format!("ZapFast {} is available", update.version),
+                format!("Whats Pro {} is available", update.version),
                 palette.accent,
                 false,
                 Some(update.url.clone()),
@@ -568,7 +568,7 @@ fn banner(app: &mut App, ui: &mut egui::Ui) {
         .show(ui, |ui| {
             // Over a page with no header (Settings, or no chat open) the
             // banner takes the top-right corner from the caption buttons
-            // ZapFast draws, beside them or under them.
+            // Whats Pro draws, beside them or under them.
             let room = caption_room(ui.ctx(), ui.max_rect(), BANNER_MIN_CONTENT);
             caption_drag(ui, ui.max_rect().with_max_y(ui.max_rect().top() + room.top));
             ui.add_space(room.top);
@@ -745,7 +745,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
 
 /// Draggable space across the top of the linking and lock screens, which
 /// have no header: for the macOS traffic lights, or for the caption buttons
-/// ZapFast draws.
+/// Whats Pro draws.
 fn titlebar_strip(app: &App, ui: &mut egui::Ui) {
     let linked = app.is_linked() && !app.app_lock.is_locked();
     if linked {
@@ -780,7 +780,7 @@ pub fn titlebar_drag(ui: &mut egui::Ui, rect: egui::Rect) {
     fastframe_titlebar::drag(ui, rect);
 }
 
-/// Makes `rect` drag the window while ZapFast draws the title bar, for the
+/// Makes `rect` drag the window while Whats Pro draws the title bar, for the
 /// places macOS leaves to its own title bar strip: the pages, the panels at
 /// the right, and the screens over the window. Call it before the widgets
 /// inside `rect`, so they keep their clicks.
@@ -790,7 +790,7 @@ pub(crate) fn caption_drag(ui: &mut egui::Ui, rect: egui::Rect) {
     }
 }
 
-/// Where a header's own widgets go beside the caption buttons ZapFast draws
+/// Where a header's own widgets go beside the caption buttons Whats Pro draws
 /// (see [`caption_room`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct CaptionRoom {
@@ -804,7 +804,7 @@ pub(crate) struct CaptionRoom {
 }
 
 /// The room a header laid out in `rect` leaves for the caption buttons
-/// ZapFast draws over the window's top corners. Only a header that reaches
+/// Whats Pro draws over the window's top corners. Only a header that reaches
 /// a corner shares it: the buttons' room at that end, less what already
 /// separates the header from the window's edge. A header whose own widgets
 /// need `min_content` beside the buttons and do not get it goes under them
@@ -842,7 +842,7 @@ pub(crate) fn caption_room(ctx: &egui::Context, rect: egui::Rect, min_content: f
     }
 }
 
-/// The caption buttons ZapFast draws, over the window's top corners and
+/// The caption buttons Whats Pro draws, over the window's top corners and
 /// above everything else in it, and the resizable edges, while the custom
 /// title bar is on (Windows and Linux).
 fn window_chrome(app: &App, ui: &mut egui::Ui) {

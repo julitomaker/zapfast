@@ -658,8 +658,8 @@ pub const SHORTCUTS: &[(&str, &str)] = &[
     ("Ctrl+0", "Reset zoom"),
     ("← / →", "Previous / next item in the media viewer"),
     ("? / Ctrl+/", "Keyboard shortcuts (? when not typing)"),
-    ("Ctrl+Shift+L", "Lock ZapFast (with an app lock password)"),
-    ("Ctrl+W", "Close the window (ZapFast remains in the tray)"),
+    ("Ctrl+Shift+L", "Lock Whats Pro (with an app lock password)"),
+    ("Ctrl+W", "Close the window (Whats Pro remains in the tray)"),
     ("Ctrl+Q", "Quit"),
 ];
 
