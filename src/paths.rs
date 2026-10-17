@@ -18,9 +18,17 @@ pub struct AppDirs {
     pub runtime: PathBuf,
 }
 
+/// This fork's folder name. It differs from ZapFast's so the fork keeps its
+/// own linked device, archive, keyring entry and single-instance slot, and
+/// both apps can be installed side by side.
+pub const APP_NAME: &str = "zapfast-julito";
+
+/// The name shown for this fork: window, notifications, linked device.
+pub const APP_TITLE: &str = "ZapFast Julito";
+
 impl AppDirs {
     pub fn discover() -> Self {
-        match Self::of("zapfast") {
+        match Self::of(APP_NAME) {
             Some(dirs) => dirs,
             None => {
                 let fallback = std::env::current_dir().unwrap_or_default();

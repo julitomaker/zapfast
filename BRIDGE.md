@@ -7,7 +7,7 @@ send, delete, or mark anything read.
 - Listens on `127.0.0.1:47120` only, `GET` only, and refuses other `Host` names.
 - Every request needs `Authorization: Bearer <token>`.
 - Port and token are in `bridge.json` in the config folder
-  (`~/Library/Application Support/me.paolino.zapfast/bridge.json` on macOS),
+  (`~/Library/Application Support/me.paolino.zapfast-julito/bridge.json` on macOS),
   created with mode 0600 on first run. Set `"enabled": false` to turn it off.
 - Uses its own query-only SQLCipher connection, keyed from the OS keyring.
 - Locked chats are never served.
@@ -28,7 +28,7 @@ Each message: `chat`, `chat_name`, `id`, `sender`, `sender_name`, `from_me`,
 `timestamp`, `kind`, `text`, `reply_to`, `edited`.
 
 ```sh
-TOKEN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/Library/Application Support/me.paolino.zapfast/bridge.json')))['token'])")
+TOKEN=$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/Library/Application Support/me.paolino.zapfast-julito/bridge.json')))['token'])")
 curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:47120/messages?since=$(( $(date +%s) - 86400 ))"
 ```
 
@@ -36,8 +36,15 @@ curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:47120/messages?since=$(
 
 ```sh
 cargo build --release --locked
-packaging/macos/bundle.sh target/release/zapfast ~/Applications/"ZapFast Julito.app" 0.19.0
+packaging/macos/bundle-julito.sh
 ```
+
+The fork has its own identity (`paths::APP_NAME`, bundle id
+`com.julitomaker.zapfast`): its own folders, linked device, archive and
+keyring entry, so it runs beside ZapFast. It asks for WhatsApp's full
+history backfill (365 days) when linking. `bundle-julito.sh` takes the app
+icon and message sound from the local WhatsApp installation, never from
+this repository.
 
 Each rebuild has a new ad-hoc signature, so macOS asks once more for the
 keychain item: choose "Always Allow". Self-update is off in this fork; bring

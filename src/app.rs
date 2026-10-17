@@ -1075,8 +1075,8 @@ fn tray_action(event: fastframe_tray::Event, window_hidden: bool) -> Option<Acti
 fn tray_config(lockable: bool) -> fastframe_tray::Config {
     use fastframe_tray::MenuItem;
     fastframe_tray::Config {
-        id: "zapfast",
-        title: "ZapFast".into(),
+        id: crate::paths::APP_NAME,
+        title: crate::paths::APP_TITLE.into(),
         icon: crate::util::app_icon_rgba,
         template_icon: Some(crate::util::tray_template_rgba),
         // The tray icon is the app icon, so hosts that draw only named icons
@@ -1151,7 +1151,7 @@ impl App {
         app.pauses_media = true;
         app.call_tones = crate::call_tones::Tones::new(true);
         app.badge = Some(crate::notify::Badge::new(fastframe_desktop::desktop_entry(
-            "zapfast",
+            crate::paths::APP_NAME,
         )));
         app.custom_themes
             .enable_desktop_themes(crate::theme::DESKTOP_THEMES);
@@ -14759,6 +14759,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "self-update is off in this fork (updates::ENABLED)"]
     fn automatic_updates_require_opt_in_and_explicit_restart() {
         use crate::updates::{DownloadState, Installation, Kind, Prepared};
         let mut app = app();

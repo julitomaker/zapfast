@@ -435,8 +435,8 @@ fn deliver(
     };
     let client = match CLIENT.get_or_init(|| {
         Client::new(
-            App::new("me.paolino.zapfast", "ZapFast")
-                .desktop_entry("zapfast")
+            App::new("com.julitomaker.zapfast", crate::paths::APP_TITLE)
+                .desktop_entry(crate::paths::APP_NAME)
                 .icon("zapfast"),
         )
     }) {

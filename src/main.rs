@@ -302,10 +302,8 @@ fn run() -> eframe::Result<()> {
     };
     // A demo's folders are throwaway; remove them when the run returns.
     let _demo_root = demo_root.map(RemoveOnDrop);
-    if !demo {
-        dirs.adopt_previous_names()
-            .map_err(|error| eframe::Error::AppCreation(error.into()))?;
-    }
+    // Fork: never adopt ZapFast's or FastsApp's folders; this app links its
+    // own device (see `paths::APP_NAME`).
     // Do not open logs, settings, or either database unless their parent
     // directories have been created and secured successfully.
     dirs.ensure()
@@ -600,11 +598,15 @@ fn native_options(
     let default_size = demo_size_arg().unwrap_or([1180.0, 780.0]);
     let demo = demo_persistence.is_some();
     let viewport = egui::ViewportBuilder::default()
-        .with_title(if demo { "ZapFast Demo" } else { "ZapFast" })
+        .with_title(if demo {
+            "ZapFast Demo"
+        } else {
+            paths::APP_TITLE
+        })
         .with_app_id(if demo {
             "zapfast-demo".to_owned()
         } else {
-            fastframe_desktop::desktop_entry("zapfast")
+            fastframe_desktop::desktop_entry(paths::APP_NAME)
         });
     // The remembered size and position, from the settings, over the default
     // size. Demo runs keep their fixed screenshot size.

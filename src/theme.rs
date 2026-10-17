@@ -105,30 +105,32 @@ pub enum BubbleStyle {
 }
 
 impl Palette {
+    /// WhatsApp's current desktop dark theme: neutral greys rather than the
+    /// older blue-green ones, its brighter green, and the deep green bubble.
     pub fn dark() -> Self {
         Self {
             dark: true,
-            window: Color32::from_rgb(0x0b, 0x14, 0x1a),
-            panel: Color32::from_rgb(0x11, 0x1b, 0x21),
-            surface: Color32::from_rgb(0x20, 0x2c, 0x33),
-            surface_hover: Color32::from_rgb(0x2a, 0x39, 0x42),
-            surface_active: Color32::from_rgb(0x35, 0x44, 0x4d),
-            outline: Color32::from_rgb(0x22, 0x2d, 0x34),
-            text: Color32::from_rgb(0xe9, 0xed, 0xef),
+            window: Color32::from_rgb(0x16, 0x17, 0x17),
+            panel: Color32::from_rgb(0x1d, 0x1f, 0x1f),
+            surface: Color32::from_rgb(0x2e, 0x2f, 0x2f),
+            surface_hover: Color32::from_rgb(0x35, 0x37, 0x37),
+            surface_active: Color32::from_rgb(0x3f, 0x41, 0x41),
+            outline: Color32::from_rgb(0x2a, 0x2c, 0x2c),
+            text: Color32::from_rgb(0xfa, 0xfa, 0xfa),
             // Secondary and dim text reach WCAG AA (4.5:1) on the window,
             // panel, surface, and menu colours.
-            secondary: Color32::from_rgb(0x97, 0xa5, 0xae),
-            dim: Color32::from_rgb(0x8a, 0x98, 0x9f),
-            accent: Color32::from_rgb(0x00, 0xa8, 0x84),
-            accent_hover: Color32::from_rgb(0x06, 0xcf, 0x9c),
+            secondary: Color32::from_rgb(0xae, 0xae, 0xae),
+            dim: Color32::from_rgb(0xa0, 0xa0, 0xa0),
+            accent: Color32::from_rgb(0x21, 0xc0, 0x63),
+            accent_hover: Color32::from_rgb(0x25, 0xd3, 0x66),
             on_accent: Color32::from_rgb(0x0b, 0x14, 0x1a),
             danger: Color32::from_rgb(0xf1, 0x5c, 0x6d),
             warning: Color32::from_rgb(0xff, 0xd2, 0x79),
-            overlay: Color32::from_rgb(0x23, 0x31, 0x38),
+            overlay: Color32::from_rgb(0x24, 0x26, 0x26),
             shadow: Color32::from_black_alpha(140),
-            chat: Color32::from_rgb(0x0b, 0x14, 0x1a),
-            bubble_in: Color32::from_rgb(0x20, 0x2c, 0x33),
-            bubble_out: Color32::from_rgb(0x00, 0x5c, 0x4b),
+            chat: Color32::from_rgb(0x16, 0x17, 0x17),
+            bubble_in: Color32::from_rgb(0x24, 0x26, 0x26),
+            bubble_out: Color32::from_rgb(0x14, 0x4d, 0x37),
             link: Color32::from_rgb(0x53, 0xbd, 0xeb),
             read: Color32::from_rgb(0x53, 0xbd, 0xeb),
             bubbles: BubbleStyle::WhatsApp,
@@ -204,7 +206,7 @@ impl Palette {
     pub fn light() -> Self {
         Self {
             dark: false,
-            window: Color32::from_rgb(0xf0, 0xf2, 0xf5),
+            window: Color32::from_rgb(0xf7, 0xf5, 0xf3),
             panel: Color32::from_rgb(0xff, 0xff, 0xff),
             surface: Color32::from_rgb(0xf0, 0xf2, 0xf5),
             surface_hover: Color32::from_rgb(0xe6, 0xe9, 0xec),
@@ -224,7 +226,7 @@ impl Palette {
             warning: Color32::from_rgb(0xa0, 0x6b, 0x00),
             overlay: Color32::from_rgb(0xff, 0xff, 0xff),
             shadow: Color32::from_black_alpha(LIGHT_SHADOW_ALPHA),
-            chat: Color32::from_rgb(0xef, 0xea, 0xe2),
+            chat: Color32::from_rgb(0xf5, 0xf1, 0xeb),
             bubble_in: Color32::from_rgb(0xff, 0xff, 0xff),
             bubble_out: Color32::from_rgb(0xd9, 0xfd, 0xd3),
             link: Color32::from_rgb(0x02, 0x7e, 0xb5),

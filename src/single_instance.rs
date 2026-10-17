@@ -22,6 +22,10 @@ const PREFIX: &str = "fastsapp:";
 /// What ZapFast answers a request it takes: `fastsapp:ok` on the wire.
 const OK: &str = "ok";
 
+/// Fork: off. The fixed port is shared by every ZapFast copy, so with it this
+/// fork would mistake a running ZapFast for itself and exit.
+const LEGACY: bool = false;
+
 /// Fixed port of copies that predate the lock. They never take it.
 const LEGACY_PORT: u16 = 47_119;
 /// Longest request accepted on the legacy port.
@@ -104,14 +108,16 @@ pub fn acquire(dir: &Path, waker: &crate::backend::Waker, verb: &str) -> Outcome
     // asked of one surfaces its window rather than running a second ZapFast
     // beside it.
     let legacy = legacy_verb(verb);
-    if legacy_instance_answers(legacy) {
+    if LEGACY && legacy_instance_answers(legacy) {
         return if legacy == verb {
             Outcome::Surfaced
         } else {
             Outcome::Outdated
         };
     }
-    listen_legacy(Arc::clone(&commands), waker.clone());
+    if LEGACY {
+        listen_legacy(Arc::clone(&commands), waker.clone());
+    }
     Outcome::Only(Guard {
         commands,
         _claim: claim,
@@ -182,7 +188,9 @@ pub enum Sent {
 /// Sends one request to the running copy, without becoming it when there is
 /// none: for a command-line action that only makes sense while ZapFast runs.
 pub fn send(dir: &Path, verb: &str) -> Sent {
-    sent(slot(dir).send(verb).map(drop), legacy_instance_answers_ping)
+    sent(slot(dir).send(verb).map(drop), || {
+        LEGACY && legacy_instance_answers_ping()
+    })
 }
 
 /// Reads the result of a request. A copy from before the lock is asked

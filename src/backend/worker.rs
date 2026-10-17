@@ -574,9 +574,9 @@ impl Downloadable for PhoneSticker {
 fn device_name() -> String {
     let host = crate::util::hostname();
     if host.is_empty() {
-        "ZapFast".to_owned()
+        crate::paths::APP_TITLE.to_owned()
     } else {
-        format!("ZapFast ({host})")
+        format!("{} ({host})", crate::paths::APP_TITLE)
     }
 }
 
@@ -2378,10 +2378,20 @@ impl Worker {
         let bot = builder
             // WhatsApp reads the linked-device name, version, and icon at pairing.
             .with_device_props(
+                // Fork: ask for the full history backfill, the shape the
+                // Windows desktop client sends (see `DevicePropsOverride`'s
+                // branch table). Read at pairing only.
                 DevicePropsOverride::new()
                     .with_os(device_name())
                     .with_version(app_version())
-                    .with_platform_type(wa::device_props::PlatformType::DESKTOP),
+                    .with_platform_type(wa::device_props::PlatformType::UWP)
+                    .with_require_full_sync(true)
+                    .with_history_sync_config(
+                        whatsapp_rust::wacore::store::device::default_history_sync_config()
+                            .with_full_sync_days_limit(365)
+                            .with_on_demand_ready(true)
+                            .with_complete_on_demand_ready(true),
+                    ),
             )
             .with_event_handler(UiEvents {
                 sender,

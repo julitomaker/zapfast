@@ -103,7 +103,7 @@ mod platform {
 mod platform {
     use super::*;
 
-    const LABEL: &str = "me.paolino.zapfast";
+    const LABEL: &str = "com.julitomaker.zapfast";
 
     fn entry() -> Option<PathBuf> {
         let home = std::env::var_os("HOME")?;

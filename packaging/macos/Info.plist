@@ -2,10 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>ZapFast</string>
-    <key>CFBundleDisplayName</key><string>ZapFast</string>
-    <!-- Keep the installed app identity across the rename. -->
-    <key>CFBundleIdentifier</key><string>me.paolino.fastsapp</string>
+    <key>CFBundleName</key><string>ZapFast Julito</string>
+    <key>CFBundleDisplayName</key><string>ZapFast Julito</string>
+    <!-- Fork: its own identity, so macOS keeps its notifications, keychain
+         access and permissions apart from ZapFast's. -->
+    <key>CFBundleIdentifier</key><string>com.julitomaker.zapfast</string>
     <key>CFBundleExecutable</key><string>zapfast</string>
     <key>CFBundleIconFile</key><string>zapfast</string>
     <key>CFBundlePackageType</key><string>APPL</string>
