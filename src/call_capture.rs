@@ -58,18 +58,16 @@ pub fn start(app: &App, ctx: &egui::Context) {
     let reader = crate::ui::projects::CallReader::of(app);
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let recording = match crate::recorder::Recording::start(
-            &reader.state,
-            crate::recorder::Source::Both,
-        ) {
-            Ok(recording) => recording,
-            Err(error) => {
-                log::warn!("call capture: could not start: {error}");
-                *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
-                ctx.request_repaint();
-                return;
-            }
-        };
+        let recording =
+            match crate::recorder::Recording::start(&reader.state, crate::recorder::Source::Both) {
+                Ok(recording) => recording,
+                Err(error) => {
+                    log::warn!("call capture: could not start: {error}");
+                    *ACTIVE.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    ctx.request_repaint();
+                    return;
+                }
+            };
         let _ = stopped.recv();
         let seconds = recording.elapsed().as_secs();
         let path = match recording.stop() {

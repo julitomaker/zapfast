@@ -1972,7 +1972,13 @@ fn call_context(config: &std::path::Path, project: &str) -> String {
 /// After a call is kept: read it, analyze it, and note what it said in the
 /// project, so its panel picks up the commitments. Each step is kept as it
 /// finishes; a step that fails leaves the call and what came before.
-pub(crate) fn read_call(reader: CallReader, project: String, id: String, job: Arc<Mutex<CallJob>>, ctx: egui::Context) {
+pub(crate) fn read_call(
+    reader: CallReader,
+    project: String,
+    id: String,
+    job: Arc<Mutex<CallJob>>,
+    ctx: egui::Context,
+) {
     set_phase(&job, &ctx, CallPhase::Reading);
     if let Err(error) = crate::call_library::transcribe(&reader.engines, &reader.state, &id) {
         return set_phase(&job, &ctx, CallPhase::Failed(error));
@@ -1989,7 +1995,10 @@ fn analyze_call(reader: &CallReader, project: &str, id: &str) {
         id,
         &call_context(&reader.config, project),
     );
-    let Some(call) = crate::call_library::Library::load(&reader.state).get(id).cloned() else {
+    let Some(call) = crate::call_library::Library::load(&reader.state)
+        .get(id)
+        .cloned()
+    else {
         return;
     };
     let mut note = format!("{}:", call.title);
@@ -1998,7 +2007,11 @@ fn analyze_call(reader: &CallReader, project: &str, id: &str) {
             note.push(' ');
             note.push_str(&analysis.summary);
             for c in &analysis.commitments {
-                let due = c.due.as_deref().map(|d| format!(" (para {d})")).unwrap_or_default();
+                let due = c
+                    .due
+                    .as_deref()
+                    .map(|d| format!(" (para {d})"))
+                    .unwrap_or_default();
                 note.push_str(&format!("\nCompromiso: {} — {}{due}", c.who, c.what));
             }
             for task in &analysis.tasks {
@@ -2022,7 +2035,13 @@ fn analyze_call(reader: &CallReader, project: &str, id: &str) {
 
 /// Records a call (the microphone and the computer's sound) until it is
 /// ended, keeps the file, then reads it.
-fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context, title: String) {
+fn record_call(
+    app: &App,
+    project: &str,
+    job: Arc<Mutex<CallJob>>,
+    ctx: egui::Context,
+    title: String,
+) {
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     {
         let mut held = job.lock().unwrap_or_else(|p| p.into_inner());
@@ -2032,13 +2051,11 @@ fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Co
     let reader = CallReader::of(app);
     let project = project.to_owned();
     std::thread::spawn(move || {
-        let recording = match crate::recorder::Recording::start(
-            &reader.state,
-            crate::recorder::Source::Both,
-        ) {
-            Ok(recording) => recording,
-            Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
-        };
+        let recording =
+            match crate::recorder::Recording::start(&reader.state, crate::recorder::Source::Both) {
+                Ok(recording) => recording,
+                Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+            };
         set_phase(&job, &ctx, CallPhase::Recording(Instant::now()));
         let _ = stopped.recv();
         let seconds = recording.elapsed().as_secs();
@@ -2072,7 +2089,9 @@ fn add_file(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Conte
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 &label,
-                &["ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm"],
+                &[
+                    "ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm",
+                ],
             )
             .pick_file()
         else {
@@ -2167,9 +2186,17 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
             )
             .clicked()
             {
-                let title = gettext(locale, "Call of {date}")
-                    .replace("{date}", &crate::util::moment_stamp(locale, jiff::Timestamp::now().as_second()));
-                record_call(app, &project.id, state.call.clone(), ui.ctx().clone(), title);
+                let title = gettext(locale, "Call of {date}").replace(
+                    "{date}",
+                    &crate::util::moment_stamp(locale, jiff::Timestamp::now().as_second()),
+                );
+                record_call(
+                    app,
+                    &project.id,
+                    state.call.clone(),
+                    ui.ctx().clone(),
+                    title,
+                );
             }
             if theme::icon_button(
                 ui,
@@ -2423,14 +2450,22 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
     let palette = app.palette;
     let locale = app.locale;
     let library = crate::call_library::Library::load(&app.dirs.state);
-    let calls: Vec<crate::call_library::Call> =
-        library.of_project(&project.id).into_iter().cloned().collect();
+    let calls: Vec<crate::call_library::Call> = library
+        .of_project(&project.id)
+        .into_iter()
+        .cloned()
+        .collect();
     if calls.is_empty() {
         return;
     }
-    let busy = state.call_busy.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    let busy = state
+        .call_busy
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone();
     if !busy.is_empty() {
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(500));
     }
     let mut actions: Vec<(String, CallAction)> = Vec::new();
     card_frame(&palette).show(ui, |ui| {
@@ -2691,7 +2726,10 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                 let mut engines = reader.engines.clone();
                 engines.speech = engine;
                 engines.speech_model = String::new();
-                let (state_dir, label) = (reader.state.clone(), gettext(locale, "Transcribing…").into_owned());
+                let (state_dir, label) = (
+                    reader.state.clone(),
+                    gettext(locale, "Transcribing…").into_owned(),
+                );
                 call_job(&state.call_busy, ui.ctx(), &id, label, {
                     let id = id.clone();
                     move || crate::call_library::transcribe(&engines, &state_dir, &id).map(|_| ())

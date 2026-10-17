@@ -597,7 +597,16 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
                 palette.text,
             ),
         };
-        if control(ui, Icon::Record, fill, tint, &tip, call.phase.is_connected()).clicked() {
+        if control(
+            ui,
+            Icon::Record,
+            fill,
+            tint,
+            &tip,
+            call.phase.is_connected(),
+        )
+        .clicked()
+        {
             if recording.is_some() {
                 crate::call_capture::stop();
             } else {
