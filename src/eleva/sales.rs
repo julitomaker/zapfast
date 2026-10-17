@@ -18,7 +18,7 @@ use std::{collections::HashMap, sync::Mutex, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
-use super::{call, token, without_brand};
+use super::{brand_call, offline, without_brand};
 use crate::leads::{self, ElevaCustomer};
 
 const ORDERS_ENDPOINT: &str = "https://elevaleads.com/api/v1/orders";
@@ -56,6 +56,9 @@ pub struct Automations {
     pub active: bool,
     /// Status to the message it sends.
     pub messages: Vec<(String, String)>,
+    /// The after-sale message: days after delivery, its text, and whether
+    /// it can go out (it needs an approved template that late).
+    pub after_sale: Option<(u32, String, bool)>,
 }
 
 impl Automations {
@@ -106,7 +109,7 @@ pub fn key_account(slug: &str) -> String {
 }
 
 pub fn has_key(slug: &str) -> bool {
-    crate::keys::get(&key_account(slug)).is_some()
+    !offline() && crate::keys::get(&key_account(slug)).is_some()
 }
 
 /// Saves the brand's inbound key; an empty one removes it.
@@ -121,12 +124,7 @@ pub fn set_key(slug: &str, key: &str) -> anyhow::Result<()> {
 /// The brand's customer with this phone and their orders, or `None` when
 /// the brand has no such customer.
 pub fn lookup(slug: &str, phone: &str) -> anyhow::Result<Option<(ElevaCustomer, Orders)>> {
-    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
-    match call(
-        &token,
-        "ver_cliente",
-        serde_json::json!({ "cliente": phone }),
-    ) {
+    match brand_call(slug, "ver_cliente", serde_json::json!({ "cliente": phone })) {
         Ok(text) => {
             Ok(super::parse_customer(&text).map(|customer| (customer, parse_orders(&text))))
         }
@@ -136,9 +134,8 @@ pub fn lookup(slug: &str, phone: &str) -> anyhow::Result<Option<(ElevaCustomer, 
 }
 
 pub fn automations(slug: &str) -> anyhow::Result<Automations> {
-    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
-    Ok(parse_automations(&call(
-        &token,
+    Ok(parse_automations(&brand_call(
+        slug,
         "ver_automatizaciones",
         serde_json::json!({}),
     )?))
@@ -147,9 +144,8 @@ pub fn automations(slug: &str) -> anyhow::Result<Automations> {
 /// Makes an inbound connection named "Whats Pro" in the brand and keeps its
 /// key. Needs a token that writes and an admin or manager role there.
 pub fn create_key(slug: &str) -> anyhow::Result<()> {
-    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
-    let text = call(
-        &token,
+    let text = brand_call(
+        slug,
         "crear_conexion",
         serde_json::json!({ "nombre": "Whats Pro", "direccion": "entrante", "proposito": "orders" }),
     )?;
@@ -159,6 +155,9 @@ pub fn create_key(slug: &str) -> anyhow::Result<()> {
 
 /// Puts a sale in the brand: the customer (made if missing) and its order.
 pub fn register(slug: &str, sale: &NewSale) -> anyhow::Result<Registered> {
+    if offline() {
+        anyhow::bail!("The brand's API key is missing");
+    }
     let key = crate::keys::get(&key_account(slug))
         .ok_or_else(|| anyhow::anyhow!("The brand's API key is missing"))?;
     let response = reqwest::blocking::Client::builder()
@@ -279,12 +278,30 @@ fn parse_orders(text: &str) -> Orders {
 fn parse_automations(text: &str) -> Automations {
     let mut automations = Automations::default();
     let mut in_follow_up = false;
+    let mut in_after_sale = false;
     for line in without_brand(text).lines() {
         let trimmed = line.trim();
         if let Some(rest) = trimmed.strip_prefix("## ") {
             in_follow_up = rest.starts_with("Seguimiento del pedido");
+            in_after_sale = rest.starts_with("Post-venta") && rest.contains("ACTIVA");
             if in_follow_up {
                 automations.active = rest.contains("ACTIVA");
+            }
+        } else if in_after_sale && let Some(rest) = trimmed.strip_prefix("Se envía ") {
+            // `Se envía 7 días después de entregado: "…"`
+            let days = rest
+                .split_whitespace()
+                .next()
+                .and_then(|d| d.parse().ok())
+                .unwrap_or(0);
+            let message = rest
+                .split_once(": ")
+                .map(|(_, m)| m.trim().trim_matches('"').to_owned())
+                .unwrap_or_default();
+            automations.after_sale = Some((days, message, true));
+        } else if in_after_sale && trimmed.contains("NO se envía") {
+            if let Some(after) = automations.after_sale.as_mut() {
+                after.2 = false;
             }
         } else if in_follow_up
             && let Some(rest) = trimmed.strip_prefix("· ")
@@ -317,26 +334,54 @@ pub enum Answer {
     Registered(Registered),
 }
 
-type Jobs = HashMap<String, Option<Result<Answer, String>>>;
+#[derive(Default)]
+struct Jobs {
+    answers: HashMap<String, Option<Result<Answer, String>>>,
+    /// The last failure of each job, so it is not tried again at once.
+    failed: HashMap<String, (std::time::Instant, String)>,
+}
 
 static JOBS: Mutex<Option<Jobs>> = Mutex::new(None);
 
+/// How long a failed job waits before it is tried again on its own.
+pub const BACKOFF: Duration = Duration::from_secs(5 * 60);
+
 fn jobs<T>(f: impl FnOnce(&mut Jobs) -> T) -> T {
     let mut guard = JOBS.lock().unwrap_or_else(|p| p.into_inner());
-    f(guard.get_or_insert_with(HashMap::new))
+    f(guard.get_or_insert_with(Jobs::default))
+}
+
+/// The error of the job under `key` if it failed less than `BACKOFF` ago:
+/// automatic retries wait, and the page can say why.
+pub fn failure(key: &str) -> Option<String> {
+    jobs(|jobs| {
+        jobs.failed
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < BACKOFF)
+            .map(|(_, error)| error.clone())
+    })
+}
+
+/// Forgets a failure, for a retry the user asked for.
+pub fn forget_failure(key: &str) {
+    jobs(|jobs| jobs.failed.remove(key));
 }
 
 /// Runs `work` on a thread under `key`, unless it is already running.
+/// A failure is remembered (`failure`) and its error kept for the page.
 pub fn start(
     ctx: &egui::Context,
     key: &str,
     work: impl FnOnce() -> anyhow::Result<Answer> + Send + 'static,
 ) {
+    if offline() {
+        return;
+    }
     let fresh = jobs(|jobs| {
-        if matches!(jobs.get(key), Some(None)) {
+        if matches!(jobs.answers.get(key), Some(None)) {
             false
         } else {
-            jobs.insert(key.to_owned(), None);
+            jobs.answers.insert(key.to_owned(), None);
             true
         }
     });
@@ -346,25 +391,33 @@ pub fn start(
     let (ctx, key) = (ctx.clone(), key.to_owned());
     std::thread::spawn(move || {
         let result = work().map_err(|e| e.to_string());
-        jobs(|jobs| jobs.insert(key, Some(result)));
+        jobs(|jobs| {
+            match &result {
+                Ok(_) => jobs.failed.remove(&key),
+                Err(error) => jobs
+                    .failed
+                    .insert(key.clone(), (std::time::Instant::now(), error.clone())),
+            };
+            jobs.answers.insert(key, Some(result));
+        });
         ctx.request_repaint();
     });
 }
 
 /// Puts an answer in place without running anything, for the demo.
 pub fn preload(key: &str, answer: Answer) {
-    jobs(|jobs| jobs.insert(key.to_owned(), Some(Ok(answer))));
+    jobs(|jobs| jobs.answers.insert(key.to_owned(), Some(Ok(answer))));
 }
 
 /// Whether the job under `key` is running.
 pub fn running(key: &str) -> bool {
-    jobs(|jobs| matches!(jobs.get(key), Some(None)))
+    jobs(|jobs| matches!(jobs.answers.get(key), Some(None)))
 }
 
 /// The answer of the job under `key`, once.
 pub fn take(key: &str) -> Option<Result<Answer, String>> {
-    jobs(|jobs| match jobs.get(key) {
-        Some(Some(_)) => jobs.remove(key).flatten(),
+    jobs(|jobs| match jobs.answers.get(key) {
+        Some(Some(_)) => jobs.answers.remove(key).flatten(),
         _ => None,
     })
 }
@@ -403,6 +456,7 @@ mod tests {
             Some("¡Listo! Confirmamos tu cotización {code} 🙌")
         );
         assert_eq!(automations.message("cerrado"), None);
+        assert_eq!(automations.after_sale, Some((7, "¡Hola!".to_owned(), true)));
         let off = parse_automations("## Seguimiento del pedido — apagada\n  · confirmado: \"x\"");
         assert_eq!(off.message("confirmado"), None);
     }

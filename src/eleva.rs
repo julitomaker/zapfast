@@ -86,8 +86,42 @@ pub struct Inbox {
 
 // ------------------------------------------------------------------ client
 
+/// Set by the demo: nothing reaches ElevaLeads or the keyring.
+static OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keeps every ElevaLeads call from leaving this computer, for the demo.
+pub fn go_offline() {
+    OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn offline() -> bool {
+    OFFLINE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 fn token(slug: &str) -> Option<String> {
+    if offline() {
+        return None;
+    }
     crate::keys::get(&leads::token_account(slug))
+}
+
+/// Calls a tool of the brand `slug`, with its token, naming the brand so a
+/// token that opens several brands still writes to the right one.
+fn brand_call(slug: &str, tool: &str, mut arguments: serde_json::Value) -> anyhow::Result<String> {
+    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
+    if let Some(object) = arguments.as_object_mut() {
+        object.insert("marca".into(), serde_json::Value::String(slug.to_owned()));
+    }
+    call(&token, tool, arguments)
+}
+
+/// Whether an error is the network's or the server's, worth trying again
+/// later, rather than the brand saying no.
+fn transient(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    error.downcast_ref::<reqwest::Error>().is_some()
+        || text.starts_with("ElevaLeads answered 5")
+        || text.contains("Demasiadas solicitudes")
 }
 
 /// Saves a brand's token in the keyring; an empty one removes it.
@@ -176,11 +210,11 @@ pub fn read_inbox(slug: &str) -> Inbox {
         read_at: jiff::Timestamp::now().as_second(),
         ..Inbox::default()
     };
-    let Some(token) = token(slug) else {
+    if token(slug).is_none() {
         inbox.error = Some("The brand's token is not in this computer's keyring".into());
         return inbox;
-    };
-    match call(&token, "pendientes", serde_json::json!({ "limite": 40 })) {
+    }
+    match brand_call(slug, "pendientes", serde_json::json!({ "limite": 40 })) {
         Ok(text) => (inbox.total, inbox.waiting) = parse_waiting(&text),
         Err(error) => inbox.error = Some(error.to_string()),
     }
@@ -188,7 +222,7 @@ pub fn read_inbox(slug: &str) -> Inbox {
         ("atencion", &mut inbox.alerts),
         ("agenda", &mut inbox.agenda),
     ] {
-        match call(&token, "situaciones", serde_json::json!({ "vista": view })) {
+        match brand_call(slug, "situaciones", serde_json::json!({ "vista": view })) {
             Ok(text) => *list = parse_situations(&text),
             Err(error) => {
                 inbox.error.get_or_insert(error.to_string());
@@ -200,12 +234,7 @@ pub fn read_inbox(slug: &str) -> Inbox {
 
 /// Looks for the brand's customer with this phone.
 pub fn find_customer(slug: &str, phone: &str) -> anyhow::Result<Option<ElevaCustomer>> {
-    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
-    match call(
-        &token,
-        "ver_cliente",
-        serde_json::json!({ "cliente": phone }),
-    ) {
+    match brand_call(slug, "ver_cliente", serde_json::json!({ "cliente": phone })) {
         Ok(text) => Ok(parse_customer(&text)),
         Err(error) if error.to_string().starts_with("No encontré") => Ok(None),
         Err(error) => Err(error),
@@ -215,12 +244,11 @@ pub fn find_customer(slug: &str, phone: &str) -> anyhow::Result<Option<ElevaCust
 /// Takes a conversation out of the brand's queue, or marks a situation as
 /// attended. Sends nothing to the customer.
 pub fn resolve(slug: &str, id: &str, situation: bool) -> anyhow::Result<String> {
-    let token = token(slug).ok_or_else(|| anyhow::anyhow!("The brand's token is missing"))?;
     let answer = if situation {
-        call(&token, "atender_situacion", serde_json::json!({ "id": id }))?
+        brand_call(slug, "atender_situacion", serde_json::json!({ "id": id }))?
     } else {
-        call(
-            &token,
+        brand_call(
+            slug,
             "resolver_pendiente",
             serde_json::json!({ "id": id, "nota": "Atendido desde Whats Pro" }),
         )?
@@ -285,6 +313,11 @@ struct Shared {
     finding: HashMap<String, Option<Result<Option<ElevaCustomer>, String>>>,
     /// The last answer to resolving an item, by its id.
     resolved: HashMap<String, Result<String, String>>,
+    /// Items resolved this session, by brand: a read already under way
+    /// must not bring them back.
+    gone: std::collections::HashSet<(String, String)>,
+    /// A push was asked for while one was running.
+    again: bool,
 }
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
@@ -306,7 +339,7 @@ pub fn inbox(ctx: &egui::Context, slug: &str, force: bool) -> Option<Inbox> {
             .reading
             .get(slug)
             .is_some_and(|at| at.elapsed() < Duration::from_secs(90));
-        let start = (stale || force) && !busy;
+        let start = (stale || force) && !busy && !offline();
         if start {
             s.reading.insert(slug.to_owned(), Instant::now());
         }
@@ -316,8 +349,14 @@ pub fn inbox(ctx: &egui::Context, slug: &str, force: bool) -> Option<Inbox> {
         let ctx = ctx.clone();
         let slug = slug.to_owned();
         std::thread::spawn(move || {
-            let inbox = read_inbox(&slug);
+            let mut inbox = read_inbox(&slug);
             shared(|s| {
+                let gone = |id: &str| s.gone.contains(&(slug.clone(), id.to_owned()));
+                let before = inbox.waiting.len();
+                inbox.waiting.retain(|item| !gone(&item.id));
+                inbox.total = inbox.total.saturating_sub(before - inbox.waiting.len());
+                inbox.alerts.retain(|item| !gone(&item.id));
+                inbox.agenda.retain(|item| !gone(&item.id));
                 s.reading.remove(&slug);
                 s.inboxes.insert(slug, inbox);
             });
@@ -408,6 +447,7 @@ pub fn start_resolve(ctx: &egui::Context, slug: &str, id: &str, situation: bool)
         let result = resolve(&slug, &id, situation).map_err(|e| e.to_string());
         if result.is_ok() {
             shared(|s| {
+                s.gone.insert((slug.clone(), id.clone()));
                 if let Some(inbox) = s.inboxes.get_mut(&slug) {
                     inbox.waiting.retain(|item| item.id != id);
                     inbox.alerts.retain(|item| item.id != id);
@@ -426,83 +466,240 @@ pub fn resolved(id: &str) -> Option<Result<String, String>> {
     shared(|s| s.resolved.remove(id))
 }
 
-/// Sends every pending entry of the linked leads to their brands, on a
-/// thread; one push at a time.
+/// One entry to send, with what is needed to send it without the store.
+struct Work {
+    lead: String,
+    slug: String,
+    write: bool,
+    customer: ElevaCustomer,
+    /// How a situation finds the customer: their phone as the brand has it.
+    contact: String,
+    entry: String,
+    kind: Kind,
+    text: String,
+}
+
+/// What became of a call.
+enum Outcome {
+    Sent(Option<String>),
+    Failed(String),
+    /// The network failed: it stays pending for the next push.
+    Later,
+}
+
+/// Sends every pending entry of the linked leads to their brands, and
+/// closes the situations of next actions that were done or replaced, on a
+/// thread; one push at a time, and one more if asked while it ran.
 pub fn push(ctx: &egui::Context, config: &Path) {
-    let start = shared(|s| !std::mem::replace(&mut s.pushing, true));
+    if offline() {
+        return;
+    }
+    let start = shared(|s| {
+        if s.pushing {
+            s.again = true;
+            false
+        } else {
+            s.pushing = true;
+            true
+        }
+    });
     if !start {
         return;
     }
     let (ctx, config) = (ctx.clone(), config.to_owned());
     std::thread::spawn(move || {
-        // What to send is read under the lock, sent without it, and written
-        // back under it, so the page never waits for the network.
-        type Work = (String, String, bool, (String, String), String, Kind, String);
-        let work: Vec<Work> = {
-            let store = Store::open(&config);
-            store
-                .leads
-                .iter()
-                .filter_map(|lead| {
-                    let brand = store.brands.get(&lead.project)?;
-                    let customer = lead.eleva.as_ref()?;
-                    Some(
-                        lead.entries
-                            .iter()
-                            .filter(|e| e.sync == Sync::Pending)
-                            .map(|entry| {
-                                (
-                                    lead.id.clone(),
-                                    brand.slug.clone(),
-                                    brand.write,
-                                    (
-                                        customer.id.clone(),
-                                        lead.phone.clone().unwrap_or_else(|| customer.name.clone()),
-                                    ),
-                                    entry.id.clone(),
-                                    entry.kind,
-                                    // A call's summary: its transcript stays here.
-                                    entry.text.clone(),
-                                )
-                            }),
-                    )
-                })
-                .flatten()
-                .collect()
-        };
-        let mut results = Vec::new();
-        for (lead, slug, write, (customer, contact), entry, kind, text) in work {
-            let result = if !write {
-                Sync::Failed("ElevaLeads token is read-only".into())
-            } else if let Some((tool, arguments)) = entry_call(&customer, &contact, kind, &text) {
-                match token(&slug).map(|token| call(&token, tool, arguments)) {
-                    Some(Ok(_)) => Sync::Sent,
-                    Some(Err(error)) => Sync::Failed(error.to_string()),
-                    None => Sync::Failed("The brand's token is missing".into()),
+        loop {
+            push_once(&config);
+            ctx.request_repaint();
+            let again = shared(|s| {
+                let again = std::mem::take(&mut s.again);
+                if !again {
+                    s.pushing = false;
                 }
-            } else {
-                Sync::Sent
-            };
-            results.push((lead, entry, result, text));
+                again
+            });
+            if !again {
+                break;
+            }
         }
-        if !results.is_empty() {
-            let mut store = Store::open(&config);
-            for (lead, entry, result, sent) in results {
-                // A call read again meanwhile has new text, still to send.
-                if let Some(entry) = store
-                    .get_mut(&lead)
-                    .and_then(|lead| lead.entries.iter_mut().find(|e| e.id == entry))
-                    && entry.sync == Sync::Pending
-                    && entry.text == sent
-                {
-                    entry.sync = result;
+    });
+}
+
+fn push_once(config: &Path) {
+    // What to send is read under the lock, sent without it, and written
+    // back under it, so the page never waits for the network.
+    let (work, closing): (Vec<Work>, Vec<(String, String, String)>) = {
+        let store = Store::open(config);
+        let mut work = Vec::new();
+        let mut closing = Vec::new();
+        for lead in &store.leads {
+            let (Some(brand), Some(customer)) =
+                (store.brands.get(&lead.project), lead.eleva.as_ref())
+            else {
+                continue;
+            };
+            if brand.write {
+                for remote in &lead.close {
+                    closing.push((lead.id.clone(), brand.slug.clone(), remote.clone()));
                 }
             }
-            store.save();
+            let contact = customer
+                .phone
+                .clone()
+                .or_else(|| lead.phone.clone())
+                .unwrap_or_else(|| customer.name.clone());
+            for entry in lead.entries.iter().filter(|e| e.sync == Sync::Pending) {
+                work.push(Work {
+                    lead: lead.id.clone(),
+                    slug: brand.slug.clone(),
+                    write: brand.write,
+                    customer: customer.clone(),
+                    contact: contact.clone(),
+                    entry: entry.id.clone(),
+                    kind: entry.kind,
+                    text: entry.text.clone(),
+                });
+            }
         }
-        shared(|s| s.pushing = false);
-        ctx.request_repaint();
-    });
+        (work, closing)
+    };
+    if work.is_empty() && closing.is_empty() {
+        return;
+    }
+    let mut results = Vec::new();
+    for item in work {
+        let outcome = send(&item);
+        results.push((item.lead, item.entry, outcome, item.text));
+    }
+    let mut closed = Vec::new();
+    for (lead, slug, remote) in closing {
+        match resolve(&slug, &remote, true) {
+            Ok(_) => closed.push((lead, remote)),
+            // Gone already, or attended there: nothing left to close.
+            Err(error) if error.to_string().starts_with("No encontré") => {
+                closed.push((lead, remote))
+            }
+            Err(error) => log::info!(
+                "leads: a situation could not be closed yet: {}",
+                transient(&error)
+            ),
+        }
+    }
+    let mut store = Store::open(config);
+    for (lead, entry, outcome, sent) in results {
+        let Some(lead) = store.get_mut(&lead) else {
+            continue;
+        };
+        let next_open = lead.next.is_some();
+        let Some(index) = lead.entries.iter().position(|e| e.id == entry) else {
+            continue;
+        };
+        // A call read again meanwhile has new text, still to send.
+        if lead.entries[index].text != sent && lead.entries[index].sync == Sync::Pending {
+            continue;
+        }
+        match outcome {
+            // What reached the brand is marked so even if it was unlinked
+            // or overtaken meanwhile, so it is never sent twice.
+            Outcome::Sent(remote) => {
+                let still_wanted = lead.entries[index].sync == Sync::Pending;
+                lead.entries[index].sync = Sync::Sent;
+                if let Some(remote) = remote {
+                    lead.entries[index].remote = Some(remote.clone());
+                    let latest =
+                        lead.entries.iter().rposition(|e| e.kind == Kind::Task) == Some(index);
+                    if still_wanted && latest && next_open && lead.open_task.is_none() {
+                        lead.open_task = Some(remote);
+                    } else {
+                        lead.close.push(remote);
+                    }
+                }
+            }
+            Outcome::Failed(why) => {
+                if lead.entries[index].sync == Sync::Pending {
+                    lead.entries[index].sync = Sync::Failed(why);
+                }
+            }
+            Outcome::Later => {}
+        }
+    }
+    for (lead, remote) in closed {
+        if let Some(lead) = store.get_mut(&lead) {
+            lead.close.retain(|id| *id != remote);
+        }
+    }
+    store.save();
+}
+
+fn send(item: &Work) -> Outcome {
+    if !item.write {
+        return Outcome::Failed("ElevaLeads token is read-only".into());
+    }
+    // The brand's own record wins over an older stage from here: someone
+    // who bought there is not moved back.
+    if item.kind == Kind::Stage
+        && item.text != "customer"
+        && item
+            .customer
+            .stage
+            .as_deref()
+            .and_then(Stage::from_eleva_label)
+            == Some(Stage::Customer)
+    {
+        return Outcome::Failed("ElevaLeads already has them as a customer".into());
+    }
+    let Some((tool, arguments)) =
+        entry_call(&item.customer.id, &item.contact, item.kind, &item.text)
+    else {
+        return Outcome::Sent(None);
+    };
+    match brand_call(&item.slug, tool, arguments) {
+        Ok(answer) => {
+            // Only a note's answer names whose file it went to.
+            if tool == "nota_cliente"
+                && !item.customer.name.is_empty()
+                && let Some(other) =
+                    landed_on(&answer).filter(|name| !same_name(name, &item.customer.name))
+            {
+                return Outcome::Failed(format!(
+                    "ElevaLeads wrote it on another customer: {other}"
+                ));
+            }
+            Outcome::Sent(situation_id(&answer))
+        }
+        Err(error) if transient(&error) => Outcome::Later,
+        Err(error) => Outcome::Failed(error.to_string()),
+    }
+}
+
+/// Whose file an answer says it wrote on: `Anotado en la ficha de X.`,
+/// `X pasó a …`, `X ya estaba en …`.
+fn landed_on(answer: &str) -> Option<String> {
+    let answer = answer.trim();
+    if let Some(rest) = answer.strip_prefix("Anotado en la ficha de ") {
+        return Some(rest.strip_suffix('.').unwrap_or(rest).trim().to_owned());
+    }
+    for marker in [" pasó a ", " ya estaba en "] {
+        if let Some((name, _)) = answer.split_once(marker) {
+            return Some(name.trim().to_owned());
+        }
+    }
+    None
+}
+
+fn same_name(a: &str, b: &str) -> bool {
+    let clean = |s: &str| s.trim().trim_end_matches('.').to_lowercase();
+    clean(a) == clean(b)
+}
+
+/// The id in `… quedó en la bandeja de Situaciones (id cmx…).`.
+fn situation_id(answer: &str) -> Option<String> {
+    let (_, rest) = answer.rsplit_once("(id ")?;
+    let id: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    (!id.is_empty()).then_some(id)
 }
 
 // ----------------------------------------------------------------- readers
@@ -657,11 +854,19 @@ fn parse_customer(text: &str) -> Option<ElevaCustomer> {
     let mut name = None;
     let mut id = None;
     let mut stage = None;
+    let mut phone = None;
     for line in text.lines().map(str::trim) {
         if let Some(rest) = line.strip_prefix("# ") {
             name.get_or_insert_with(|| rest.split(" · ").next().unwrap_or(rest).to_owned());
         } else if let Some(rest) = line.strip_prefix("id:") {
             id.get_or_insert_with(|| rest.trim().to_owned());
+        } else if let Some(rest) = line.strip_prefix("- Contacto:") {
+            phone = rest
+                .split(" · ")
+                .next()
+                .map(str::trim)
+                .filter(|p| leads::digits(p).len() >= 7)
+                .map(str::to_owned);
         } else if let Some(rest) = line.strip_prefix("- Etapa:") {
             stage = rest
                 .split(" · ")
@@ -673,6 +878,7 @@ fn parse_customer(text: &str) -> Option<ElevaCustomer> {
         id: id.filter(|id| !id.is_empty())?,
         name: name.unwrap_or_default(),
         stage,
+        phone,
     })
 }
 
@@ -755,6 +961,7 @@ mod tests {
         assert_eq!(customer.id, "cmvbz");
         assert_eq!(customer.name, "Edson Bord");
         assert_eq!(customer.stage.as_deref(), Some("En conversación"));
+        assert_eq!(customer.phone.as_deref(), Some("56950000000"));
         assert_eq!(parse_customer("No encontré a \"x\" en esta marca."), None);
 
         let brands = parse_brands(
@@ -772,6 +979,39 @@ mod tests {
             "[Marca: Blackyak Labs]\nNo encontré esa conversación en esta marca."
         )));
         assert!(!refused("Listo: la conversación salió de Pendientes."));
+    }
+
+    #[test]
+    fn answers_say_whose_file_and_which_situation() {
+        assert_eq!(
+            landed_on("Anotado en la ficha de Ana Paz.").as_deref(),
+            Some("Ana Paz")
+        );
+        assert_eq!(
+            landed_on("Ana Paz pasó a Interesado.").as_deref(),
+            Some("Ana Paz")
+        );
+        assert_eq!(
+            landed_on("Ana Paz ya estaba en Cliente.").as_deref(),
+            Some("Ana Paz")
+        );
+        assert_eq!(landed_on("Listo"), None);
+        assert!(same_name(" ana paz", "Ana Paz"));
+        assert_eq!(
+            situation_id("Listo: “Llamar” quedó en la bandeja de Situaciones (id cmabc123).")
+                .as_deref(),
+            Some("cmabc123")
+        );
+        assert_eq!(situation_id("Listo"), None);
+        assert!(transient(&anyhow::anyhow!(
+            "ElevaLeads answered 502 Bad Gateway"
+        )));
+        assert!(transient(&anyhow::anyhow!(
+            "Demasiadas solicitudes, probá en un minuto."
+        )));
+        assert!(!transient(&anyhow::anyhow!(
+            "No encontré a \"x\" en esta marca."
+        )));
     }
 
     #[test]

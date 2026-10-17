@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use egui::{Align, Frame, Layout, Margin, vec2};
 
-use super::leads::{button, card_frame, chip, error_text, field_frame, wrapped};
+use super::leads::{button, card_frame, chip, error_text, field_frame, notice_text, wrapped};
 use crate::app::App;
 use crate::eleva::sales::{self, Answer, Automations, NewSale, PAYMENTS, STATUSES};
 use crate::i18n::{Locale, gettext};
@@ -42,8 +42,11 @@ struct Form {
     id: String,
     key: String,
     error: Option<String>,
-    /// Whether the brand's API key is in the keyring, read once.
+    /// Whether the brand's API key is in the keyring.
     has_key: Option<bool>,
+    /// Register even though the brand's automatic messages could not be
+    /// read.
+    unknown_ok: bool,
 }
 
 fn form_id(lead: &str) -> egui::Id {
@@ -69,28 +72,7 @@ fn status_label(locale: Locale, status: &str) -> String {
 
 /// An amount as people write it here: `45.000`, `45.000,50`, `$ 1,5`.
 pub fn parse_amount(text: &str) -> Option<f64> {
-    let clean: String = text
-        .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
-        .collect();
-    if clean.is_empty() {
-        return None;
-    }
-    let normal = if clean.contains(',') {
-        clean.replace('.', "").replace(',', ".")
-    } else if clean.matches('.').count() > 1
-        || clean
-            .rsplit_once('.')
-            .is_some_and(|(_, decimals)| decimals.len() == 3)
-    {
-        clean.replace('.', "")
-    } else {
-        clean
-    };
-    normal
-        .parse()
-        .ok()
-        .filter(|n: &f64| n.is_finite() && *n >= 0.0)
+    crate::leads::amount(text)
 }
 
 /// `90000.0` → `$ 90.000`; cents only when there are some.
@@ -121,6 +103,14 @@ fn refresh(ctx: &egui::Context, config: &std::path::Path, lead: &Lead, slug: &st
     sales::start(ctx, &format!("orders:{id}"), move || {
         let found = sales::lookup(&slug, &phone)?;
         let mut store = Store::open(&config);
+        // The project may have moved to another brand meanwhile.
+        let same_brand = store
+            .get(&id)
+            .and_then(|lead| store.brands.get(&lead.project))
+            .is_some_and(|brand| brand.slug == slug);
+        if !same_brand {
+            return Ok(Answer::Lookup(None));
+        }
         if let Some(lead) = store.get_mut(&id) {
             lead.orders = Some(OrdersSeen {
                 known: found.is_some(),
@@ -131,17 +121,27 @@ fn refresh(ctx: &egui::Context, config: &std::path::Path, lead: &Lead, slug: &st
                 && linked.id == customer.id
             {
                 linked.stage = customer.stage.clone();
+                linked.phone = customer.phone.clone();
+                linked.name = customer.name.clone();
             }
+            lead.follow_orders();
         }
         store.save();
         Ok(Answer::Lookup(found))
     });
 }
 
-fn stale(lead: &Lead) -> bool {
-    lead.orders
-        .as_ref()
-        .is_none_or(|seen| jiff::Timestamp::now().as_second() - seen.read_at > STALE)
+/// Whether a lead's orders are due to be read on their own: old enough,
+/// not being read, and not failed a moment ago.
+fn due(lead: &Lead) -> bool {
+    let job = format!("orders:{}", lead.id);
+    lead.phone.is_some()
+        && lead
+            .orders
+            .as_ref()
+            .is_none_or(|seen| jiff::Timestamp::now().as_second() - seen.read_at > STALE)
+        && !sales::running(&job)
+        && sales::failure(&job).is_none()
 }
 
 /// The project's customers sold on WhatsApp with no order in the brand, as
@@ -158,7 +158,7 @@ pub fn panel_line(
     let brand = leads.brands.get(&project.id)?;
     for lead in leads
         .of_project(&project.id)
-        .filter(|lead| lead.stage == crate::leads::Stage::Customer && stale(lead))
+        .filter(|lead| lead.stage == crate::leads::Stage::Customer && due(lead))
         .take(3)
     {
         refresh(ui.ctx(), &app.dirs.config, lead, &brand.slug);
@@ -193,13 +193,13 @@ pub fn card(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand) {
     let id = form_id(&lead.id);
     let mut form: Form = ui.ctx().data(|data| data.get_temp(id)).unwrap_or_default();
     demo_fill(&mut form, lead);
-    let reading = sales::running(&format!("orders:{}", lead.id));
-    if stale(lead) && !reading && lead.phone.is_some() {
+    let orders_job = format!("orders:{}", lead.id);
+    let _ = sales::take(&orders_job);
+    let reading = sales::running(&orders_job);
+    if due(lead) {
         refresh(ui.ctx(), &config, lead, &brand.slug);
     }
-    if let Some(Err(error)) = sales::take(&format!("orders:{}", lead.id)) {
-        form.error = Some(error);
-    }
+    let orders_error = sales::failure(&orders_job);
     // What the brand's automations send, read once per brand.
     let automations_id = egui::Id::new(("eleva-automations", &brand.slug));
     let automations_job = format!("automations:{}", brand.slug);
@@ -208,26 +208,47 @@ pub fn card(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand) {
             .data_mut(|data| data.insert_temp(automations_id, found));
     }
     let automations: Option<Automations> = ui.ctx().data(|data| data.get_temp(automations_id));
-    if form.open && automations.is_none() && !sales::running(&automations_job) {
+    let automations_error = sales::failure(&automations_job);
+    if form.open
+        && automations.is_none()
+        && automations_error.is_none()
+        && !sales::running(&automations_job)
+    {
         let slug = brand.slug.clone();
         sales::start(ui.ctx(), &automations_job, move || {
             sales::automations(&slug).map(Answer::Automations)
         });
     }
     let key_job = format!("key:{}", brand.slug);
+    let key_id = egui::Id::new(("eleva-api-key", &brand.slug));
     match sales::take(&key_job) {
         Some(Ok(_)) => {
-            form.has_key = Some(true);
+            ui.ctx().data_mut(|data| data.insert_temp(key_id, true));
             form.error = None;
         }
         Some(Err(error)) => form.error = Some(error),
         None => {}
     }
+    // Whether the brand's key is in the keyring, asked again while it is
+    // not, so a key made from another lead counts here too.
+    if form.open && form.has_key != Some(true) {
+        let known = ui.ctx().data(|data| data.get_temp::<bool>(key_id)) == Some(true)
+            || sales::has_key(&brand.slug);
+        if known {
+            ui.ctx().data_mut(|data| data.insert_temp(key_id, true));
+        }
+        form.has_key = Some(known);
+    }
     let sale_job = format!("sale:{}", lead.id);
     match sales::take(&sale_job) {
-        Some(Ok(Answer::Registered(_))) => {
+        Some(Ok(Answer::Registered(registered))) if registered.created => {
             form = Form::default();
+            sales::forget_failure(&orders_job);
             refresh(ui.ctx(), &config, lead, &brand.slug);
+        }
+        // The brand already had an order with this id: nothing new was made.
+        Some(Ok(Answer::Registered(registered))) => {
+            form.error = Some(format!("already:{}", registered.code));
         }
         Some(Err(error)) => form.error = Some(error),
         _ => {}
@@ -258,12 +279,22 @@ pub fn card(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand) {
                     )
                     .clicked()
                 {
+                    sales::forget_failure(&orders_job);
                     refresh(ui.ctx(), &config, lead, &brand.slug);
                 }
             });
         });
         ui.add_space(4.0);
         orders(app, ui, lead, brand, reading);
+        if let Some(error) = &orders_error {
+            wrapped(
+                ui,
+                &gettext(locale, "Their orders could not be read: {error}")
+                    .replace("{error}", &error_text(locale, error)),
+                theme::regular(12.0),
+                palette.danger,
+            );
+        }
         for sale in &lead.sales {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
@@ -279,11 +310,48 @@ pub fn card(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand) {
                 if let Some(notice) = &sale.notice {
                     chip(
                         ui,
-                        &gettext(locale, "message: {state}").replace("{state}", notice),
+                        &gettext(locale, "message: {state}").replace("{state}", &notice_text(locale, notice)),
                         palette.dim,
                     );
                 }
             });
+        }
+        if lead.owes() {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                theme::icon(ui, Icon::CircleAlert, 14.0, palette.warning);
+                theme::text(
+                    ui,
+                    gettext(locale, "Part of the payment is still due."),
+                    theme::medium(13.0),
+                    palette.warning,
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    // Only a sale put there from here can be marked paid here.
+                    let ours = lead.sales.iter().any(|sale| sale.payment != "pagado");
+                    if ours && button(ui, &palette, gettext(locale, "Mark as paid").as_ref(), false).clicked() {
+                        let mut store = Store::open(&config);
+                        if let Some(lead) = store.get_mut(&lead.id) {
+                            lead.mark_paid();
+                            lead.add(Kind::FollowUp, "✓ Cobrado por completo");
+                        }
+                        store.save();
+                        drop(store);
+                        crate::eleva::push(ui.ctx(), &config);
+                    }
+                });
+            });
+            if lead.orders.as_ref().is_some_and(|seen| {
+                seen.orders.recent.iter().any(|o| matches!(o.payment.as_str(), "pendiente" | "parcial"))
+            }) {
+                wrapped(
+                    ui,
+                    gettext(locale, "An order in ElevaLeads is not paid: mark it paid there too, so the brand knows.").as_ref(),
+                    theme::regular(12.0),
+                    palette.dim,
+                );
+            }
         }
         if lead.needs_sale() && !form.open {
             ui.add_space(6.0);
@@ -351,7 +419,7 @@ pub fn card(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand) {
                 &mut form,
                 lead,
                 brand,
-                automations.as_ref(),
+                (automations.as_ref(), automations_error.as_deref()),
                 sending,
             );
         }
@@ -421,9 +489,13 @@ fn orders(app: &App, ui: &mut egui::Ui, lead: &Lead, brand: &Brand, reading: boo
     } else {
         theme::text(
             ui,
-            gettext(locale, "{n} orders · {spent}")
-                .replace("{n}", &seen.orders.count.to_string())
-                .replace("{spent}", &seen.orders.spent),
+            if seen.orders.count == 1 {
+                gettext(locale, "1 order · {spent}").replace("{spent}", &seen.orders.spent)
+            } else {
+                gettext(locale, "{n} orders · {spent}")
+                    .replace("{n}", &seen.orders.count.to_string())
+                    .replace("{spent}", &seen.orders.spent)
+            },
             theme::semibold(13.5),
             palette.text,
         );
@@ -462,7 +534,7 @@ fn sale_form(
     form: &mut Form,
     lead: &Lead,
     brand: &Brand,
-    automations: Option<&Automations>,
+    (automations, automations_error): (Option<&Automations>, Option<&str>),
     sending: bool,
 ) {
     let palette = app.palette;
@@ -634,6 +706,20 @@ fn sale_form(
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
         match automations {
+            None if automations_error.is_some() => {
+                theme::icon(ui, Icon::CircleAlert, 13.0, palette.danger);
+                wrapped(
+                    ui,
+                    gettext(locale, "The brand's automatic messages could not be checked: the customer may get a WhatsApp message.").as_ref(),
+                    theme::regular(12.5),
+                    palette.danger,
+                );
+                let job = format!("automations:{}", brand.slug);
+                if button(ui, &palette, gettext(locale, "Check again").as_ref(), false).clicked() {
+                    sales::forget_failure(&job);
+                }
+                ui.checkbox(&mut form.unknown_ok, gettext(locale, "Register anyway"));
+            }
             None => {
                 ui.add(egui::Spinner::new().size(12.0).color(palette.dim));
                 theme::text(ui, gettext(locale, "Checking the brand's automatic messages…").as_ref(), theme::regular(12.0), palette.dim);
@@ -663,6 +749,26 @@ fn sale_form(
             },
         }
     });
+    // Delivered also starts the after-sale message, days later.
+    if status == "recepcion"
+        && let Some((days, message, sends)) = automations.and_then(|a| a.after_sale.as_ref())
+    {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+            theme::icon(ui, Icon::Clock, 13.0, palette.warning);
+            let text = if *sends {
+                gettext(locale, "And {n} days later: “{message}”")
+            } else {
+                gettext(locale, "And {n} days later it tries: “{message}” (it will not go out without an approved template)")
+            };
+            wrapped(
+                ui,
+                &text.replace("{n}", &days.to_string()).replace("{message}", message),
+                theme::regular(12.5),
+                palette.warning,
+            );
+        });
+    }
     // The brand's API key, made from here or pasted.
     let has_key = *form
         .has_key
@@ -738,7 +844,8 @@ fn sale_form(
                     palette.secondary,
                 );
             } else {
-                let ready = has_key && (total > 0.0 || !items.is_empty());
+                let checked = automations.is_some() || form.unknown_ok;
+                let ready = has_key && checked && (total > 0.0 || !items.is_empty());
                 let response = ui.add_enabled_ui(ready, |ui| {
                     button(
                         ui,
@@ -782,8 +889,14 @@ fn register(
     let (config, id, slug) = (config.to_owned(), lead.id.clone(), brand.slug.clone());
     sales::start(ctx, &format!("sale:{id}"), move || {
         let registered = sales::register(&slug, &sale)?;
+        if !registered.created {
+            return Ok(Answer::Registered(registered));
+        }
         let mut store = Store::open(&config);
         if let Some(lead) = store.get_mut(&id) {
+            if lead.stage != crate::leads::Stage::Customer {
+                lead.set_stage(crate::leads::Stage::Customer, None);
+            }
             let summary = sale
                 .items
                 .iter()
@@ -797,6 +910,8 @@ fn register(
                 summary: summary.clone(),
                 code: (!registered.code.is_empty()).then(|| registered.code.clone()),
                 notice: registered.notice.clone(),
+                payment: sale.payment.clone(),
+                settled: false,
             });
             let line = format!(
                 "Venta registrada en ElevaLeads: {} · {}{}",
@@ -820,8 +935,10 @@ fn register(
             if lead.eleva.is_none() && !registered.customer.is_empty() {
                 lead.link(ElevaCustomer {
                     id: registered.customer.clone(),
-                    name: lead.name.clone(),
+                    // The brand's own name comes with the next read of the orders.
+                    name: String::new(),
                     stage: None,
+                    phone: None,
                 });
             }
         }

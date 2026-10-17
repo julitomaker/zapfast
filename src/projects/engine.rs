@@ -411,6 +411,7 @@ Respondé SOLO con un objeto JSON válido, sin texto antes ni después, con esta
 \"leaks\":[{\"text\":\"\",\"who\":\"\",\"ref\":0}],\
 \"needs\":[{\"text\":\"\",\"who\":\"\",\"ref\":0}],\
 \"highlights\":[{\"text\":\"\",\"who\":\"\",\"ref\":0}],\
+\"leads\":[{\"who\":\"\",\"ref\":0,\"why\":\"\",\"stage\":\"\",\"paid\":false,\"amount\":\"\"}],\
 \"relevant\":[0]}\n\
 Reglas:\n\
 - summaries: qué pasó hoy, ayer y en la semana, 2 a 4 oraciones cada uno; vacío si no hubo nada.\n\
@@ -419,6 +420,11 @@ Reglas:\n\
 - leaks: pedidos, consultas o problemas de clientes/proveedores que nadie respondió o que se están cayendo.\n\
 - needs: necesidades nuevas que aparecieron (materiales, compras, decisiones, gente).\n\
 - highlights: hasta 6 mensajes importantes para releer (montos, acuerdos, fechas, cambios).\n\
+- leads: personas que quieren comprar o contratar: pidieron precio, catálogo, stock, envío o una cotización, o ya compraron. \
+\"who\" = su nombre; \"ref\" = un mensaje escrito por esa persona (nunca uno de Yo); \"why\" = qué quiere, en pocas palabras; \
+\"stage\" = \"contacted\" si consultó, \"quoted\" si se le pasó precio o cotización, \"customer\" si confirmó, pagó o recibió; \
+\"paid\" = true solo si dice que pagó o mandó el comprobante; \"amount\" = el monto si se habló de uno. \
+Solo clientes o posibles clientes: no proveedores, ni compañeros, ni integrantes del proyecto. Máximo 8.\n\
 - ref es el número entre corchetes del mensaje que lo origina.\n\
 - relevant: los números de los mensajes marcados con ~ (chats mixtos) que SÍ tratan sobre este proyecto. Los demás mensajes ~ no van.\n\
 - No inventes nada que no esté en los mensajes. Si algo ya se resolvió en un mensaje posterior, no lo pongas.\n\
@@ -632,7 +638,84 @@ struct Reply {
     #[serde(default)]
     highlights: Vec<ReplyItem>,
     #[serde(default)]
+    leads: Vec<ReplyLead>,
+    #[serde(default)]
     relevant: Vec<serde_json::Value>,
+}
+
+#[derive(Default, Deserialize)]
+struct ReplyLead {
+    #[serde(default)]
+    who: String,
+    #[serde(default)]
+    r#ref: Option<serde_json::Value>,
+    #[serde(default)]
+    why: String,
+    #[serde(default)]
+    stage: String,
+    #[serde(default)]
+    paid: Option<bool>,
+    #[serde(default)]
+    amount: Option<serde_json::Value>,
+}
+
+/// The people the reply reads as buyers, each tied to their own chat
+/// through a message they wrote; one per person, the first kept.
+fn lead_hints(items: Vec<ReplyLead>, messages: &[&FeedMessage]) -> Vec<super::LeadHint> {
+    let mut seen = std::collections::HashSet::new();
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let message = item
+                .r#ref
+                .as_ref()
+                .and_then(number)
+                .and_then(|i| messages.get(i))?;
+            if message.from_me {
+                return None;
+            }
+            // In a chat with one person it is theirs; in a group, the sender's.
+            let person = if message.chat.ends_with("@s.whatsapp.net") {
+                message.chat.clone()
+            } else {
+                message.sender.clone()
+            };
+            if !person.ends_with("@s.whatsapp.net") || !seen.insert(person.clone()) {
+                return None;
+            }
+            let name = Some(item.who.trim())
+                .filter(|w| !w.is_empty())
+                .map(str::to_owned)
+                .or_else(|| message.sender_name.clone())
+                .unwrap_or_else(|| person.split('@').next().unwrap_or_default().to_owned());
+            let stage = match item.stage.trim() {
+                stage @ ("contacted" | "quoted" | "customer") => stage.to_owned(),
+                _ => "contacted".to_owned(),
+            };
+            let amount = item
+                .amount
+                .and_then(|a| match a {
+                    serde_json::Value::String(s) => Some(s),
+                    serde_json::Value::Number(n) => Some(n.to_string()),
+                    _ => None,
+                })
+                .map(|a| a.trim().to_owned())
+                .filter(|a| !a.is_empty() && a != "0");
+            Some(super::LeadHint {
+                id: format!("lead:{person}"),
+                name,
+                person,
+                why: item.why.trim().to_owned(),
+                stage,
+                paid: item.paid.unwrap_or(false),
+                amount,
+                chat: Some(message.chat.clone()),
+                message: Some(message.id.clone()),
+                since: Some(message.timestamp),
+            })
+        })
+        .take(8)
+        .collect()
 }
 
 #[derive(Default, Deserialize)]
@@ -754,6 +837,7 @@ fn analyze(
         leaks: findings("leak", reply.leaks),
         needs: findings("need", reply.needs),
         highlights: findings("highlight", reply.highlights),
+        leads: lead_hints(reply.leads, messages),
         relevant,
         read,
     })
@@ -1237,6 +1321,41 @@ mod tests {
             "a picked message is not asked about"
         );
         assert!(text.contains("SÍ va: \"las prendas\""));
+    }
+
+    #[test]
+    fn buyers_are_tied_to_their_own_chat() {
+        let direct = message("5491100000000@s.whatsapp.net", "a", 10, "¿precio de 50?");
+        let mut group = message("g@g.us", "b", 20, "pagué la seña");
+        group.sender = "5491122222222@s.whatsapp.net".into();
+        let mut mine = message("5491100000000@s.whatsapp.net", "c", 30, "son $90.000");
+        mine.from_me = true;
+        let reply: Reply = serde_json::from_str(
+            r#"{"leads":[
+                {"who":"Ana","ref":0,"why":"50 cinturones","stage":"quoted","amount":"$ 90.000"},
+                {"who":"","ref":1,"why":"seña","stage":"customer","paid":true,"amount":45000},
+                {"who":"Yo","ref":2,"why":"nada","stage":"x"},
+                {"who":"Ana otra vez","ref":0,"why":"repetida","stage":"contacted"}
+            ]}"#,
+        )
+        .unwrap();
+        let hints = lead_hints(reply.leads, &[&direct, &group, &mine]);
+        assert_eq!(
+            hints.len(),
+            2,
+            "our own message and a second hint of Ana are left out"
+        );
+        assert_eq!(hints[0].person, "5491100000000@s.whatsapp.net");
+        assert_eq!(hints[0].stage, "quoted");
+        assert_eq!(hints[0].amount.as_deref(), Some("$ 90.000"));
+        assert_eq!(hints[1].person, "5491122222222@s.whatsapp.net");
+        assert_eq!(
+            hints[1].name, "Ana",
+            "the sender's name when the reply gives none"
+        );
+        assert!(hints[1].paid);
+        assert_eq!(hints[1].amount.as_deref(), Some("45000"));
+        assert_eq!(hints[1].chat.as_deref(), Some("g@g.us"));
     }
 
     #[test]

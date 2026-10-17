@@ -408,6 +408,37 @@ pub struct Finding {
     pub due: Option<String>,
 }
 
+/// Someone the analysis reads as a buyer: they asked for a price, a quote,
+/// stock or shipping, or bought. The Leads tab suggests them; nothing is
+/// added on its own.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LeadHint {
+    /// Stable across runs: `lead:<person>`.
+    pub id: String,
+    pub name: String,
+    /// The person's own chat (`<digits>@s.whatsapp.net`), even when they
+    /// wrote in a group.
+    pub person: String,
+    /// What they want, in a few words.
+    pub why: String,
+    /// The stage the messages show: `contacted`, `quoted` or `customer`.
+    #[serde(default)]
+    pub stage: String,
+    /// They said they paid.
+    #[serde(default)]
+    pub paid: bool,
+    /// The amount talked about, as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub amount: Option<String>,
+    /// The chat and message it was read from, and when.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
+}
+
 /// A project's analysis.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Analysis {
@@ -431,6 +462,9 @@ pub struct Analysis {
     /// Messages worth reading.
     #[serde(default)]
     pub highlights: Vec<Finding>,
+    /// People who read as buyers, for the Leads tab to suggest.
+    #[serde(default)]
+    pub leads: Vec<LeadHint>,
     /// For smart sources: the messages judged to belong, by chat.
     #[serde(default)]
     pub relevant: HashMap<String, Vec<String>>,

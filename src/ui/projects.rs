@@ -980,11 +980,10 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
         state.map.remove(id);
         save_map(app, state);
         // Its leads, brand and saved messages go with it.
-        let mut leads = crate::leads::Leads::load(&app.dirs.config);
+        // Through the shared store: its cached copy would bring them back.
+        let mut leads = crate::leads::Store::open(&app.dirs.config);
         leads.forget_project(id);
-        if let Err(error) = leads.save(&app.dirs.config) {
-            log::warn!("projects: leads could not be saved: {error}");
-        }
+        leads.save();
         state.selection = None;
         return;
     }

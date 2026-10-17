@@ -3975,6 +3975,8 @@ fn call_entries(now: i64) -> Vec<Message> {
 fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
     use crate::eleva::{Inbox, Situation, Waiting};
     use crate::leads::{Brand, ElevaCustomer, Kind, Lead, Leads, Stage};
+    // The sample brand is never reached, nor the keyring asked.
+    crate::eleva::go_offline();
     let config = app.dirs.config.clone();
     let mut map = crate::projects::ProjectMap::default();
     let project = map.add("Blackyak Labs");
@@ -3987,6 +3989,15 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
         }
     }
     let _ = map.save(&config);
+    // Grace wrote last: the next word is ours.
+    if let Some(last) = app
+        .chats
+        .iter_mut()
+        .find(|chat| chat.id == SAMPLES[2].id)
+        .and_then(|chat| chat.last.as_mut())
+    {
+        last.from_me = false;
+    }
     let today = |days: i64| crate::leads::in_days(days);
     let mut leads = Leads::default();
     let mut add = |name: &str, chat: Option<&str>, phone: &str, build: &dyn Fn(&mut Lead)| {
@@ -4018,11 +4029,13 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
                 id: "demo".into(),
                 name: "Ada Lovelace".into(),
                 stage: Some("Interesado".into()),
+                phone: None,
             });
+            lead.add(Kind::FollowUp, "Sent the samples by courier.");
+            // Already in ElevaLeads: the demo never reaches the brand.
             for entry in &mut lead.entries {
                 entry.sync = crate::leads::Sync::Sent;
             }
-            lead.add(Kind::FollowUp, "Sent the samples by courier.");
         },
     );
     add(
@@ -4057,12 +4070,40 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
     add("Óptica Centro", None, "5491155550003", &|lead| {
         lead.set_stage(Stage::Lost, Some("Price"));
     });
+    // Bought two months ago: due to buy again.
+    add("Distribuidora Este", None, "5491155550004", &|lead| {
+        lead.set_stage(Stage::Customer, None);
+        for entry in &mut lead.entries {
+            entry.at -= 60 * 86_400;
+        }
+    });
+    // Paid half: the rest is to collect.
+    add("Kinesiología Oeste", None, "5491155550005", &|lead| {
+        lead.set_stage(Stage::Customer, None);
+        lead.sales.push(crate::leads::Sale {
+            id: "demo-sale".into(),
+            at: crate::util::now() - 5 * 86_400,
+            total: 240_000.0,
+            summary: "40 × guardapolvo".into(),
+            code: Some("P-0031".into()),
+            notice: None,
+            payment: "parcial".into(),
+            settled: false,
+        });
+    });
     leads.brands.insert(
         project.clone(),
         Brand {
             slug: "blackyak-labs".into(),
             name: "Blackyak Labs".into(),
             write: true,
+        },
+    );
+    leads.settings.insert(
+        project.clone(),
+        crate::leads::Settings {
+            rebuy_days: Some(45),
+            ..Default::default()
         },
     );
     leads.templates.insert(
@@ -4112,6 +4153,7 @@ fn leads_sample(app: &mut App, leads_tab: bool, sale: bool, call: bool) {
                     "confirmado".into(),
                     "¡Listo! Confirmamos tu pedido {code} 🙌".into(),
                 )],
+                after_sale: Some((7, "¿Cómo llegó tu pedido?".into(), false)),
             }),
         );
         id

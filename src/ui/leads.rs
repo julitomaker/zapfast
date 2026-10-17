@@ -28,7 +28,8 @@ use crate::app::App;
 use crate::eleva;
 use crate::i18n::{Locale, gettext};
 use crate::leads::{
-    self, Brand, ElevaCustomer, Kind, LOST_REASONS, Lead, Leads, Stage, Store, Sync, Urgency,
+    self, Brand, ElevaCustomer, Kind, LOST_REASONS, Lead, Leads, Settings, Stage, Store, Sync,
+    Urgency,
 };
 use crate::model::{Action, Page};
 use crate::projects::Project;
@@ -58,7 +59,14 @@ struct State {
     recorder: Option<crate::audio::Recorder>,
     /// A voice note just recorded, waiting to be transcribed or discarded.
     take: Option<super::take::Take>,
-    spoken: Arc<Mutex<Option<Result<String, String>>>>,
+    /// A spoken note's text, with the lead it was said for.
+    spoken: Arc<Mutex<Option<Spoken>>>,
+    recording_for: Option<String>,
+    /// Notes being written for leads not on screen, kept until they come
+    /// back: the text and its kind.
+    drafts: std::collections::HashMap<String, (String, Kind)>,
+    /// The next action's fields are read again from the lead.
+    reload_next: bool,
     transcribing: bool,
     /// The next action being edited, and for which lead.
     next_text: String,
@@ -82,6 +90,12 @@ struct State {
     inbox_open: bool,
     last_push: Option<Instant>,
     notice: Option<(String, Instant)>,
+    /// The project's sales settings being edited: buying cycle, cadence and
+    /// daily cap, as typed.
+    settings_draft: Option<(String, String, String)>,
+    /// The analysis' buyers for the project, read now and then.
+    hints: Option<(String, Instant, Vec<crate::projects::LeadHint>)>,
+    show_hints: bool,
     /// Whether each call in the library has been summarized, read from it
     /// when a call entry is drawn and again once a call is noted.
     summarized: std::collections::HashMap<String, bool>,
@@ -159,6 +173,9 @@ impl Default for State {
             recorder: None,
             take: None,
             spoken: Arc::default(),
+            recording_for: None,
+            drafts: std::collections::HashMap::new(),
+            reload_next: false,
             transcribing: false,
             next_text: String::new(),
             next_due: None,
@@ -177,6 +194,9 @@ impl Default for State {
             inbox_open: false,
             last_push: None,
             notice: None,
+            settings_draft: None,
+            hints: None,
+            show_hints: false,
             summarized: std::collections::HashMap::new(),
             #[cfg(any(test, feature = "demo"))]
             demo_view: None,
@@ -185,6 +205,9 @@ impl Default for State {
 }
 
 type Shared = Arc<Mutex<State>>;
+
+/// A spoken note's text, with the lead it was said for.
+type Spoken = (String, Result<String, String>);
 
 /// A chat summary's answer, with the lead it is for.
 type Summary = (String, Result<String, String>);
@@ -214,6 +237,9 @@ enum Change {
     Disconnect,
     AddTemplate(String),
     RemoveTemplate(usize),
+    Settings(Settings),
+    AddHint(Box<crate::projects::LeadHint>),
+    DismissHint(String),
 }
 
 fn apply(leads: &mut Leads, project: &str, change: Change) -> Option<String> {
@@ -232,16 +258,16 @@ fn apply(leads: &mut Leads, project: &str, change: Change) -> Option<String> {
         }
         Change::Done(id) => {
             if let Some(lead) = leads.get_mut(&id)
-                && let Some(next) = lead.next.take()
+                && lead.finish_next().is_some()
+                // The first step done with someone new is the first contact.
+                && lead.stage == Stage::New
             {
-                lead.add(Kind::FollowUp, &format!("✓ {}", next.text));
+                lead.set_stage(Stage::Contacted, None);
             }
         }
         Change::Postpone(id, days) => {
-            if let Some(lead) = leads.get_mut(&id)
-                && let Some(next) = lead.next.clone()
-            {
-                lead.set_next(&next.text, Some(leads::in_days(days)));
+            if let Some(lead) = leads.get_mut(&id) {
+                lead.postpone(days);
             }
         }
         Change::Entry(id, kind, text) => {
@@ -262,20 +288,13 @@ fn apply(leads: &mut Leads, project: &str, change: Change) -> Option<String> {
                 lead.link(customer);
             }
         }
-        Change::Unlink(id) => {
-            if let Some(lead) = leads.get_mut(&id) {
-                lead.unlink();
-            }
-        }
+        Change::Unlink(id) => leads.unlink(&id),
         Change::Retry(id) => {
             if let Some(lead) = leads.get_mut(&id) {
-                for entry in &mut lead.entries {
-                    if matches!(entry.sync, Sync::Failed(_)) {
-                        entry.sync = Sync::Pending;
-                    }
-                }
+                lead.retry();
             }
         }
+
         Change::Connect(brand) => {
             let moved = leads
                 .brands
@@ -296,6 +315,18 @@ fn apply(leads: &mut Leads, project: &str, change: Change) -> Option<String> {
                     .or_default()
                     .push(text.to_owned());
             }
+        }
+        Change::AddHint(hint) => {
+            return Some(leads.add(Leads::from_hint(project, &hint)));
+        }
+        Change::DismissHint(id) => {
+            let list = leads.dismissed.entry(project.to_owned()).or_default();
+            if !list.contains(&id) {
+                list.push(id);
+            }
+        }
+        Change::Settings(settings) => {
+            leads.settings.insert(project.to_owned(), settings);
         }
         Change::RemoveTemplate(index) => {
             if let Some(list) = leads.templates.get_mut(project)
@@ -447,12 +478,28 @@ fn reason_label(locale: Locale, reason: &str) -> String {
 
 fn urgency_label(locale: Locale, urgency: Urgency) -> String {
     match urgency {
+        Urgency::Reply => gettext(locale, "Your turn to answer"),
         Urgency::Overdue => gettext(locale, "Late"),
         Urgency::Today => gettext(locale, "For today"),
+        Urgency::Collect => gettext(locale, "To collect"),
+        Urgency::Rebuy => gettext(locale, "To sell again"),
         Urgency::NoAction => gettext(locale, "Nothing planned"),
         Urgency::Upcoming => gettext(locale, "Coming up"),
         Urgency::Customers => gettext(locale, "Customers"),
         Urgency::Lost => gettext(locale, "Lost sales"),
+    }
+    .into_owned()
+}
+
+/// What became of the brand's automatic message after a sale, as
+/// ElevaLeads names it.
+pub(super) fn notice_text(locale: Locale, notice: &str) -> String {
+    match notice {
+        "enviado" | "sent" => gettext(locale, "sent"),
+        "fuera_ventana" => gettext(locale, "not sent: outside the 24-hour window"),
+        "baja" | "opt_out" => gettext(locale, "not sent: they unsubscribed"),
+        "sin_mensaje" | "omitido" | "skipped" => gettext(locale, "none"),
+        other => return other.replace('_', " "),
     }
     .into_owned()
 }
@@ -482,6 +529,41 @@ pub(super) fn error_text(locale: Locale, error: &str) -> String {
             gettext(locale, "An ElevaLeads API key starts with eleva_")
         }
         "The brand's API key is missing" => gettext(locale, "The brand's API key is missing"),
+        "ElevaLeads already has them as a customer" => gettext(
+            locale,
+            "ElevaLeads already has them as a customer: the stage was not moved back",
+        ),
+        "ElevaLeads refused the call" | "ElevaLeads refused the sale" => {
+            gettext(locale, "ElevaLeads refused it")
+        }
+        "no messages in the last 30 days" => {
+            gettext(locale, "the chat has no messages in the last 30 days")
+        }
+        "the model answered nothing" => gettext(locale, "the analysis answered nothing"),
+        _ if error.starts_with("already:") => {
+            return gettext(
+                locale,
+                "That sale was already in ElevaLeads as order {code}: nothing new was made.",
+            )
+            .replace("{code}", &error["already:".len()..]);
+        }
+        _ if error.starts_with("ElevaLeads wrote it on another customer: ") => {
+            return gettext(
+                locale,
+                "ElevaLeads put it on another customer's file: {name}. Check the link.",
+            )
+            .replace(
+                "{name}",
+                &error["ElevaLeads wrote it on another customer: ".len()..],
+            );
+        }
+        _ if error.starts_with("ElevaLeads answered ") => {
+            return gettext(
+                locale,
+                "ElevaLeads did not answer properly ({status}); it will be tried again.",
+            )
+            .replace("{status}", &error["ElevaLeads answered ".len()..]);
+        }
         _ if error.contains("error sending request") || error.contains("dns error") => gettext(
             locale,
             "ElevaLeads could not be reached: check the connection",
@@ -564,6 +646,33 @@ fn entry_text(locale: Locale, kind: Kind, text: &str) -> String {
     text.to_owned()
 }
 
+/// Who wrote last in a lead's chat with one person, and when.
+struct Turn {
+    /// They did: the next word is ours.
+    theirs: bool,
+    at: i64,
+}
+
+/// The lead's chat: its own, or the one its number already has.
+fn chat_of<'a>(app: &'a App, lead: &Lead) -> Option<&'a crate::model::Chat> {
+    let id = lead.chat.clone().or_else(|| {
+        lead.phone
+            .as_deref()
+            .map(|phone| format!("{}@s.whatsapp.net", leads::digits(phone)))
+    })?;
+    app.chat(&id)
+}
+
+fn turn(app: &App, lead: &Lead) -> Option<Turn> {
+    let chat = chat_of(app, lead)?;
+    let last = chat.last.as_ref()?;
+    let direct = crate::model::ChatKind::from_id(&chat.id) == crate::model::ChatKind::Direct;
+    Some(Turn {
+        theirs: direct && !last.from_me,
+        at: chat.last_activity,
+    })
+}
+
 /// Opens a lead's chat, starting one with its number when there is none.
 fn open_chat(app: &mut App, lead: &Lead) -> Option<String> {
     let chat = lead.chat.clone().or_else(|| {
@@ -601,7 +710,7 @@ pub fn tab(app: &mut App, ui: &mut egui::Ui, project: &Project) {
     let leads = Store::open(&app.dirs.config).clone();
     // Entries that wait are sent again now and then: the network may have
     // been down, or the token renewed.
-    let waiting = leads.of_project(&project.id).any(|lead| lead.pending() > 0);
+    let waiting = leads.of_project(&project.id).any(|lead| lead.to_send());
     if waiting
         && state
             .last_push
@@ -634,6 +743,7 @@ pub fn tab(app: &mut App, ui: &mut egui::Ui, project: &Project) {
                 brand.as_ref(),
                 &mut changes,
             );
+            results(app, ui, &mut state, &leads, project, &mut changes);
             if let Some((text, at)) = &state.notice
                 && at.elapsed() < Duration::from_secs(6)
             {
@@ -771,7 +881,7 @@ fn collect_answers(app: &App, state: &mut State, project: &Project, changes: &mu
             Instant::now(),
         ));
     }
-    if let Some(result) = state
+    if let Some((lead, result)) = state
         .spoken
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -780,12 +890,29 @@ fn collect_answers(app: &App, state: &mut State, project: &Project, changes: &mu
         state.transcribing = false;
         match result {
             Ok(text) => {
-                if !state.composer.trim().is_empty() {
-                    state.composer.push(' ');
+                // Into the box of the lead it was said for, on screen or not.
+                let current = state.next_for.as_deref() == Some(lead.as_str());
+                let draft = if current {
+                    &mut state.composer
+                } else {
+                    &mut state
+                        .drafts
+                        .entry(lead)
+                        .or_insert((String::new(), Kind::Note))
+                        .0
+                };
+                if !draft.trim().is_empty() {
+                    draft.push(' ');
                 }
-                state.composer.push_str(text.trim());
+                draft.push_str(text.trim());
             }
-            Err(error) => log::warn!("leads: a spoken note could not be read: {error}"),
+            Err(error) => {
+                state.notice = Some((
+                    gettext(locale, "The spoken note could not be transcribed: {error}")
+                        .replace("{error}", &error),
+                    Instant::now(),
+                ));
+            }
         }
     }
 }
@@ -928,6 +1055,177 @@ fn toolbar(
             );
         });
     });
+}
+
+/// The month in one line: leads in, first contacts today against the safe
+/// cap, won, worth, conversion and why sales were lost; and the project's
+/// sales settings behind a button at its end.
+fn results(
+    app: &App,
+    ui: &mut egui::Ui,
+    state: &mut State,
+    leads: &Leads,
+    project: &Project,
+    changes: &mut Vec<Change>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    if leads.of_project(&project.id).next().is_none() {
+        return;
+    }
+    let month = leads.month(&project.id, leads::month_start());
+    let settings = leads.settings_of(&project.id);
+    let contacts = leads.first_contacts(&project.id, leads::today_start());
+    ui.add_space(8.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(14.0, 4.0);
+        let stat = |ui: &mut egui::Ui, value: String, label: &str, color: Color32| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                theme::text(ui, value, theme::semibold(13.5), color);
+                theme::text(ui, label, theme::regular(12.5), palette.secondary);
+            });
+        };
+        theme::text(ui, gettext(locale, "This month").to_uppercase(), theme::semibold(11.0), palette.dim);
+        let one = |n: usize, singular: std::borrow::Cow<'static, str>, plural: std::borrow::Cow<'static, str>| {
+            if n == 1 { singular } else { plural }
+        };
+        stat(ui, month.new.to_string(), &one(month.new, gettext(locale, "new lead"), gettext(locale, "new")), palette.text);
+        stat(ui, month.won.to_string(), &one(month.won, gettext(locale, "won one"), gettext(locale, "won")), palette.accent);
+        if month.won_value > 0.0 {
+            stat(ui, super::sales::money(month.won_value), &gettext(locale, "sold"), palette.accent);
+        }
+        if let Some(rate) = month.conversion() {
+            stat(ui, format!("{rate}%"), &gettext(locale, "closing rate"), palette.text);
+        }
+        if month.lost > 0 {
+            let why = month
+                .lost_reasons
+                .iter()
+                .take(2)
+                .map(|(reason, n)| format!("{} {n}", reason_label(locale, reason).to_lowercase()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            stat(ui, month.lost.to_string(), &format!("{} ({why})", one(month.lost, gettext(locale, "lost one"), gettext(locale, "lost"))), palette.secondary);
+        }
+        // Too many first messages a day and WhatsApp takes it for spam.
+        let over = contacts >= settings.daily_cap as usize;
+        let near = contacts * 5 >= settings.daily_cap as usize * 4;
+        if contacts > 0 {
+            let color = if over { palette.danger } else if near { palette.warning } else { palette.secondary };
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                theme::text(ui, format!("{contacts}/{}", settings.daily_cap), theme::semibold(13.5), color);
+                theme::text(ui, gettext(locale, "first contacts today").as_ref(), theme::regular(12.5), palette.secondary);
+            })
+            .response
+            .on_hover_text(gettext(locale, "WhatsApp may block a number that writes to too many new people in a day. Keep under the cap, and spread first messages over the day."));
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            settings_button(app, ui, state, &settings, changes);
+        });
+    });
+}
+
+/// The project's sales settings: buying cycle, follow-up cadence and the
+/// daily cap of first messages.
+fn settings_button(
+    app: &App,
+    ui: &mut egui::Ui,
+    state: &mut State,
+    settings: &Settings,
+    changes: &mut Vec<Change>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let response = theme::icon_button(
+        ui,
+        Icon::Settings,
+        15.0,
+        palette.secondary,
+        palette.text,
+        &gettext(locale, "How this project sells"),
+    );
+    if response.clicked() {
+        state.settings_draft = Some((
+            settings
+                .rebuy_days
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            settings
+                .cadence
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            settings.daily_cap.to_string(),
+        ));
+    }
+    egui::Popup::menu(&response)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(320.0)
+        .frame(widgets::menu_frame(&palette))
+        .show(|ui| {
+            let Some((rebuy, cadence, cap)) = state.settings_draft.as_mut() else {
+                return;
+            };
+            ui.spacing_mut().item_spacing.y = 4.0;
+            theme::text(ui, gettext(locale, "How this project sells").as_ref(), theme::semibold(13.5), palette.text);
+            ui.add_space(4.0);
+            let field = |ui: &mut egui::Ui, label: &str, hint: &str, help: &str, text: &mut String| {
+                theme::text(ui, label, theme::medium(12.5), palette.secondary);
+                field_frame(&palette).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(text)
+                            .hint_text(hint)
+                            .font(theme::regular(13.5))
+                            .frame(Frame::NONE)
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+                wrapped(ui, help, theme::regular(11.5), palette.dim);
+                ui.add_space(4.0);
+            };
+            field(
+                ui,
+                &gettext(locale, "Customers buy again every (days)"),
+                "45",
+                &gettext(locale, "Empty for one-off sales. Customers show up in “To sell again” after this long."),
+                rebuy,
+            );
+            field(
+                ui,
+                &gettext(locale, "Follow up someone who does not answer after (days)"),
+                "2, 5, 10",
+                &gettext(locale, "One number per follow-up. After the last one, the lead can be closed as lost."),
+                cadence,
+            );
+            field(
+                ui,
+                &gettext(locale, "First contacts a day, at most"),
+                "25",
+                &gettext(locale, "Writing to many new people in a day can get the number blocked."),
+                cap,
+            );
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if button(ui, &palette, gettext(locale, "Save").as_ref(), true).clicked() {
+                        let days: Vec<u32> = cadence
+                            .split(|c: char| !c.is_ascii_digit())
+                            .filter_map(|n| n.parse().ok())
+                            .filter(|n| *n > 0)
+                            .take(8)
+                            .collect();
+                        changes.push(Change::Settings(Settings {
+                            rebuy_days: rebuy.trim().parse().ok().filter(|d| *d > 0),
+                            cadence: if days.is_empty() { Settings::default().cadence } else { days },
+                            daily_cap: cap.trim().parse().ok().filter(|c| *c > 0).unwrap_or(25),
+                        }));
+                        ui.close();
+                    }
+                });
+            });
+        });
 }
 
 /// Pasting the brand's token: what it is, where to get it, and checking it.
@@ -1096,6 +1394,21 @@ fn add_card(
                     theme::regular(12.5),
                     palette.secondary,
                 );
+                let cap = leads.settings_of(&project.id).daily_cap as usize;
+                let today = leads.first_contacts(&project.id, leads::today_start());
+                let waiting = leads
+                    .of_project(&project.id)
+                    .filter(|lead| lead.stage == Stage::New)
+                    .count();
+                wrapped(
+                    ui,
+                    &gettext(locale, "Today: {n} first contacts of {cap}; {waiting} new leads still to write to. Spread first messages over the day so WhatsApp does not take them for spam.")
+                        .replace("{n}", &today.to_string())
+                        .replace("{cap}", &cap.to_string())
+                        .replace("{waiting}", &waiting.to_string()),
+                    theme::regular(12.0),
+                    if today >= cap { palette.danger } else { palette.dim },
+                );
                 ui.add_space(6.0);
                 field_frame(&palette).show(ui, |ui| {
                     ui.add(
@@ -1125,15 +1438,30 @@ fn add_card(
                         let label = gettext(locale, "Add {n}").replace("{n}", &good.len().to_string());
                         if !good.is_empty() && button(ui, &palette, &label, true).clicked() {
                             let first = gettext(locale, "First message").into_owned();
+                            let mut known = 0;
                             for (name, phone) in good {
+                                if leads.by_phone(&project.id, phone).is_some() {
+                                    known += 1;
+                                    continue;
+                                }
                                 let chat = format!("{phone}@s.whatsapp.net");
                                 let chat = app.chat(&chat).map(|_| chat);
                                 let mut lead = Lead::new(&project.id, name, chat, Some(phone.clone()));
                                 lead.set_next(&first, Some(leads::today()));
                                 changes.push(Change::Add(Box::new(lead)));
                             }
-                            state.numbers.clear();
-                            state.adding = None;
+                            // Lines that could not be read stay to fix.
+                            let bad: Vec<String> = parsed.iter().filter_map(|line| line.as_ref().err().cloned()).collect();
+                            state.numbers = bad.join("\n");
+                            if state.numbers.is_empty() {
+                                state.adding = None;
+                            }
+                            if known > 0 {
+                                state.notice = Some((
+                                    gettext(locale, "{n} were leads already").replace("{n}", &known.to_string()),
+                                    Instant::now(),
+                                ));
+                            }
                         }
                     });
                 });
@@ -1180,13 +1508,19 @@ fn list(
     let locale = app.locale;
     let today = leads::today();
     let needle = crate::util::search_key(state.search.trim());
-    let groups = leads.grouped(&project.id, &today);
+    let groups = {
+        let app: &App = app;
+        leads.grouped_with(&project.id, &today, &|lead| {
+            turn(app, lead).is_some_and(|turn| turn.theirs)
+        })
+    };
     let any = leads.of_project(&project.id).next().is_some();
     egui::ScrollArea::vertical()
         .id_salt(("leads-list", &project.id))
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            suggestions_block(app, ui, state, leads, project, changes);
             if !any {
                 widgets::empty_state(
                     ui,
@@ -1224,9 +1558,11 @@ fn list(
                     _ => None,
                 };
                 let color = match urgency {
+                    Urgency::Reply => palette.accent,
                     Urgency::Overdue => palette.danger,
-                    Urgency::Today => palette.warning,
+                    Urgency::Today | Urgency::Collect => palette.warning,
                     Urgency::NoAction => palette.secondary,
+                    Urgency::Rebuy => palette.link,
                     _ => palette.dim,
                 };
                 let open = folded.as_ref().is_none_or(|open| **open) || state.filter.is_some() || !needle.is_empty();
@@ -1252,11 +1588,18 @@ fn list(
                 {
                     *folded = !*folded;
                 }
-                if urgency == Urgency::NoAction {
+                let hint = match urgency {
+                    Urgency::NoAction => Some(gettext(locale, "Open sales with no next step: the ones going cold")),
+                    Urgency::Reply => Some(gettext(locale, "They wrote last: the next word is yours")),
+                    Urgency::Collect => Some(gettext(locale, "Sales with part of the payment still due")),
+                    Urgency::Rebuy => Some(gettext(locale, "Customers whose last purchase is a buying cycle ago")),
+                    _ => None,
+                };
+                if let Some(hint) = hint {
                     ui.add_space(1.0);
                     ui.horizontal(|ui| {
                         ui.add_space(4.0);
-                        theme::text(ui, gettext(locale, "Open sales with no next step: the ones going cold").as_ref(), theme::regular(11.5), palette.dim);
+                        theme::text(ui, hint.as_ref(), theme::regular(11.5), palette.dim);
                     });
                 }
                 ui.add_space(4.0);
@@ -1279,6 +1622,157 @@ fn list(
                 );
             }
         });
+}
+
+/// The analysis' buyers with no lead yet: who, what they want, the stage
+/// the messages show; added or turned down with a click.
+fn suggestions_block(
+    app: &mut App,
+    ui: &mut egui::Ui,
+    state: &mut State,
+    leads: &Leads,
+    project: &Project,
+    changes: &mut Vec<Change>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let stale = state
+        .hints
+        .as_ref()
+        .is_none_or(|(id, at, _)| *id != project.id || at.elapsed() > Duration::from_secs(5));
+    if stale {
+        let hints = crate::projects::Analysis::load(&app.dirs.config, &project.id)
+            .map(|analysis| analysis.leads)
+            .unwrap_or_default();
+        state.hints = Some((project.id.clone(), Instant::now(), hints));
+    }
+    let Some((_, _, hints)) = &state.hints else {
+        return;
+    };
+    let shown = leads.suggestions(project, hints);
+    if shown.is_empty() {
+        return;
+    }
+    let total = shown.len();
+    let limit = if state.show_hints { total } else { 3 };
+    let mut toggle = false;
+    card_frame(&palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, Icon::Star, 15.0, palette.warning);
+            theme::text(
+                ui,
+                gettext(locale, "Suggested by the analysis"),
+                theme::semibold(14.0),
+                palette.text,
+            );
+            chip(ui, &total.to_string(), palette.warning);
+        });
+        wrapped(
+            ui,
+            gettext(
+                locale,
+                "People who asked for a price, a quote or stock, or bought, and are not leads yet.",
+            )
+            .as_ref(),
+            theme::regular(12.0),
+            palette.dim,
+        );
+        ui.add_space(4.0);
+        for hint in shown.iter().take(limit) {
+            let picture = app.avatar(&hint.person);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                let (avatar, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
+                widgets::paint_avatar(
+                    ui,
+                    &palette,
+                    avatar,
+                    &hint.name,
+                    &hint.person,
+                    picture.as_deref(),
+                );
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.set_max_width((ui.available_width() - 120.0).max(120.0));
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        theme::text(ui, &hint.name, theme::semibold(13.5), palette.text);
+                        let stage = match hint.stage.as_str() {
+                            "quoted" => Stage::Quoted,
+                            "customer" => Stage::Customer,
+                            _ => Stage::Contacted,
+                        };
+                        chip(
+                            ui,
+                            &stage_label(locale, stage),
+                            stage_color(&palette, stage),
+                        );
+                        if hint.paid {
+                            chip(ui, &gettext(locale, "says they paid"), palette.accent);
+                        }
+                        if let Some(amount) = &hint.amount {
+                            theme::text(ui, amount, theme::medium(12.5), palette.secondary);
+                        }
+                    });
+                    if !hint.why.is_empty() {
+                        theme::text(ui, &hint.why, theme::regular(12.5), palette.secondary);
+                    }
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    if theme::icon_button(
+                        ui,
+                        Icon::X,
+                        14.0,
+                        palette.dim,
+                        palette.text,
+                        &gettext(locale, "Not a lead"),
+                    )
+                    .clicked()
+                    {
+                        changes.push(Change::DismissHint(hint.id.clone()));
+                    }
+                    if let (Some(chat), Some(message)) = (&hint.chat, &hint.message)
+                        && theme::icon_button(
+                            ui,
+                            Icon::ExternalLink,
+                            14.0,
+                            palette.dim,
+                            palette.text,
+                            &gettext(locale, "Open the message"),
+                        )
+                        .clicked()
+                    {
+                        app.actions.push(Action::Open(Page::Chats));
+                        app.actions.push(Action::OpenMessage {
+                            chat: chat.clone(),
+                            message: message.clone(),
+                        });
+                    }
+                    if button(ui, &palette, gettext(locale, "Add").as_ref(), true).clicked() {
+                        changes.push(Change::AddHint(Box::new((*hint).clone())));
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        }
+        if total > 3 {
+            let label = if state.show_hints {
+                gettext(locale, "Show less").into_owned()
+            } else {
+                gettext(locale, "Show {n} more").replace("{n}", &(total - 3).to_string())
+            };
+            if button(ui, &palette, &label, false).clicked() {
+                toggle = true;
+            }
+        }
+    });
+    if toggle {
+        state.show_hints = !state.show_hints;
+    }
+    ui.add_space(10.0);
 }
 
 /// One lead: its picture, name, stage, next step and when, and quick ways
@@ -1328,7 +1822,7 @@ fn lead_row(
                 );
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.set_max_width((ui.available_width() - 70.0).max(120.0));
+                    ui.set_max_width((ui.available_width() - 150.0).max(120.0));
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         theme::text(ui, &lead.name, theme::semibold(14.0), palette.text);
@@ -1399,12 +1893,21 @@ fn lead_row(
                             state.selected = Some(lead.id.clone());
                         }
                     } else {
-                        theme::text(
-                            ui,
-                            ago(locale, lead.last_touch()),
-                            theme::regular(11.5),
-                            palette.dim,
-                        );
+                        let (text, color) = match turn(app, lead) {
+                            Some(turn) if turn.theirs && lead.stage != Stage::Lost => (
+                                gettext(locale, "wrote {when} ago")
+                                    .replace("{when}", &ago(locale, turn.at)),
+                                palette.accent,
+                            ),
+                            Some(turn) if lead.stage.open() => (
+                                gettext(locale, "no answer for {when}")
+                                    .replace("{when}", &ago(locale, turn.at)),
+                                palette.dim,
+                            ),
+                            Some(turn) => (ago(locale, turn.at), palette.dim),
+                            None => (ago(locale, lead.last_touch()), palette.dim),
+                        };
+                        theme::text(ui, text, theme::regular(11.5), color);
                     }
                 });
             });
@@ -1485,7 +1988,21 @@ fn detail(
     let palette = app.palette;
     let locale = app.locale;
     if state.next_for.as_deref() != Some(lead.id.as_str()) {
+        // What was being written for the lead before stays for it.
+        if let Some(previous) = state.next_for.take() {
+            let draft = (std::mem::take(&mut state.composer), state.kind);
+            if !draft.0.trim().is_empty() {
+                state.drafts.insert(previous, draft);
+            }
+        }
+        (state.composer, state.kind) = state
+            .drafts
+            .remove(&lead.id)
+            .unwrap_or((String::new(), Kind::Note));
         state.next_for = Some(lead.id.clone());
+        state.reload_next = true;
+    }
+    if std::mem::take(&mut state.reload_next) {
         state.next_text = lead
             .next
             .as_ref()
@@ -1493,8 +2010,6 @@ fn detail(
             .unwrap_or_default();
         state.next_due = lead.next.as_ref().and_then(|n| n.due.clone());
         state.value = lead.value.clone().unwrap_or_default();
-        state.composer.clear();
-        state.kind = Kind::Note;
     }
     egui::ScrollArea::vertical()
         .id_salt(("lead-detail", &lead.id))
@@ -1567,7 +2082,14 @@ fn detail(
                 super::sales::card(app, ui, lead, brand);
                 ui.add_space(10.0);
             }
-            next_card(app, ui, state, lead, changes);
+            next_card(
+                app,
+                ui,
+                state,
+                lead,
+                &leads.settings_of(&lead.project),
+                changes,
+            );
             ui.add_space(10.0);
             if let Some(brand) = brand {
                 eleva_card(app, ui, state, lead, brand, changes);
@@ -1670,11 +2192,50 @@ fn stage_steps(app: &App, ui: &mut egui::Ui, lead: &Lead, changes: &mut Vec<Chan
 }
 
 /// What comes next: the action, a day picked with a click, and its worth.
+/// What usually comes next for a lead with nothing planned, by its stage
+/// and how many times it was chased, as action and days from today.
+fn suggestions(locale: Locale, lead: &Lead, settings: &Settings) -> Vec<(String, i64)> {
+    let follow = |text: std::borrow::Cow<'static, str>, days: i64| (text.into_owned(), days);
+    match lead.stage {
+        Stage::New => vec![
+            follow(gettext(locale, "First message"), 0),
+            follow(gettext(locale, "Call them"), 0),
+        ],
+        Stage::Contacted => match settings.cadence.get(lead.chases()) {
+            Some(days) => vec![
+                follow(gettext(locale, "Follow up"), i64::from(*days)),
+                follow(gettext(locale, "Call them"), 1),
+            ],
+            None => vec![follow(gettext(locale, "Last try"), 3)],
+        },
+        Stage::Quoted => vec![
+            follow(gettext(locale, "Ask about the quote"), 2),
+            follow(gettext(locale, "Call to close"), 1),
+            follow(gettext(locale, "Send a reminder of the offer"), 4),
+        ],
+        Stage::Customer => {
+            let mut list = vec![
+                follow(gettext(locale, "Confirm the delivery"), 2),
+                follow(gettext(locale, "Ask for a review or a referral"), 7),
+            ];
+            if let Some(days) = settings.rebuy_days {
+                list.push(follow(
+                    gettext(locale, "Offer to buy again"),
+                    lead.rebuy_in(days),
+                ));
+            }
+            list
+        }
+        Stage::Lost => vec![follow(gettext(locale, "Try again"), 60)],
+    }
+}
+
 fn next_card(
     app: &App,
     ui: &mut egui::Ui,
     state: &mut State,
     lead: &Lead,
+    settings: &Settings,
     changes: &mut Vec<Change>,
 ) {
     let palette = app.palette;
@@ -1694,7 +2255,7 @@ fn next_card(
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if button(ui, &palette, gettext(locale, "Done").as_ref(), false).clicked() {
                         changes.push(Change::Done(lead.id.clone()));
-                        state.next_for = None;
+                        state.reload_next = true;
                     }
                     if let Some(due) = &next.due {
                         let (label, color) = due_label(app, due);
@@ -1703,6 +2264,53 @@ fn next_card(
                 });
             }
         });
+        if lead.next.is_none() {
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                theme::text(
+                    ui,
+                    gettext(locale, "Usually next:").as_ref(),
+                    theme::regular(12.0),
+                    palette.dim,
+                );
+                for (text, days) in suggestions(locale, lead, settings) {
+                    let when = match days {
+                        0 => gettext(locale, "today").into_owned(),
+                        1 => gettext(locale, "tomorrow").into_owned(),
+                        n => gettext(locale, "in {n} days").replace("{n}", &n.to_string()),
+                    };
+                    if widgets::filter_chip(ui, &palette, &format!("{text} · {when}"), 0, false)
+                        .clicked()
+                    {
+                        changes.push(Change::Next(
+                            lead.id.clone(),
+                            text.clone(),
+                            Some(leads::in_days(days)),
+                        ));
+                        state.reload_next = true;
+                    }
+                }
+                // Chased every step of the cadence without an answer.
+                if lead.stage == Stage::Contacted
+                    && lead.chases() >= settings.cadence.len()
+                    && widgets::filter_chip(
+                        ui,
+                        &palette,
+                        gettext(locale, "Lost: no answer").as_ref(),
+                        0,
+                        false,
+                    )
+                    .clicked()
+                {
+                    changes.push(Change::Stage(
+                        lead.id.clone(),
+                        Stage::Lost,
+                        Some("No answer".into()),
+                    ));
+                }
+            });
+        }
         ui.add_space(6.0);
         field_frame(&palette).show(ui, |ui| {
             ui.add(
@@ -2052,7 +2660,7 @@ fn history(
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             if !calling && state.take.is_none() {
-                record_button(app, ui, state);
+                record_button(app, ui, state, &lead.id);
             }
             if state.recorder.is_none() && !state.transcribing && state.take.is_none() {
                 call_controls(app, ui, state, lead, wide);
@@ -2186,7 +2794,7 @@ fn history(
 
 /// The microphone: says a note into the box, read by the transcription
 /// engines the app already has.
-fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State) {
+fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State, lead: &str) {
     let palette = app.palette;
     let locale = app.locale;
     if let Some(recorder) = &state.recorder {
@@ -2221,7 +2829,13 @@ fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State) {
                         Err(error) => log::warn!("leads: a voice note could not be kept: {error}"),
                     }
                 }
-                Err(error) => log::warn!("leads: recording failed: {error}"),
+                Err(error) => {
+                    state.notice = Some((
+                        gettext(locale, "The recording failed: {error}")
+                            .replace("{error}", &error.to_string()),
+                        Instant::now(),
+                    ));
+                }
             }
         }
     } else if state.transcribing {
@@ -2245,6 +2859,7 @@ fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State) {
         state.recorder = Some(crate::audio::Recorder::start(
             crate::backend::Waker::default(),
         ));
+        state.recording_for = Some(lead.to_owned());
     }
 }
 
@@ -2594,12 +3209,18 @@ fn voice_take(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
             state.transcribing = true;
             let engines = app.settings.media_engines.clone();
             let slot = state.spoken.clone();
+            // Into the box of the lead it was said for.
+            let said_for = state
+                .recording_for
+                .take()
+                .or_else(|| state.next_for.clone())
+                .unwrap_or_default();
             let ctx = ui.ctx().clone();
             let state_dir = app.dirs.state.clone();
             std::thread::spawn(move || {
                 let result = crate::media_ai::speech(&engines, &state_dir, &take.path);
                 take.discard();
-                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some((said_for, result));
                 ctx.request_repaint();
             });
         }
@@ -3187,7 +3808,9 @@ fn sales_card(
     let palette = app.palette;
     let locale = app.locale;
     let today = leads::today();
-    let groups = leads.grouped(&project.id, &today);
+    let groups = leads.grouped_with(&project.id, &today, &|lead| {
+        turn(app, lead).is_some_and(|turn| turn.theirs)
+    });
     let count = |urgency: Urgency| {
         groups
             .iter()
@@ -3216,8 +3839,13 @@ fn sales_card(
             });
         });
         ui.add_space(8.0);
-        ui.columns(4, |columns| {
+        ui.columns(5, |columns| {
             let cells = [
+                (
+                    gettext(locale, "Your turn"),
+                    count(Urgency::Reply),
+                    palette.accent,
+                ),
                 (
                     gettext(locale, "Late"),
                     count(Urgency::Overdue),
@@ -3230,9 +3858,9 @@ fn sales_card(
                 ),
                 (gettext(locale, "Quoted"), quoted, palette.warning),
                 (
-                    gettext(locale, "Customers"),
-                    count(Urgency::Customers),
-                    palette.accent,
+                    gettext(locale, "To collect"),
+                    count(Urgency::Collect),
+                    palette.warning,
                 ),
             ];
             for (column, (label, value, color)) in columns.iter_mut().zip(cells) {
@@ -3253,7 +3881,7 @@ fn sales_card(
         });
         let urgent: Vec<&Lead> = groups
             .iter()
-            .filter(|(u, _)| matches!(u, Urgency::Overdue | Urgency::Today))
+            .filter(|(u, _)| matches!(u, Urgency::Reply | Urgency::Overdue | Urgency::Today))
             .flat_map(|(_, list)| list.iter().copied())
             .take(4)
             .collect();
@@ -3823,7 +4451,13 @@ mod tests {
         apply(&mut leads, "p1", Change::Done(id.clone()));
         let lead = leads.get(&id).unwrap();
         assert!(lead.next.is_none());
-        assert_eq!(lead.entries.last().unwrap().text, "✓ Call");
+        let n = lead.entries.len();
+        assert_eq!(lead.entries[n - 2].text, "✓ Call");
+        assert_eq!(
+            lead.entries[n - 1].text,
+            "contacted",
+            "done with someone new: contacted"
+        );
         apply(&mut leads, "p1", Change::AddTemplate("Hola {name}".into()));
         apply(
             &mut leads,
@@ -3843,11 +4477,12 @@ mod tests {
                     id: "c".into(),
                     name: "Ana".into(),
                     stage: None,
+                    phone: None,
                 },
             ),
         );
-        // The follow-up goes; the action it closed does not.
-        assert_eq!(leads.get(&id).unwrap().pending(), 1);
+        // The follow-up and the current stage go; the action it closed does not.
+        assert_eq!(leads.get(&id).unwrap().pending(), 2);
         // Another brand: the old links go.
         apply(
             &mut leads,

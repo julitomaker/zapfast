@@ -4400,3 +4400,292 @@ msgstr "Sí, descartar"
 #: src/ui/leads.rs
 msgid "Save and transcribe"
 msgstr "Guardar y transcribir"
+
+#: src/ui/leads.rs
+#: src/ui/leads.rs
+msgid "Your turn to answer"
+msgstr "Te toca responder"
+
+#: src/ui/leads.rs
+msgid "To collect"
+msgstr "Por cobrar"
+
+#: src/ui/leads.rs
+msgid "To sell again"
+msgstr "Para volver a venderle"
+
+#: src/ui/leads.rs
+msgid "This month"
+msgstr "Este mes"
+
+#: src/ui/leads.rs
+msgid "new"
+msgstr "nuevos"
+
+#: src/ui/leads.rs
+msgid "won"
+msgstr "ganados"
+
+#: src/ui/leads.rs
+msgid "sold"
+msgstr "vendido"
+
+#: src/ui/leads.rs
+msgid "closing rate"
+msgstr "de cierre"
+
+#: src/ui/leads.rs
+msgid "lost"
+msgstr "perdidos"
+
+#: src/ui/leads.rs
+msgid "first contacts today"
+msgstr "primeros contactos hoy"
+
+#: src/ui/leads.rs
+msgid "WhatsApp may block a number that writes to too many new people in a day. Keep under the cap, and spread first messages over the day."
+msgstr "WhatsApp puede bloquear un número que le escribe a demasiada gente nueva en un día. Quedate debajo del tope y repartí los primeros mensajes a lo largo del día."
+
+#: src/ui/leads.rs
+msgid "How this project sells"
+msgstr "Cómo vende este proyecto"
+
+#: src/ui/leads.rs
+msgid "Customers buy again every (days)"
+msgstr "Los clientes vuelven a comprar cada (días)"
+
+#: src/ui/leads.rs
+msgid "Empty for one-off sales. Customers show up in “To sell again” after this long."
+msgstr "Vacío si la venta es única. Pasado ese tiempo, el cliente aparece en «Para volver a venderle»."
+
+#: src/ui/leads.rs
+msgid "Follow up someone who does not answer after (days)"
+msgstr "Seguimiento a quien no responde, a los (días)"
+
+#: src/ui/leads.rs
+msgid "One number per follow-up. After the last one, the lead can be closed as lost."
+msgstr "Un número por seguimiento. Después del último, el lead se puede cerrar como perdido."
+
+#: src/ui/leads.rs
+msgid "First contacts a day, at most"
+msgstr "Primeros contactos por día, como máximo"
+
+#: src/ui/leads.rs
+msgid "Writing to many new people in a day can get the number blocked."
+msgstr "Escribirle a mucha gente nueva en un día puede hacer que bloqueen el número."
+
+#: src/ui/leads.rs
+msgid "Today: {n} first contacts of {cap}; {waiting} new leads still to write to. Spread first messages over the day so WhatsApp does not take them for spam."
+msgstr "Hoy: {n} primeros contactos de {cap}; quedan {waiting} leads nuevos por escribir. Repartí los primeros mensajes en el día para que WhatsApp no los tome como spam."
+
+#: src/ui/leads.rs
+msgid "They wrote last: the next word is yours"
+msgstr "Te escribieron último: la próxima palabra es tuya"
+
+#: src/ui/leads.rs
+msgid "Sales with part of the payment still due"
+msgstr "Ventas con parte del pago pendiente"
+
+#: src/ui/leads.rs
+msgid "Customers whose last purchase is a buying cycle ago"
+msgstr "Clientes que ya cumplieron su ciclo de compra"
+
+#: src/ui/leads.rs
+msgid "wrote {when} ago"
+msgstr "te escribió hace {when}"
+
+#: src/ui/leads.rs
+msgid "no answer for {when}"
+msgstr "sin respuesta hace {when}"
+
+#: src/ui/leads.rs
+msgid "Usually next:"
+msgstr "Lo que suele seguir:"
+
+#: src/ui/leads.rs
+msgid "in {n} days"
+msgstr "en {n} días"
+
+#: src/ui/leads.rs
+msgid "Lost: no answer"
+msgstr "Perdido: no respondió"
+
+#: src/ui/leads.rs
+msgid "Your turn"
+msgstr "Te toca"
+
+#: src/ui/leads.rs
+msgid "1 order · {spent}"
+msgstr "1 pedido · {spent}"
+
+#: src/ui/leads.rs
+msgid "Follow up"
+msgstr "Seguimiento"
+
+#: src/ui/leads.rs
+msgid "Last try"
+msgstr "Último intento"
+
+#: src/ui/leads.rs
+msgid "Ask about the quote"
+msgstr "Preguntar por la cotización"
+
+#: src/ui/leads.rs
+msgid "Call to close"
+msgstr "Llamar para cerrar"
+
+#: src/ui/leads.rs
+msgid "Send a reminder of the offer"
+msgstr "Recordarle la oferta"
+
+#: src/ui/leads.rs
+msgid "Confirm the delivery"
+msgstr "Confirmar la entrega"
+
+#: src/ui/leads.rs
+msgid "Ask for a review or a referral"
+msgstr "Pedir una reseña o un referido"
+
+#: src/ui/leads.rs
+msgid "Offer to buy again"
+msgstr "Ofrecerle volver a comprar"
+
+#: src/ui/leads.rs
+msgid "Call them"
+msgstr "Llamar"
+
+#: src/ui/leads.rs
+msgid "new lead"
+msgstr "nuevo"
+
+#: src/ui/leads.rs
+msgid "won one"
+msgstr "ganado"
+
+#: src/ui/leads.rs
+msgid "lost one"
+msgstr "perdido"
+
+#: src/ui/leads.rs
+msgid "Suggested by the analysis"
+msgstr "Sugeridos por el análisis"
+
+#: src/ui/leads.rs
+msgid "People who asked for a price, a quote or stock, or bought, and are not leads yet."
+msgstr "Gente que pidió precio, cotización o stock, o que ya compró, y todavía no es lead."
+
+#: src/ui/leads.rs
+msgid "says they paid"
+msgstr "dice que pagó"
+
+#: src/ui/leads.rs
+msgid "Not a lead"
+msgstr "No es un lead"
+
+#: src/ui/leads.rs
+msgid "Open the message"
+msgstr "Abrir el mensaje"
+
+#: src/ui/leads.rs
+msgid "sent"
+msgstr "enviado"
+
+#: src/ui/leads.rs
+msgid "not sent: outside the 24-hour window"
+msgstr "no salió: fuera de la ventana de 24 h"
+
+#: src/ui/leads.rs
+msgid "not sent: they unsubscribed"
+msgstr "no salió: pidió la baja"
+
+#: src/ui/leads.rs
+msgid "none"
+msgstr "ninguno"
+
+#: src/ui/leads.rs
+msgid "ElevaLeads already has them as a customer: the stage was not moved back"
+msgstr "En ElevaLeads ya es cliente: no se le bajó la etapa"
+
+#: src/ui/leads.rs
+msgid "ElevaLeads refused it"
+msgstr "ElevaLeads no lo aceptó"
+
+#: src/ui/leads.rs
+msgid "the chat has no messages in the last 30 days"
+msgstr "el chat no tiene mensajes de los últimos 30 días"
+
+#: src/ui/leads.rs
+msgid "the analysis answered nothing"
+msgstr "el análisis no respondió nada"
+
+#: src/ui/leads.rs
+msgid "That sale was already in ElevaLeads as order {code}: nothing new was made."
+msgstr "Esa venta ya estaba en ElevaLeads como pedido {code}: no se creó nada nuevo."
+
+#: src/ui/leads.rs
+msgid "ElevaLeads put it on another customer's file: {name}. Check the link."
+msgstr "ElevaLeads lo anotó en la ficha de otro cliente: {name}. Revisá el vínculo."
+
+#: src/ui/leads.rs
+msgid "ElevaLeads did not answer properly ({status}); it will be tried again."
+msgstr "ElevaLeads no respondió bien ({status}); se va a reintentar."
+
+#: src/ui/leads.rs
+msgid "The spoken note could not be transcribed: {error}"
+msgstr "No se pudo transcribir la nota de voz: {error}"
+
+#: src/ui/leads.rs
+msgid "{n} were leads already"
+msgstr "{n} ya eran leads"
+
+#: src/ui/leads.rs
+msgid "The recording failed: {error}"
+msgstr "Falló la grabación: {error}"
+
+#: src/ui/leads.rs
+msgid "Their orders could not be read: {error}"
+msgstr "No se pudieron leer sus pedidos: {error}"
+
+#: src/ui/leads.rs
+msgid "Part of the payment is still due."
+msgstr "Todavía debe parte del pago."
+
+#: src/ui/leads.rs
+msgid "Mark as paid"
+msgstr "Marcar como cobrado"
+
+#: src/ui/leads.rs
+msgid "An order in ElevaLeads is not paid: mark it paid there too, so the brand knows."
+msgstr "Hay un pedido sin pagar en ElevaLeads: marcalo pagado allá también, así la marca lo sabe."
+
+#: src/ui/leads.rs
+msgid "Register it so the brand counts the sale and the customer."
+msgstr "Registrala para que la marca cuente la venta y a la clienta."
+
+#: src/ui/leads.rs
+msgid "{brand} has no customer with this number. Registering a sale creates them."
+msgstr "{brand} no tiene un cliente con este número. Al registrar la venta se crea."
+
+#: src/ui/leads.rs
+msgid "The brand's automatic messages could not be checked: the customer may get a WhatsApp message."
+msgstr "No se pudieron revisar los avisos automáticos de la marca: puede que a la clienta le llegue un WhatsApp."
+
+#: src/ui/leads.rs
+msgid "Check again"
+msgstr "Revisar de nuevo"
+
+#: src/ui/leads.rs
+msgid "Register anyway"
+msgstr "Registrar igual"
+
+#: src/ui/leads.rs
+msgid "And {n} days later: “{message}”"
+msgstr "Y a los {n} días: «{message}»"
+
+#: src/ui/leads.rs
+msgid "And {n} days later it tries: “{message}” (it will not go out without an approved template)"
+msgstr "Y a los {n} días intenta mandar: «{message}» (sin una plantilla aprobada no sale)"
+
+#: src/ui/leads.rs
+msgid "Registering needs an API key of the brand, kept in this computer's keyring."
+msgstr "Para registrar hace falta una clave de API de la marca, que se guarda en el llavero de esta computadora."
