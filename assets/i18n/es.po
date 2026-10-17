@@ -4124,3 +4124,147 @@ msgstr "Ver el lead"
 #: src/ui/leads.rs
 msgid "{when} ago"
 msgstr "hace {when}"
+
+#: src/ui/sales.rs
+msgid "Closed"
+msgstr "Cerrado"
+
+#: src/ui/sales.rs
+msgid "Confirmed"
+msgstr "Confirmado"
+
+#: src/ui/sales.rs
+msgid "Payment in"
+msgstr "Pago recibido"
+
+#: src/ui/sales.rs
+msgid "On its way"
+msgstr "En camino"
+
+#: src/ui/sales.rs
+msgid "Paid"
+msgstr "Pagado"
+
+#: src/ui/sales.rs
+msgid "Partly paid"
+msgstr "Pago parcial"
+
+#: src/ui/sales.rs
+msgid "Draft"
+msgstr "Borrador"
+
+#: src/ui/sales.rs
+msgid "Cancelled"
+msgstr "Cancelado"
+
+#: src/ui/sales.rs
+msgid "Sold on WhatsApp, not in {brand}: {n}"
+msgstr "Vendidos por WhatsApp sin registrar en {brand}: {n}"
+
+#: src/ui/sales.rs
+msgid "Orders in {brand}"
+msgstr "Pedidos en {brand}"
+
+#: src/ui/sales.rs
+msgid "Registered from Whats Pro: {code} · {total}"
+msgstr "Registrada desde Whats Pro: {code} · {total}"
+
+#: src/ui/sales.rs
+msgid "message: {state}"
+msgstr "aviso: {state}"
+
+#: src/ui/sales.rs
+msgid "Sold on WhatsApp, with no order in ElevaLeads"
+msgstr "Vendido por WhatsApp, sin pedido en ElevaLeads"
+
+#: src/ui/sales.rs
+msgid "Register sale"
+msgstr "Registrar venta"
+
+#: src/ui/sales.rs
+msgid "Register a sale"
+msgstr "Registrar una venta"
+
+#: src/ui/sales.rs
+msgid "Looking for their orders…"
+msgstr "Buscando sus pedidos…"
+
+#: src/ui/sales.rs
+msgid "Not read yet."
+msgstr "Todavía no se leyó."
+
+#: src/ui/sales.rs
+msgid "No orders in {brand}."
+msgstr "Sin pedidos en {brand}."
+
+#: src/ui/sales.rs
+msgid "{n} orders · {spent}"
+msgstr "{n} pedidos · {spent}"
+
+#: src/ui/sales.rs
+msgid "What they bought"
+msgstr "Qué compró"
+
+#: src/ui/sales.rs
+msgid "Black leather belt"
+msgstr "Cinturón de cuero negro"
+
+#: src/ui/sales.rs
+msgid "price"
+msgstr "precio"
+
+#: src/ui/sales.rs
+msgid "Add an item"
+msgstr "Agregar un ítem"
+
+#: src/ui/sales.rs
+msgid "Total"
+msgstr "Total"
+
+#: src/ui/sales.rs
+msgid "Order"
+msgstr "Pedido"
+
+#: src/ui/sales.rs
+msgid "Payment"
+msgstr "Pago"
+
+#: src/ui/sales.rs
+msgid "Note for the order (delivery, how they paid…)"
+msgstr "Nota del pedido (entrega, cómo pagó…)"
+
+#: src/ui/sales.rs
+msgid "Checking the brand's automatic messages…"
+msgstr "Revisando los avisos automáticos de la marca…"
+
+#: src/ui/sales.rs
+msgid "With “{status}”, ElevaLeads sends the customer on WhatsApp: “{message}”"
+msgstr "Con «{status}», ElevaLeads le manda a la clienta por WhatsApp: «{message}»"
+
+#: src/ui/sales.rs
+msgid "With “{status}”, no message goes to the customer."
+msgstr "Con «{status}» no le llega ningún aviso a la clienta."
+
+#: src/ui/sales.rs
+msgid "Create a key for Whats Pro"
+msgstr "Crear una clave para Whats Pro"
+
+#: src/ui/sales.rs
+msgid "or paste one: eleva_…"
+msgstr "o pegá una: eleva_…"
+
+#: src/ui/sales.rs
+msgid "Registering…"
+msgstr "Registrando…"
+
+#: src/ui/sales.rs
+msgid "An ElevaLeads API key starts with eleva_"
+msgstr "Una clave de API de ElevaLeads empieza con eleva_"
+
+#: src/ui/sales.rs
+msgid "The brand's API key is missing"
+msgstr "Falta la clave de API de la marca"
+
+#: src/ui/sales.rs
+msgid "Payment pending"
+msgstr "Pendiente"

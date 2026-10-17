@@ -183,8 +183,40 @@ pub struct Lead {
     pub entries: Vec<Entry>,
     #[serde(default)]
     pub eleva: Option<ElevaCustomer>,
+    /// What the brand's customer with this phone bought, as last read.
+    #[serde(default)]
+    pub orders: Option<OrdersSeen>,
+    /// Sales closed on WhatsApp and put in ElevaLeads from here.
+    #[serde(default)]
+    pub sales: Vec<Sale>,
     pub created: i64,
     pub updated: i64,
+}
+
+/// A customer's orders in ElevaLeads, and when they were read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OrdersSeen {
+    /// Whether the brand has a customer with the lead's phone at all.
+    pub known: bool,
+    #[serde(default)]
+    pub orders: crate::eleva::sales::Orders,
+    pub read_at: i64,
+}
+
+/// A sale put in ElevaLeads from here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sale {
+    /// The order's id on our side, so a retry makes no second order.
+    pub id: String,
+    pub at: i64,
+    pub total: f64,
+    pub summary: String,
+    /// The order's code in ElevaLeads once it took it.
+    #[serde(default)]
+    pub code: Option<String>,
+    /// What happened to the brand's automatic message, if one ran.
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 /// Where a lead sits in the list: what needs doing first.
@@ -342,6 +374,23 @@ impl Lead {
             .unwrap_or(self.created)
     }
 
+    /// Sold (a customer here), yet the brand has no order for them and none
+    /// was put there from here: a sale closed on WhatsApp the shop does not
+    /// know about.
+    pub fn needs_sale(&self) -> bool {
+        self.stage == Stage::Customer
+            && self.sales.is_empty()
+            && self
+                .orders
+                .as_ref()
+                .is_some_and(|seen| seen.orders.count == 0)
+    }
+
+    /// The id the next sale of this lead goes with.
+    pub fn next_sale_id(&self) -> String {
+        format!("whatspro-{}-{}", self.id, self.sales.len() + 1)
+    }
+
     pub fn pending(&self) -> usize {
         self.entries
             .iter()
@@ -486,6 +535,13 @@ impl Leads {
             }
         }
         out
+    }
+
+    /// The project's customers sold on WhatsApp with no order in the brand.
+    pub fn unregistered(&self, project: &str) -> Vec<&Lead> {
+        self.of_project(project)
+            .filter(|lead| lead.needs_sale())
+            .collect()
     }
 
     /// Removes the project's brand and forgets the links to its customers.
@@ -733,6 +789,40 @@ mod tests {
             };
             assert_eq!(Stage::from_eleva_label(label), Some(stage));
         }
+    }
+
+    #[test]
+    fn a_customer_without_orders_needs_a_sale() {
+        let mut lead = lead("Ana", None);
+        lead.set_stage(Stage::Customer, None);
+        assert!(!lead.needs_sale(), "not read from the brand yet");
+        lead.orders = Some(OrdersSeen {
+            known: true,
+            orders: crate::eleva::sales::Orders::default(),
+            read_at: 1,
+        });
+        assert!(lead.needs_sale());
+        assert_eq!(lead.next_sale_id(), format!("whatspro-{}-1", lead.id));
+        lead.sales.push(Sale {
+            id: lead.next_sale_id(),
+            at: 1,
+            total: 90_000.0,
+            summary: "2 cinturones".into(),
+            code: Some("P-0004".into()),
+            notice: None,
+        });
+        assert!(!lead.needs_sale());
+        let mut bought = self::lead("Bea", None);
+        bought.set_stage(Stage::Customer, None);
+        bought.orders = Some(OrdersSeen {
+            known: true,
+            orders: crate::eleva::sales::Orders {
+                count: 1,
+                ..Default::default()
+            },
+            read_at: 1,
+        });
+        assert!(!bought.needs_sale(), "the shop already has their order");
     }
 
     #[test]

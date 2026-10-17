@@ -24,6 +24,7 @@ pub mod picker;
 pub mod polls;
 pub mod projects;
 pub mod rail;
+pub mod sales;
 pub mod settings;
 pub mod update;
 pub mod widgets;

@@ -29,6 +29,8 @@ use std::{
 
 use crate::leads::{self, ElevaCustomer, Kind, Stage, Store, Sync};
 
+pub mod sales;
+
 const ENDPOINT: &str = "https://elevaleads.com/api/mcp";
 /// How often a brand's inbox is read again while the page shows it.
 pub const REFRESH: Duration = Duration::from_secs(5 * 60);

@@ -2530,8 +2530,9 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.typing.clear();
                 app.scroll_to_bottom = true;
             }
-            "leads" => leads_sample(app, true),
-            "leads-panel" => leads_sample(app, false),
+            "leads" => leads_sample(app, true, false),
+            "leads-panel" => leads_sample(app, false, false),
+            "leads-sale" => leads_sample(app, true, true),
             "es" => app.locale = crate::i18n::Locale::Spanish,
             "settings" => app.page = Page::Settings,
             choice if choice.starts_with("settings-search=") => {
@@ -3966,7 +3967,7 @@ fn call_entries(now: i64) -> Vec<Message> {
 
 /// A sales project: leads in every stage, one linked to ElevaLeads, and the
 /// brand's inbox as it would read, on the Leads tab or on the panel.
-fn leads_sample(app: &mut App, leads_tab: bool) {
+fn leads_sample(app: &mut App, leads_tab: bool, sale: bool) {
     use crate::eleva::{Inbox, Situation, Waiting};
     use crate::leads::{Brand, ElevaCustomer, Kind, Lead, Leads, Stage};
     let config = app.dirs.config.clone();
@@ -4035,8 +4036,10 @@ fn leads_sample(app: &mut App, leads_tab: bool) {
     add("Farmacia Sur", None, "5491155550001", &|lead| {
         lead.set_next("Follow up on the sample", Some(today(3)));
     });
+    // Sold on WhatsApp; the shop has no order for her.
     add("Clínica Norte", None, "5491155550002", &|lead| {
         lead.set_stage(Stage::Customer, None);
+        lead.value = Some("$ 102.000".into());
     });
     add("Óptica Centro", None, "5491155550003", &|lead| {
         lead.set_stage(Stage::Lost, Some("Price"));
@@ -4053,7 +4056,55 @@ fn leads_sample(app: &mut App, leads_tab: bool) {
         project.clone(),
         vec!["Hi {name}, I'm writing from Blackyak Labs about the lab coats you asked for.".into()],
     );
-    let selected = leads.leads[0].id.clone();
+    // Every lead's orders as just read: the demo never reaches the brand.
+    for lead in &mut leads.leads {
+        let bought = lead.name == "Ada Lovelace";
+        lead.orders = Some(crate::leads::OrdersSeen {
+            known: lead.eleva.is_some() || lead.name == "Clínica Norte",
+            orders: crate::eleva::sales::Orders {
+                count: u32::from(bought),
+                spent: if bought {
+                    "$850.000".into()
+                } else {
+                    "$0".into()
+                },
+                recent: if bought {
+                    vec![crate::eleva::sales::Order {
+                        code: "#1043".into(),
+                        status: "envio".into(),
+                        payment: "pagado".into(),
+                        total: "$850.000".into(),
+                        date: "12/10/2026".into(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+            },
+            read_at: crate::util::now(),
+        });
+    }
+    let selected = if sale {
+        let id = leads
+            .leads
+            .iter()
+            .find(|l| l.name == "Clínica Norte")
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
+        crate::ui::sales::demo_open(&id);
+        crate::eleva::sales::preload(
+            "automations:blackyak-labs",
+            crate::eleva::sales::Answer::Automations(crate::eleva::sales::Automations {
+                active: true,
+                messages: vec![(
+                    "confirmado".into(),
+                    "¡Listo! Confirmamos tu pedido {code} 🙌".into(),
+                )],
+            }),
+        );
+        id
+    } else {
+        leads.leads[0].id.clone()
+    };
     let _ = leads.save(&config);
     let waiting = |reason: &str, ago: &str, who: &str, phone: Option<&str>, id: &str| Waiting {
         reason: reason.into(),

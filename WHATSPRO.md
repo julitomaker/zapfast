@@ -100,6 +100,22 @@ marca quedó conectado y si el token es de solo lectura o de lectura y edición.
   situación en la bandeja del equipo. Con solo lectura, todo queda guardado en
   Whats Pro y se puede volver a enviar después.
 
+### Ventas cerradas por WhatsApp
+
+En la ficha de cada lead, **Pedidos en ‹marca›** muestra lo que ElevaLeads sabe
+de ese teléfono: cuántos pedidos tiene, cuánto compró y los últimos pedidos.
+Si el lead está en **Cliente** y en ElevaLeads no tiene ningún pedido, es una
+venta que se cerró solo por WhatsApp: la ficha lo avisa, y en el Panel aparece
+«Vendidos por WhatsApp sin registrar».
+
+**Registrar venta** carga en ElevaLeads a la clienta (si no existe) y su
+pedido: qué compró, el total, el estado (por defecto *Cerrado*) y el pago (por
+defecto *Pagado*). Antes de mandarla, Whats Pro dice si con ese estado
+ElevaLeads le manda a la clienta un aviso automático por WhatsApp. Hace falta
+una clave de API de la marca: con un token de edición, **Crear una clave para
+Whats Pro** la genera y la guarda en el llavero; si no, se puede pegar una
+(`eleva_…`, ElevaLeads → Integraciones).
+
 ## Privacidad
 
 - Con el motor desactivado, nada sale de tu Mac.

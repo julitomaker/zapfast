@@ -269,7 +269,7 @@ fn card_fill(palette: &theme::Palette) -> Color32 {
     }
 }
 
-fn card_frame(palette: &theme::Palette) -> Frame {
+pub(super) fn card_frame(palette: &theme::Palette) -> Frame {
     Frame::new()
         .fill(card_fill(palette))
         .stroke(palette.glass_edge())
@@ -277,7 +277,7 @@ fn card_frame(palette: &theme::Palette) -> Frame {
         .inner_margin(Margin::same(14))
 }
 
-fn field_frame(palette: &theme::Palette) -> Frame {
+pub(super) fn field_frame(palette: &theme::Palette) -> Frame {
     Frame::new()
         .fill(palette.surface)
         .stroke(palette.glass_edge())
@@ -285,7 +285,7 @@ fn field_frame(palette: &theme::Palette) -> Frame {
         .inner_margin(Margin::symmetric(10, 7))
 }
 
-fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) {
+pub(super) fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) {
     ui.add(
         egui::Label::new(egui::RichText::new(text).font(font).color(color))
             .wrap()
@@ -294,7 +294,7 @@ fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) {
 }
 
 /// A small rounded label.
-fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
+pub(super) fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
     Frame::new()
         .fill(color.gamma_multiply(0.14))
         .corner_radius(CornerRadius::same(theme::RADIUS))
@@ -304,7 +304,7 @@ fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
         });
 }
 
-fn button(
+pub(super) fn button(
     ui: &mut egui::Ui,
     palette: &theme::Palette,
     label: &str,
@@ -382,7 +382,7 @@ fn urgency_label(locale: Locale, urgency: Urgency) -> String {
 
 /// Whats Pro's own errors in the user's language; ElevaLeads already
 /// answers in Spanish.
-fn error_text(locale: Locale, error: &str) -> String {
+pub(super) fn error_text(locale: Locale, error: &str) -> String {
     match error {
         "An ElevaLeads token starts with elmcp_" => {
             gettext(locale, "An ElevaLeads token starts with elmcp_")
@@ -401,6 +401,10 @@ fn error_text(locale: Locale, error: &str) -> String {
             )
         }
         "ElevaLeads token is read-only" => gettext(locale, "The ElevaLeads token is read-only"),
+        "An ElevaLeads API key starts with eleva_" => {
+            gettext(locale, "An ElevaLeads API key starts with eleva_")
+        }
+        "The brand's API key is missing" => gettext(locale, "The brand's API key is missing"),
         _ if error.contains("error sending request") || error.contains("dns error") => gettext(
             locale,
             "ElevaLeads could not be reached: check the connection",
@@ -1471,11 +1475,22 @@ fn detail(
             ui.add_space(12.0);
             stage_steps(app, ui, lead, changes);
             ui.add_space(12.0);
+            // A customer's orders come first: a sale the shop does not know
+            // about is the thing to fix.
+            let customer = lead.stage == Stage::Customer;
+            if customer && let Some(brand) = brand {
+                super::sales::card(app, ui, lead, brand);
+                ui.add_space(10.0);
+            }
             next_card(app, ui, state, lead, changes);
             ui.add_space(10.0);
             if let Some(brand) = brand {
                 eleva_card(app, ui, state, lead, brand, changes);
                 ui.add_space(10.0);
+                if !customer {
+                    super::sales::card(app, ui, lead, brand);
+                    ui.add_space(10.0);
+                }
             }
             templates_card(app, ui, state, leads, lead, changes);
             ui.add_space(10.0);
@@ -2322,6 +2337,9 @@ fn sales_card(
             if response.clicked() {
                 *event = Some(PanelEvent::OpenLeads(Some(lead.id.clone())));
             }
+        }
+        if let Some(id) = super::sales::panel_line(app, ui, leads, project) {
+            *event = Some(PanelEvent::OpenLeads(Some(id)));
         }
     });
 }
