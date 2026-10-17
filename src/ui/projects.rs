@@ -2449,7 +2449,7 @@ enum CallAction {
 fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
     let palette = app.palette;
     let locale = app.locale;
-    let library = crate::call_library::Library::load(&app.dirs.state);
+    let library = crate::call_library::Library::cached(&app.dirs.state);
     let calls: Vec<crate::call_library::Call> = library
         .of_project(&project.id)
         .into_iter()
