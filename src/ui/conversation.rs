@@ -2215,6 +2215,8 @@ pub(crate) fn reply_strip_id() -> egui::Id {
 
 /// App data needed while drawing a checked-out conversation.
 struct View<'a> {
+    recordings: &'a crate::call_library::Library,
+    account: &'a str,
     palette: Palette,
     locale: crate::i18n::Locale,
     chat: &'a Chat,
@@ -2497,7 +2499,10 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
     let names_or = |id: &str, hint: Option<&str>| app.display_name_or(id, hint);
     let mention_names = |id: &str| app.mention_name(id);
     let keyboard_navigation = std::cell::Cell::new(false);
+    let recordings = crate::call_library::Library::cached(&app.dirs.state);
     let view = View {
+        recordings: &recordings,
+        account: app.account().id.as_str(),
         palette,
         locale: app.locale,
         chat,
@@ -5557,7 +5562,10 @@ pub(crate) fn list_menu(
     let mention_names = |id: &str| app.mention_name(id);
     let avatars = HashMap::new();
     let keyboard_navigation = std::cell::Cell::new(false);
+    let recordings = crate::call_library::Library::cached(&app.dirs.state);
     let view = View {
+        recordings: &recordings,
+        account: app.account().id.as_str(),
         palette: app.palette,
         locale: app.locale,
         chat,
@@ -5714,6 +5722,18 @@ fn context_menu(
     let palette = view.palette;
     let chat = &view.chat.id;
     if let Content::Call { group, .. } = message.content {
+        if let Some(call) =
+            view.recordings
+                .near_account(view.account, &message.chat, message.timestamp)
+            && widgets::menu_item(
+                ui,
+                &palette,
+                Some(Icon::Record),
+                &crate::i18n::gettext(view.locale, "View recording and summary"),
+            )
+        {
+            actions.push(Action::OpenRecordedCall(call.id.clone()));
+        }
         call_menu(ui, view, group, actions);
         return;
     }
@@ -6749,6 +6769,20 @@ fn content_body(
             } else {
                 palette.accent
             };
+            let recorded = view
+                .recordings
+                .near_account(view.account, &message.chat, message.timestamp)
+                .map(|call| {
+                    let label = if call.analysis.is_some() {
+                        crate::i18n::gettext(view.locale, "Recorded · Summary ready").into_owned()
+                    } else {
+                        crate::i18n::gettext(view.locale, "Recorded · {duration}").replace(
+                            "{duration}",
+                            &crate::util::call_length(view.locale, call.seconds),
+                        )
+                    };
+                    (call.id.clone(), label)
+                });
             mirrored_row(
                 ui,
                 own,
@@ -6772,7 +6806,12 @@ fn content_body(
                         .as_deref()
                         .map(|detail| measure(detail, theme::regular(12.5)))
                         .unwrap_or(0.0)
-                        .max(measure(&title, theme::medium(14.0)));
+                        .max(measure(&title, theme::medium(14.0)))
+                        .max(
+                            recorded
+                                .as_ref()
+                                .map_or(0.0, |(_, label)| measure(label, theme::regular(12.0))),
+                        );
                     ui.allocate_ui_with_layout(
                         vec2(width, 0.0),
                         Layout::top_down(Align::Min),
@@ -6780,6 +6819,12 @@ fn content_body(
                             theme::text(ui, title, theme::medium(14.0), palette.text);
                             if let Some(detail) = detail {
                                 theme::text(ui, detail, theme::regular(12.5), palette.secondary);
+                            }
+                            if let Some((id, label)) = &recorded
+                                && theme::link(ui, label, theme::regular(12.0), palette.danger)
+                                    .clicked()
+                            {
+                                actions.push(Action::OpenRecordedCall(id.clone()));
                             }
                         },
                     );
@@ -10599,7 +10644,10 @@ mod tests {
         let mention_names = |id: &str| app.mention_name(id);
         let avatars = HashMap::new();
         let keyboard_navigation = std::cell::Cell::new(false);
+        let recordings = crate::call_library::Library::cached(&app.dirs.state);
         let view = View {
+            recordings: &recordings,
+            account: app.account().id.as_str(),
             palette: Palette::dark(),
             locale: app.locale,
             chat: &chat,

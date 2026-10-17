@@ -425,6 +425,32 @@ Starting a reply before recording includes the quoted message.
 
 ## Calls
 
+### Grabar una llamada
+
+Press **Record** during a voice or video call (audio only), or **Answer and
+record** when it rings. Whats Pro saves both voices, including with headphones.
+Muting your microphone also silences your voice in the recording. The short
+notice tone goes to the other side; **Settings > Calls** controls it and lets
+you revisit the explanation. The REC indicator shows elapsed time and both
+sides' levels. Its menu can draft a notice in the chat for you to send.
+
+When recording stops, choose a title and project in the review sheet, then
+**Save and transcribe**, or **Discard**. Transcription and summary begin only
+after saving. Closing the sheet keeps the audio waiting under **Calls >
+Recorded**, marked **Not reviewed**, and in its project's calls. Recordings
+interrupted by a crash are recovered for review on the next launch. Projects'
+**Record a call** captures a meeting's microphone and computer sound through
+macOS Screen Recording permission and uses the same review step.
+
+A reviewed recording shows its summary, decisions, commitments, tasks, next
+steps and transcript. **Send summary to chat** prepares a draft that you can
+edit and send. **Delete recording…** asks before deleting the audio,
+transcripts and summary. Locked-chat recordings stay hidden until their folder
+is open. Recordings are local files; the speech and analysis engines selected
+in Settings process them when you choose to transcribe.
+
+### Making and answering calls
+
 The phone and camera buttons in a one-to-one chat's header start a voice or a
 video call; while that chat has a call, a hang-up button takes their place.
 The call screen opens as soon as you press the button and says

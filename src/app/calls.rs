@@ -672,7 +672,17 @@ impl App {
             Action::CancelCallRecordingIntro => self.call_record_intro = None,
             Action::DiscardCallRecording => self.discard_call_recording(),
             Action::DraftRecordingNotice => self.draft_recording_notice(ctx),
-            Action::OpenRecordedCall(id) => self.recorded_call_open = Some(id),
+            Action::OpenRecordedCall(id) => {
+                // A locked chat's call waits for its folder, which asks to
+                // be opened.
+                let private = crate::call_library::Library::cached(&self.dirs.state)
+                    .get(&id)
+                    .is_some_and(|call| call.private);
+                if private && !self.locked_folder_open() {
+                    self.apply(Action::OpenLockedFolder, ctx);
+                }
+                self.recorded_call_open = Some(id);
+            }
             Action::CloseRecordedCall => self.recorded_call_open = None,
             Action::TranscribeRecordedCall(id) => crate::call_capture::save_and_read(self, &id),
             Action::MoveRecordedCall { id, project } => {
@@ -684,6 +694,18 @@ impl App {
                     self.recorded_call_open = None;
                 }
             }
+            Action::RenameRecordedCall { id, title } => {
+                let title = title.trim().to_owned();
+                if !title.is_empty()
+                    && let Err(error) =
+                        crate::call_library::Library::update(&self.dirs.state, &id, |call| {
+                            call.title = title
+                        })
+                {
+                    log::warn!("call capture: the call could not be renamed: {error}");
+                }
+            }
+            Action::DraftCallRecap(id) => self.draft_call_recap(&id, ctx),
             other => return Some(other),
         }
         None
@@ -902,6 +924,47 @@ impl App {
         );
     }
 
+    /// Puts the recap of a read call in its chat's composer, as a draft: it
+    /// is never sent on its own. Only for the account on screen, whose
+    /// composer it is. A chat that already has a draft keeps it, and the
+    /// recap goes to the clipboard instead.
+    fn draft_call_recap(&mut self, id: &str, ctx: &egui::Context) {
+        let library = crate::call_library::Library::cached(&self.dirs.state);
+        let Some(call) = library.get(id) else {
+            return;
+        };
+        let (Some(chat), Some(analysis)) = (call.chat.clone(), call.analysis.as_ref()) else {
+            return;
+        };
+        if call.account.as_deref() != Some(self.account().id.as_str()) {
+            self.toast(crate::i18n::gettext(
+                self.locale,
+                "Switch to the account that had the call to send its summary",
+            ));
+            return;
+        }
+        let text = crate::ui::call_review::recap(self.locale, analysis);
+        self.recorded_call_open = None;
+        if !self.chat_view() {
+            self.apply(Action::Open(crate::model::Page::Chats), ctx);
+        }
+        self.apply(Action::OpenChat(chat.clone()), ctx);
+        self.apply(
+            Action::PrefillComposer {
+                chat: chat.clone(),
+                text: text.clone(),
+            },
+            ctx,
+        );
+        if self.open_chat.as_deref() == Some(chat.as_str()) && self.composer != text {
+            ctx.copy_text(text);
+            self.toast(crate::i18n::gettext(
+                self.locale,
+                "The chat already had a draft: the summary was copied instead",
+            ));
+        }
+    }
+
     /// A recording the worker handed on: kept in the call library for review.
     pub(super) fn call_recorded(&mut self, report: crate::call_tape::Report) {
         let generation = report.generation;
@@ -961,6 +1024,14 @@ impl App {
     /// rescued.
     fn announce_recorded_calls(&mut self) {
         let locale = self.locale;
+        for id in crate::ui::projects::drain_recordings() {
+            self.recorded_call_open = Some(id.clone());
+            self.toast_with(
+                crate::i18n::gettext(locale, "Recording ready to review"),
+                crate::i18n::gettext(locale, "Review").into_owned(),
+                Action::OpenRecordedCall(id),
+            );
+        }
         for finished in crate::call_capture::drain_finished() {
             match finished.outcome {
                 Ok(_) => self.toast_with(

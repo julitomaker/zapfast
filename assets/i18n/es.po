@@ -2614,8 +2614,8 @@ msgstr "Restaurar"
 #~ msgid "New message"
 #~ msgstr "Escribe un mensaje"
 
-#~ msgid "Group"
-#~ msgstr "Grupo"
+msgid "Group"
+msgstr "Grupo"
 
 #~ msgid "Channel"
 #~ msgstr "Canal"
@@ -4689,3 +4689,387 @@ msgstr "Y a los {n} días intenta mandar: «{message}» (sin una plantilla aprob
 #: src/ui/leads.rs
 msgid "Registering needs an API key of the brand, kept in this computer's keyring."
 msgstr "Para registrar hace falta una clave de API de la marca, que se guarda en el llavero de esta computadora."
+
+msgid "Recorded"
+msgstr "Grabadas"
+
+msgid "View recording and summary"
+msgstr "Ver grabación y resumen"
+
+msgid "Recorded · Summary ready"
+msgstr "Grabada · Resumen listo"
+
+msgid "Recorded · {duration}"
+msgstr "Grabada · {duration}"
+
+msgid "Play a tone when recording starts"
+msgstr "Reproducir un tono al empezar a grabar"
+
+msgid "The other person hears two short beeps; they stay in the recording too."
+msgstr "La otra persona escucha dos tonos cortos que también quedan en la grabación."
+
+msgid "How recording works"
+msgstr "Cómo funciona la grabación"
+
+msgid "Shows the explanation again before the next recording."
+msgstr "Muestra la explicación antes de la próxima grabación."
+
+msgid "Show again"
+msgstr "Ver de nuevo"
+
+msgid "Shown next time"
+msgstr "Se muestra la próxima vez"
+
+msgid "{count} call"
+msgid_plural "{count} calls"
+msgstr[0] "{count} llamada"
+msgstr[1] "{count} llamadas"
+
+msgid "Recordings"
+msgstr "Grabaciones"
+
+msgid "Show folder"
+msgstr "Mostrar carpeta"
+
+msgid "Stop recording"
+msgstr "Detener grabación"
+
+msgid "Record the call (audio only)"
+msgstr "Grabar la llamada (solo el audio)"
+
+msgid "Record the call"
+msgstr "Grabar la llamada"
+
+msgid "Recording starts as soon as the call connects"
+msgstr "Se va a grabar cuando atiendan"
+
+msgid "Getting the recording ready…"
+msgstr "Preparando la grabación…"
+
+msgid "Stop and save the recording"
+msgstr "Detener y guardar la grabación"
+
+msgid "Answer and record"
+msgstr "Atender y grabar"
+
+msgid "REC {time}"
+msgstr "REC {time}"
+
+msgid "{rec} · without your voice"
+msgstr "{rec} · sin tu voz"
+
+msgid "Them"
+msgstr "Ellos"
+
+msgid "Recording options"
+msgstr "Opciones de grabación"
+
+msgid "You are muted: your voice is not recorded, just as the others do not hear it"
+msgstr "Estás silenciado: tu voz no se graba, igual que no la escuchan los demás"
+
+msgid "You are muted: your voice is not recorded, just as {name} does not hear it"
+msgstr "Estás silenciado: tu voz no se graba, igual que no la escucha {name}"
+
+msgid "Stop and save"
+msgstr "Detener y guardar"
+
+msgid "Notify by chat"
+msgstr "Avisar por chat"
+
+msgid "Discard recording…"
+msgstr "Descartar grabación…"
+
+msgid "Discard the recording? It is deleted and nothing is kept."
+msgstr "¿Descartar la grabación? Se borra y no se guarda nada."
+
+msgid "Keep recording"
+msgstr "Seguir grabando"
+
+msgid "The recording notice plays when you turn your microphone on"
+msgstr "El aviso de grabación suena cuando activás el micrófono"
+
+msgid "The recording notice played"
+msgstr "Se reprodujo el aviso de grabación"
+
+msgid "The others' voices are not being recorded"
+msgstr "No se están grabando las voces de los demás"
+
+msgid "The voice of {name} is not being recorded"
+msgstr "No se está grabando la voz de {name}"
+
+msgid "Before recording"
+msgstr "Antes de grabar"
+
+msgid "Both voices are recorded. On video calls, only the audio."
+msgstr "Se graban las dos voces. En videollamadas, solo el audio."
+
+msgid "It stays on this computer. It is not sent to WhatsApp or to the other person."
+msgstr "Queda en esta computadora. No se manda a WhatsApp ni a la otra persona."
+
+msgid "When you save it, it is transcribed on this computer."
+msgstr "Cuando la guardás, se transcribe en esta computadora."
+
+msgid "When you save it, it is transcribed on this computer. The first time, about 550 MB download."
+msgstr "Cuando la guardás, se transcribe en esta computadora. La primera vez se descargan unos 550 MB."
+
+msgid "When you save it, {engine} transcribes it: the audio leaves your computer."
+msgstr "Cuando la guardás, {engine} la transcribe: el audio sale de tu computadora."
+
+msgid "Nobody summarizes it: summaries are off."
+msgstr "No se resume: los resúmenes están desactivados."
+
+msgid "{engine} summarizes it."
+msgstr "{engine} la resume."
+
+msgid "The rules vary by country: in many places you have to tell the other person."
+msgstr "Las reglas cambian según el país: en muchos lugares tenés que avisarle a la otra persona."
+
+msgid "Play a short notice the other person hears"
+msgstr "Reproducir un aviso corto que escucha la otra persona"
+
+msgid "Record"
+msgstr "Grabar"
+
+msgid "Not now"
+msgstr "Ahora no"
+
+msgid "No recorded calls yet"
+msgstr "Todavía no grabaste llamadas"
+
+msgid "Press Record during a call to keep it with its summary."
+msgstr "Tocá Grabar durante una llamada para guardarla con su resumen."
+
+msgid "Not reviewed"
+msgstr "Sin revisar"
+
+msgid "Could not start recording: {reason}"
+msgstr "No se pudo empezar a grabar: {reason}"
+
+msgid "The recording stopped: {reason}. What was recorded so far is kept."
+msgstr "La grabación se detuvo: {reason}. Se guarda lo que se grabó hasta ahora."
+
+msgid "Open the call's chat to send the notice"
+msgstr "Abrí el chat de la llamada para mandar el aviso"
+
+msgid "Just so you know, I'm recording this call to keep notes of what we agree on. If you'd rather I didn't, tell me and I'll stop."
+msgstr "Te aviso que estoy grabando esta llamada para tomar nota de lo que acordemos. Si preferís que no, decime y la corto."
+
+msgid "Switch to the account that had the call to send its summary"
+msgstr "Pasá a la cuenta de la llamada para mandar el resumen"
+
+msgid "The chat already had a draft: the summary was copied instead"
+msgstr "El chat ya tenía un borrador: se copió el resumen"
+
+msgid "Could not record the call: {reason}"
+msgstr "No se pudo grabar la llamada: {reason}"
+
+msgid "Recording ready to review"
+msgstr "Grabación lista para revisar"
+
+msgid "Review"
+msgstr "Revisar"
+
+msgid "Summary ready: {title}"
+msgstr "Resumen listo: {title}"
+
+msgid "View"
+msgstr "Ver"
+
+msgid "Could not read the call: {reason}"
+msgstr "No se pudo leer la llamada: {reason}"
+
+msgid "Call by link"
+msgstr "Llamada por enlace"
+
+msgid "Call in a locked chat"
+msgstr "Llamada en chat bloqueado"
+
+msgid "Group call: {group}"
+msgstr "Llamada grupal: {group}"
+
+msgid "Video call with {name}"
+msgstr "Videollamada con {name}"
+
+msgid "Recorded call"
+msgstr "Llamada grabada"
+
+msgid "Could not keep the recording: {reason}"
+msgstr "No se pudo guardar la grabación: {reason}"
+
+msgid "Call recorded ({time}). Kept in {project}."
+msgstr "Llamada grabada ({time}). Guardada en {project}."
+
+msgid "Call recorded ({time}). Find it in Calls > Recorded."
+msgstr "Llamada grabada ({time}). La encontrás en Llamadas > Grabadas."
+
+msgid "Could not move the call: {reason}"
+msgstr "No se pudo mover la llamada: {reason}"
+
+msgid "Could not delete the call: {reason}"
+msgstr "No se pudo borrar la llamada: {reason}"
+
+msgid "Recovered: {title}"
+msgstr "Recuperada: {title}"
+
+msgid "Recovered recording {date}"
+msgstr "Grabación recuperada {date}"
+
+msgid "We recovered {} recording that was left half way"
+msgid_plural "We recovered {} recordings that were left half way"
+msgstr[0] "Recuperamos {} grabación que quedó a medias"
+msgstr[1] "Recuperamos {} grabaciones que quedaron a medias"
+
+msgid "You have {} recording not reviewed"
+msgid_plural "You have {} recordings not reviewed"
+msgstr[0] "Tenés {} grabación sin revisar"
+msgstr[1] "Tenés {} grabaciones sin revisar"
+
+msgid "Recording saved in Calls. Reading it…"
+msgstr "Grabación guardada en Llamadas. La estamos leyendo…"
+
+msgid "You are on a WhatsApp call: record it with the call's button"
+msgstr "Estás en una llamada de WhatsApp: grabala con el botón de la llamada"
+
+msgid "Call of {date}"
+msgstr "Llamada del {date}"
+
+msgid "Saved in Calls and Notes"
+msgstr "Guardada en Llamadas y Notas"
+
+msgid "Commitments"
+msgstr "Compromisos"
+
+msgid "Tasks"
+msgstr "Tareas"
+
+msgid "Next steps"
+msgstr "Próximos pasos"
+
+msgid "Transcript · {engine} · {n} versions"
+msgstr "Transcripción · {engine} · {n} versiones"
+
+msgid "Each call keeps its audio file. Read it again with another engine, redo its summary, or take it to another tool."
+msgstr "Cada llamada conserva su audio. Volvé a leerla con otro motor, rehacé el resumen o llevala a otra herramienta."
+
+msgid "Summarizing…"
+msgstr "Resumiendo…"
+
+msgid "Error"
+msgstr "Error"
+
+msgid "Summarized"
+msgstr "Resumida"
+
+msgid "Transcribed · {engine}"
+msgstr "Transcripta · {engine}"
+
+msgid "Not transcribed"
+msgstr "Sin transcribir"
+
+msgid "Call options"
+msgstr "Opciones de la llamada"
+
+msgid "Transcribe again with {engine}"
+msgstr "Volver a transcribir con {engine}"
+
+msgid "Redo the summary"
+msgstr "Rehacer el resumen"
+
+msgid "Copy summary and transcript"
+msgstr "Copiar resumen y transcripción"
+
+msgid "Export as Markdown"
+msgstr "Exportar como Markdown"
+
+msgid "Rename"
+msgstr "Cambiar nombre"
+
+msgid "Delete call"
+msgstr "Borrar llamada"
+
+msgid "Show in Finder"
+msgstr "Mostrar en Finder"
+
+msgid "Details"
+msgstr "Detalles"
+
+msgid "No summary yet. Turn on the analysis, or use Redo the summary."
+msgstr "Todavía no hay resumen. Activá el análisis o usá Rehacer el resumen."
+
+msgid "Back to the leads"
+msgstr "Volver a los leads"
+
+msgid "With {names}"
+msgstr "Con {names}"
+
+msgid "Both voices"
+msgstr "Las dos voces"
+
+msgid "Project"
+msgstr "Proyecto"
+
+msgid "Lead"
+msgstr "Lead"
+
+msgid "Keep it to have it transcribed and summarized, or discard it if you don't need it."
+msgstr "Guardala para transcribirla y resumirla, o descartala si no la necesitás."
+
+msgid "No project"
+msgstr "Sin proyecto"
+
+msgid "Notice: tone at {time}"
+msgstr "Aviso: tono a las {time}"
+
+msgid "No notice recorded"
+msgstr "Sin aviso registrado"
+
+msgid "Only one side is heard"
+msgstr "Solo se escucha un lado"
+
+msgid "Only the first hour was transcribed"
+msgstr "Se transcribió la primera hora"
+
+msgid "Recovered after the app closed"
+msgstr "Recuperada después de cerrar la app"
+
+msgid "Transcribing with {engine}…"
+msgstr "Transcribiendo con {engine}…"
+
+msgid "Retry"
+msgstr "Reintentar"
+
+msgid "Waiting to be read…"
+msgstr "Esperando para leerla…"
+
+msgid "No summary yet"
+msgstr "Todavía no hay resumen"
+
+msgid "Summarize"
+msgstr "Resumir"
+
+msgid "Discard the recording? The audio is deleted and nothing is kept."
+msgstr "¿Descartar la grabación? Se borra el audio y no se guarda nada."
+
+msgid "Delete the call? Its audio, transcript and summary are deleted."
+msgstr "¿Borrar la llamada? Se borran el audio, la transcripción y el resumen."
+
+msgid "Send summary to chat"
+msgstr "Mandar resumen al chat"
+
+msgid "Puts a short recap in the chat's message box. You choose whether to send it."
+msgstr "Deja un resumen corto en el borrador del chat. Vos elegís si lo mandás."
+
+msgid "Delete recording…"
+msgstr "Borrar grabación…"
+
+msgid "This call has no chat"
+msgstr "Esta llamada no tiene chat"
+
+msgid "Available once the call has its summary"
+msgstr "Disponible cuando la llamada tenga su resumen"
+
+msgid "We agreed:"
+msgstr "Acordamos:"
+
+msgid "Next steps:"
+msgstr "Próximos pasos:"

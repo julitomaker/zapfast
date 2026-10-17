@@ -43,7 +43,18 @@ else
     echo "message sound: ZapFast's (install WhatsApp once to take its sound)" >&2
 fi
 
-codesign --force --entitlements "$here/entitlements.plist" --sign - "$app"
+# macOS ties permissions such as Screen Recording to the signature. An
+# ad-hoc signature changes with every build, so the permission is lost on
+# each install; a stable identity ("Whats Pro Dev", a self-signed code
+# signing certificate in the login keychain) keeps it.
+identity="${CODESIGN_IDENTITY:-Whats Pro Dev}"
+if security find-identity -p codesigning | grep -q "\"$identity\""; then
+    codesign --force --entitlements "$here/entitlements.plist" --sign "$identity" "$app"
+    echo "signed: $identity"
+else
+    codesign --force --entitlements "$here/entitlements.plist" --sign - "$app"
+    echo "signed: ad-hoc (permissions reset on each install; create a \"$identity\" code signing certificate to keep them)" >&2
+fi
 codesign --verify --strict "$app"
 # Make Finder and the Dock pick up the new icon.
 touch "$app"

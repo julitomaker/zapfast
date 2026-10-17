@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod call;
+pub mod call_review;
 pub mod calls;
 pub mod chats;
 pub mod conversation;
@@ -72,6 +73,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         && !app.chat_search_calendar
         // The call screen covers the chats.
         && (app.call.is_none() || app.call_surface_hidden)
+        // A recorded call's sheet keeps egui's own order among its controls.
+        && !call_review::visible(app)
         // A name typed in the info panel keeps Tab between its fields.
         && !(app.info_visible() && (app.contact_edit.is_some() || app.group_name_edit.is_some()))
         && !egui::Popup::is_any_open(ctx);
@@ -113,6 +116,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     focus::finish(ctx, main_navigation);
     update::show(app, ctx);
     picker::show(app, ctx);
+    call_review::show(app, ctx);
     dialogs::show(app, ctx);
     image_preview::show(app, ctx);
     image_preview::show_sticker(app, ctx);

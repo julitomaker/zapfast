@@ -387,6 +387,14 @@ impl Library {
             .map(|(_, call)| call)
     }
 
+    /// Matches a call within one account; chat ids alone are not unique.
+    pub fn near_account(&self, account: &str, chat: &str, timestamp: i64) -> Option<&Call> {
+        self.of_chat(account, chat)
+            .into_iter()
+            .filter(|call| (call.when() - timestamp).abs() <= crate::model::CALL_ENTRY_WINDOW)
+            .min_by_key(|call| (call.when() - timestamp).abs())
+    }
+
     /// Keeps the audio at `source` in the library, moved (a recording made
     /// here) or copied (a file the person added, which stays where it is),
     /// and records it. Saved at once, before anything reads it.
@@ -449,7 +457,7 @@ impl Library {
             stereo: false,
             recovered: false,
             pending_read: false,
-            pending_review: false,
+            pending_review: origin == Origin::Recorded,
         };
         library.calls.push(call.clone());
         library.save(state).map_err(|e| e.to_string())?;
@@ -731,6 +739,34 @@ mod tests {
         assert!(library.of_chat("a2", chat).is_empty());
         assert_eq!(library.recorded().len(), 3);
         assert_eq!(library.recorded()[0].id, later.id);
+    }
+
+    #[test]
+    fn recording_matches_do_not_cross_accounts() {
+        let root = tempfile::tempdir().unwrap();
+        let chat = "fixture@s.whatsapp.net";
+        let first = kept(root.path(), "First", |call| {
+            call.chat = Some(chat.into());
+            call.account = Some("first".into());
+            call.started_at = 1_000;
+        });
+        let second = kept(root.path(), "Second", |call| {
+            call.chat = Some(chat.into());
+            call.account = Some("second".into());
+            call.started_at = 1_001;
+        });
+        let library = Library::load(root.path());
+        assert_eq!(
+            library.near_account("first", chat, 1_001).unwrap().id,
+            first.id
+        );
+        assert_eq!(
+            library.near_account("second", chat, 1_000).unwrap().id,
+            second.id
+        );
+        assert!(library.near_account("unknown", chat, 1_000).is_none());
+        assert!(library.near_account("first", chat, 2_000).is_none());
+        assert!(library.get(&first.id).unwrap().pending_review);
     }
 
     #[test]

@@ -405,6 +405,9 @@ fn closing() -> bool {
 /// "Save and transcribe": the person keeps the recording, and it is read on
 /// a thread of its own.
 pub fn save_and_read(app: &mut App, id: &str) {
+    if matches!(job(id), Some(JobPhase::Reading | JobPhase::Summarizing)) {
+        return;
+    }
     let reader = CallReader::of(app);
     if let Err(error) = Library::update(&reader.state, id, |call| {
         call.pending_review = false;
@@ -419,11 +422,16 @@ pub fn save_and_read(app: &mut App, id: &str) {
     // Shown at once, before the thread gets going.
     set_job(id, JobPhase::Reading);
     let (id, waker) = (id.to_owned(), app.waker());
+    let failed_id = id.clone();
     let spawned = std::thread::Builder::new()
         .name("call-read".into())
         .spawn(move || read(&reader, &id, &waker));
     if let Err(error) = spawned {
-        log::warn!("call capture: the call could not be read: {error}");
+        set_job(&failed_id, JobPhase::Failed(error.to_string()));
+        app.toast_error(
+            gettext(app.locale, "Could not read the call: {reason}")
+                .replace("{reason}", &error.to_string()),
+        );
     }
 }
 

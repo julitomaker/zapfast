@@ -41,6 +41,8 @@ pub enum Stop {
     All,
     /// The Calls page's Missed chip.
     Missed,
+    /// The Calls page's Recorded chip.
+    Recorded,
     Unread,
     Private,
     Favorites,

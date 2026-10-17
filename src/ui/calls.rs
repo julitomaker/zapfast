@@ -191,6 +191,10 @@ pub fn list(app: &mut App, ui: &mut egui::Ui) {
 
 /// Every call of the account, newest first, a row per run of alike calls.
 fn history(app: &mut App, ui: &mut egui::Ui) {
+    if app.call_filter == CallFilter::Recorded {
+        recorded_history(app, ui);
+        return;
+    }
     let palette = app.palette;
     let calls = visible_calls(app);
     if calls.is_empty() {
@@ -266,6 +270,104 @@ fn history(app: &mut App, ui: &mut egui::Ui) {
     app.actions.extend(actions);
 }
 
+/// Recordings have their own rows: a kept file need not have a call-log
+/// entry, and recordings of meetings belong here too.
+fn recorded_history(app: &mut App, ui: &mut egui::Ui) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let library = crate::call_library::Library::cached(&app.dirs.state);
+    let calls: Vec<_> = library
+        .recorded()
+        .into_iter()
+        .filter(|call| {
+            call.account
+                .as_deref()
+                .is_none_or(|account| account == app.account().id.as_str())
+                && (!call.private || app.locked_folder_open())
+        })
+        .collect();
+    if calls.is_empty() {
+        Frame::new()
+            .inner_margin(Margin::symmetric(24, 0))
+            .show(ui, |ui| {
+                widgets::empty_state(
+                    ui,
+                    &palette,
+                    Icon::Record,
+                    &gettext(locale, "No recorded calls yet"),
+                    &gettext(
+                        locale,
+                        "Press Record during a call to keep it with its summary.",
+                    ),
+                );
+            });
+        return;
+    }
+    let needle = crate::util::search_key(app.calls_search.trim());
+    let mut actions = Vec::new();
+    egui::ScrollArea::vertical()
+        .id_salt("recorded-calls")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            let mut found = false;
+            for call in calls
+                .into_iter()
+                .filter(|call| crate::util::search_key(&call.title).contains(&needle))
+            {
+                found = true;
+                let response =
+                    Frame::new()
+                        .inner_margin(Margin::symmetric(16, 10))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                theme::icon(ui, Icon::Record, 16.0, palette.danger);
+                                theme::text(ui, &call.title, theme::medium(14.5), palette.text);
+                            });
+                            theme::paragraph(
+                                ui,
+                                super::call_review::subtitle(locale, call),
+                                theme::regular(12.0),
+                                palette.secondary,
+                            );
+                            if call.pending_review {
+                                super::projects::chip(
+                                    ui,
+                                    &gettext(locale, "Not reviewed"),
+                                    palette.warning,
+                                );
+                            }
+                        });
+                let response = ui.interact(
+                    response.response.rect,
+                    egui::Id::new(("recorded-call-row", &call.id)),
+                    Sense::click(),
+                );
+                theme::reveal_focus(&response);
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        &call.title,
+                    )
+                });
+                if response.clicked() {
+                    actions.push(Action::OpenRecordedCall(call.id.clone()));
+                }
+            }
+            if !found {
+                theme::text(
+                    ui,
+                    gettext(locale, "No matching calls"),
+                    theme::regular(13.0),
+                    palette.secondary,
+                );
+            }
+        });
+    app.actions.extend(actions);
+}
+
 /// Stable id of a call filter chip, for tests.
 pub fn filter_chip_id(filter: CallFilter) -> egui::Id {
     egui::Id::new(("call-filter", filter as u8))
@@ -287,6 +389,7 @@ pub fn filter_chips(app: &mut App, ui: &mut egui::Ui) {
                     .tab_stop(match filter {
                         CallFilter::All => Stop::All,
                         CallFilter::Missed => Stop::Missed,
+                        CallFilter::Recorded => Stop::Recorded,
                     });
             ui.ctx()
                 .data_mut(|data| data.insert_temp(filter_chip_id(filter), chip.rect));
@@ -333,7 +436,14 @@ fn history_row(app: &mut App, ui: &mut egui::Ui, row: &[Message], actions: &mut 
             .as_ref()
             .is_some_and(|(chat, id)| *chat == message.chat && *id == message.id);
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(width, theme::ROW_HEIGHT), Sense::hover());
+    let library = crate::call_library::Library::cached(&app.dirs.state);
+    let has_recording = row.iter().any(|message| {
+        library
+            .near_account(app.account().id.as_str(), &message.chat, message.timestamp)
+            .is_some_and(|call| !call.private || app.locked_folder_open())
+    });
+    let height = theme::ROW_HEIGHT + if has_recording { 21.0 } else { 0.0 };
+    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     // The row's own target goes first, so the call-back button inside keeps
     // its clicks.
     let response = ui
@@ -346,7 +456,17 @@ fn history_row(app: &mut App, ui: &mut egui::Ui, row: &[Message], actions: &mut 
     }
     let summary = summary(&entry, locale);
     let stamp = crate::util::chat_stamp(locale, message.timestamp);
-    let spoken = format!("{label}, {summary}, {stamp}");
+    let library = crate::call_library::Library::cached(&app.dirs.state);
+    let recording = row
+        .iter()
+        .find_map(|message| {
+            library.near_account(app.account().id.as_str(), &message.chat, message.timestamp)
+        })
+        .filter(|call| !call.private || app.locked_folder_open());
+    let mut spoken = format!("{label}, {summary}, {stamp}");
+    if recording.is_some() {
+        spoken.push_str(&format!(", {}", gettext(locale, "Recorded")));
+    }
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::SelectableLabel,
@@ -463,6 +583,25 @@ fn history_row(app: &mut App, ui: &mut egui::Ui, row: &[Message], actions: &mut 
         1,
     );
     detail.paint(ui, pos2(left + 21.0, rect.top() + 38.0), palette.secondary);
+    if let Some(call) = recording {
+        let mark = Rect::from_min_max(
+            pos2(left, rect.top() + 58.0),
+            pos2(right, rect.top() + 78.0),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(mark)
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        theme::icon(&mut child, Icon::Record, 12.0, palette.danger);
+        let text = gettext(locale, "Recorded · {duration}").replace(
+            "{duration}",
+            &crate::util::call_length(locale, call.seconds),
+        );
+        if theme::link(&mut child, text, theme::regular(11.5), palette.danger).clicked() {
+            actions.push(Action::OpenRecordedCall(call.id.clone()));
+        }
+    }
 }
 
 /// What a call was and how it went, on one line: "Video call · 12 min 34 s".
@@ -798,6 +937,38 @@ mod tests {
             modifiers: egui::Modifiers::NONE,
         };
         vec![egui::Event::PointerMoved(at), press(true), press(false)]
+    }
+
+    #[test]
+    fn a_recording_without_a_log_entry_opens_for_review_without_reading_it() {
+        let (_directory, mut app, ctx) = calls_app();
+        app.call_log.clear();
+        app.call_filter = CallFilter::Recorded;
+        let source = app.dirs.state.join("fixture.wav");
+        std::fs::create_dir_all(&app.dirs.state).unwrap();
+        std::fs::write(&source, b"RIFF").unwrap();
+        let call = crate::call_library::Library::keep(
+            &app.dirs.state,
+            &source,
+            crate::call_library::Origin::Recorded,
+            20,
+            "Meeting fixture",
+            None,
+            None,
+        )
+        .unwrap();
+        frame(&mut app, &ctx, vec![]);
+        let row = ctx
+            .read_response(egui::Id::new(("recorded-call-row", &call.id)))
+            .unwrap()
+            .rect;
+        frame(&mut app, &ctx, click(row.center()));
+        frame(&mut app, &ctx, vec![]);
+        assert!(matches!(app.actions.as_slice(), [Action::OpenRecordedCall(id)] if id == &call.id));
+        let library = crate::call_library::Library::load(&app.dirs.state);
+        let call = library.get(&call.id).unwrap();
+        assert!(call.pending_review);
+        assert!(call.transcript().is_none() && !call.pending_read);
     }
 
     #[test]

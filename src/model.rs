@@ -222,16 +222,19 @@ pub enum CallFilter {
     All,
     /// Calls to us that nobody took, group calls included.
     Missed,
+    /// The calls recorded in Whats Pro, each with its summary.
+    Recorded,
 }
 
 impl CallFilter {
-    pub const EVERY: [Self; 2] = [Self::All, Self::Missed];
+    pub const EVERY: [Self; 3] = [Self::All, Self::Missed, Self::Recorded];
 
     pub fn label(self, locale: crate::i18n::Locale) -> std::borrow::Cow<'static, str> {
         use crate::i18n::gettext;
         match self {
             Self::All => gettext(locale, "All"),
             Self::Missed => gettext(locale, "Missed"),
+            Self::Recorded => gettext(locale, "Recorded"),
         }
     }
 
@@ -240,6 +243,7 @@ impl CallFilter {
         match self {
             Self::All => None,
             Self::Missed => Some("missed".to_owned()),
+            Self::Recorded => Some("recorded".to_owned()),
         }
     }
 
@@ -248,6 +252,7 @@ impl CallFilter {
     pub fn parse(key: Option<&str>) -> Self {
         match key {
             Some("missed") => Self::Missed,
+            Some("recorded") => Self::Recorded,
             _ => Self::All,
         }
     }
@@ -2329,6 +2334,15 @@ pub enum Action {
     },
     /// Deletes a recorded call: its audio, transcripts and summary.
     DeleteRecordedCall(String),
+    /// Gives a recorded call a title of the person's own.
+    RenameRecordedCall {
+        id: String,
+        title: String,
+    },
+    /// Puts a short recap of a read call (its summary, what was agreed and
+    /// what comes next) in its chat's composer, as a draft the person sends
+    /// or not.
+    DraftCallRecap(String),
     /// Creates and opens a chat for a contact without one.
     StartChat {
         id: ChatId,

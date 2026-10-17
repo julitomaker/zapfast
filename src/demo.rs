@@ -2767,6 +2767,15 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.call_log = log;
                 app.call_log_loaded = true;
             }
+            "call-review" | "call-summary" | "calls-recorded" => {
+                recorded_call_sample(app, part != "call-summary");
+                app.page = Page::Calls;
+                app.open_chat = None;
+                app.call_filter = crate::model::CallFilter::Recorded;
+                if part == "calls-recorded" {
+                    app.recorded_call_open = None;
+                }
+            }
             "call-video" => call_sample(app, false, true),
             "call-video-incoming" => call_sample(app, true, true),
             "call-video-off" => {
@@ -4315,8 +4324,44 @@ pub fn call_sample(app: &mut App, incoming: bool, video: bool) {
     }
 }
 
-/// The call on screen recorded for the last three minutes and twenty
-/// seconds, its notice played and both sides heard.
+/// Synthetic recording for the review sheet and the library's empty-log case.
+fn recorded_call_sample(app: &mut App, pending: bool) {
+    use crate::call_library::{CallAnalysis, Commitment, Library, Origin, Transcript};
+    std::fs::create_dir_all(&app.dirs.state).unwrap();
+    let source = app.dirs.state.join("demo-recording.wav");
+    std::fs::write(&source, crate::projects::wav(&[0.0; 480], 48_000)).unwrap();
+    let call = Library::keep(
+        &app.dirs.state,
+        &source,
+        Origin::Recorded,
+        1_380,
+        "Call with Ada",
+        None,
+        None,
+    )
+    .unwrap();
+    Library::update(&app.dirs.state, &call.id, |call| {
+        call.account = Some(app.account().id.to_string());
+        call.chat = Some(SAMPLES[0].id.into());
+        call.stereo = true;
+        call.notice_ms = Some(0);
+        call.levels = Some([0.12, 0.1]);
+        call.pending_review = pending;
+        if !pending {
+            call.transcripts.push(Transcript { engine: "Whisper".into(), at: call.at,
+                text: "Ada: The sample looks good. Please send the quote.\nYou: I will send it Friday.".into() });
+            call.analysis = Some(CallAnalysis {
+                summary: "We reviewed the sample and agreed on the next delivery.".into(),
+                decisions: vec!["Use blue thread".into()],
+                commitments: vec![Commitment { who: "You".into(), what: "Send the quote".into(), due: Some("Friday".into()) }],
+                tasks: vec!["Prepare the quote".into()], next_steps: vec!["Confirm the delivery date".into()], at: call.at,
+            });
+        }
+    }).unwrap();
+    app.recorded_call_open = Some(call.id);
+}
+
+/// The call on screen recorded for three minutes, with both sides heard.
 pub fn recording_sample(app: &mut App) {
     if let Some(call) = app.call.as_mut() {
         call.recording = Some(crate::call_tape::RecordingView {
@@ -6478,6 +6523,9 @@ mod tests {
             "react-custom",
             "react-other",
             "calls",
+            "call-review",
+            "call-summary",
+            "calls-recorded",
             "calls-chat",
             "calls-info",
             "calls-missed",
@@ -6658,6 +6706,11 @@ mod tests {
             ("settings", wide),
             ("settings", narrow),
             ("calls", wide),
+            ("call-review,es", wide),
+            ("call-review,es", narrow),
+            ("call-summary,es", wide),
+            ("call-summary,es", narrow),
+            ("calls-recorded,es", wide),
             ("calls-info", wide),
             ("calls-info", narrow),
             // The rail beside the list, and alone beside a hidden list.
@@ -18435,6 +18488,74 @@ mod call_recording_tests {
                 .iter()
                 .any(|command| matches!(command, crate::backend::Command::CallRecording { .. })),
             "asking discards nothing"
+        );
+    }
+
+    #[test]
+    fn a_stopped_recording_waits_for_review_and_all_its_buttons_fit() {
+        for size in [WIDE, egui::vec2(420.0, 640.0)] {
+            let (mut app, ctx) = page("call-review,es");
+            let id = app.recorded_call_open.clone().unwrap();
+            let shown = nodes(&mut app, &ctx, size);
+            for label in [
+                "Reproducir",
+                "Mostrar en Finder",
+                "Guardar y transcribir",
+                "Descartar",
+            ] {
+                let rect = find(&shown, label).unwrap_or_else(|| panic!("{label}: {shown:?}"));
+                assert!(
+                    egui::Rect::from_min_size(egui::Pos2::ZERO, size).contains_rect(*rect),
+                    "{label} leaves {size:?}: {rect:?}"
+                );
+            }
+            assert!(
+                ctx.read_response(crate::ui::call_review::sheet_id().with("title"))
+                    .is_some()
+            );
+            let library = crate::call_library::Library::load(&app.dirs.state);
+            let call = library.get(&id).unwrap();
+            assert!(call.pending_review && !call.pending_read);
+            assert!(call.transcript().is_none() && crate::call_capture::job(&id).is_none());
+        }
+    }
+
+    #[test]
+    fn discarding_a_stopped_recording_requires_confirmation() {
+        let (mut app, ctx) = page("call-review");
+        let id = app.recorded_call_open.clone().unwrap();
+        let shown = nodes(&mut app, &ctx, WIDE);
+        let button = find(&shown, "Discard").unwrap().center();
+        let click = |app: &mut App, at: egui::Pos2| {
+            for pressed in [true, false] {
+                frame_with(
+                    app,
+                    &ctx,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            frame_with(app, &ctx, Vec::new());
+        };
+        click(&mut app, button);
+        let library = crate::call_library::Library::load(&app.dirs.state);
+        let path = library.get(&id).unwrap().path(&app.dirs.state);
+        assert!(path.is_file(), "asking does not delete the recording");
+        let shown = nodes(&mut app, &ctx, WIDE);
+        assert!(find(&shown, "Back").is_some());
+        click(&mut app, find(&shown, "Discard").unwrap().center());
+        assert!(!path.exists());
+        assert!(
+            crate::call_library::Library::load(&app.dirs.state)
+                .get(&id)
+                .is_none()
         );
     }
 

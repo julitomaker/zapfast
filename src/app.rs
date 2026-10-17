@@ -6224,7 +6224,9 @@ impl App {
             | Action::CloseRecordedCall
             | Action::TranscribeRecordedCall(_)
             | Action::MoveRecordedCall { .. }
-            | Action::DeleteRecordedCall(_) => {}
+            | Action::DeleteRecordedCall(_)
+            | Action::RenameRecordedCall { .. }
+            | Action::DraftCallRecap(_) => {}
             Action::PickCall { chat, message } => {
                 self.new_call = false;
                 self.picked_call = Some((chat.clone(), message.clone()));
@@ -9568,6 +9570,7 @@ impl App {
     pub fn shutdown(&mut self) {
         // No new read starts; one cut short is read on the next launch.
         crate::call_capture::quitting();
+        crate::ui::projects::stop_call_recorder();
         crate::transcribe::unload();
         self.call_tones.set(None);
         self.save_state();

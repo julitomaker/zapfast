@@ -20,7 +20,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, LazyLock, Mutex},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -123,6 +123,7 @@ struct State {
 pub(crate) struct CallJob {
     phase: CallPhase,
     stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 #[derive(Clone, Default)]
@@ -136,6 +137,30 @@ pub(crate) enum CallPhase {
     Reading,
     Saved(Instant),
     Failed(String),
+}
+
+/// The recorder outlives the window that started it.
+static CALL_JOB: LazyLock<Arc<Mutex<CallJob>>> = LazyLock::new(Arc::default);
+static RECORDINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// Recordings ready for review, drained even when the Projects page is closed.
+pub(crate) fn drain_recordings() -> Vec<String> {
+    std::mem::take(&mut *RECORDINGS.lock().unwrap_or_else(|p| p.into_inner()))
+}
+
+/// Ends a meeting recorder before the process leaves. Its thread keeps the
+/// audio for review before signalling completion.
+pub(crate) fn stop_call_recorder() {
+    let thread = {
+        let mut job = CALL_JOB.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(stop) = job.stop.take() {
+            let _ = stop.send(());
+        }
+        job.thread.take()
+    };
+    if let Some(thread) = thread {
+        let _ = thread.join();
+    }
 }
 
 /// How long a ticked or dismissed finding can be undone.
@@ -195,7 +220,7 @@ impl Default for State {
             note_kind: crate::projects::NoteKind::Log,
             notes_filter: None,
             history_filter: None,
-            call: Arc::default(),
+            call: CALL_JOB.clone(),
             call_busy: Arc::default(),
             call_open: None,
             renaming: None,
@@ -1027,7 +1052,7 @@ fn age_chip(app: &App, since: i64) -> (String, Color32) {
 }
 
 /// A small rounded label.
-fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
+pub(crate) fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
     Frame::new()
         .fill(color.gamma_multiply(0.14))
         .corner_radius(CornerRadius::same(theme::RADIUS))
@@ -2051,7 +2076,7 @@ pub(crate) fn note_call(
 }
 
 /// Records a call (the microphone and the computer's sound) until it is
-/// ended, keeps the file, then reads it.
+/// ended, then keeps the file for review.
 fn record_call(
     app: &App,
     project: &str,
@@ -2067,7 +2092,9 @@ fn record_call(
     }
     let reader = CallReader::of(app);
     let project = project.to_owned();
-    std::thread::spawn(move || {
+    let worker_job = job.clone();
+    let thread = std::thread::spawn(move || {
+        let job = worker_job;
         let recording =
             match crate::recorder::Recording::start(&reader.state, crate::recorder::Source::Both) {
                 Ok(recording) => recording,
@@ -2093,9 +2120,13 @@ fn record_call(
             Ok(call) => call,
             Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
         };
-        set_phase(&job, &ctx, CallPhase::Kept);
-        read_call(reader, project, call.id, job, ctx);
+        RECORDINGS
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(call.id);
+        set_phase(&job, &ctx, CallPhase::Idle);
     });
+    job.lock().unwrap_or_else(|p| p.into_inner()).thread = Some(thread);
 }
 
 /// Picks an audio or video file, keeps a copy, then reads it.
@@ -2154,7 +2185,7 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
             theme::text(
                 ui,
                 gettext(locale, "Call {time}")
-                    .replace("{time}", &format!("{}:{:02}", seconds / 60, seconds % 60)),
+                    .replace("{time}", &crate::util::call_duration(seconds)),
                 theme::medium(13.5),
                 palette.text,
             );
@@ -2190,19 +2221,29 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
             );
         }
         phase => {
-            if theme::icon_button(
-                ui,
-                Icon::Phone,
-                17.0,
-                palette.secondary,
-                palette.text,
-                &gettext(
+            // A WhatsApp call records through its own button: two recorders
+            // at once would each take the other's sound.
+            let on_call = app.call_live();
+            let record = ui
+                .add_enabled_ui(!on_call, |ui| {
+                    theme::icon_button(
+                        ui,
+                        Icon::Phone,
+                        17.0,
+                        palette.secondary,
+                        palette.text,
+                        &gettext(
+                            locale,
+                            "Record a call (your microphone and the computer's sound)",
+                        ),
+                    )
+                })
+                .inner
+                .on_disabled_hover_text(gettext(
                     locale,
-                    "Record a call (your microphone and the computer's sound)",
-                ),
-            )
-            .clicked()
-            {
+                    "You are on a WhatsApp call: record it with the call's button",
+                ));
+            if record.clicked() {
                 let title = gettext(locale, "Call of {date}").replace(
                     "{date}",
                     &crate::util::moment_stamp(locale, jiff::Timestamp::now().as_second()),
@@ -2334,7 +2375,7 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
                 ui.add_space(14.0);
                 theme::text(
                     ui,
-                    format!("{}:{:02}", seconds / 60, seconds % 60),
+                    crate::util::call_duration(seconds),
                     theme::medium(13.5),
                     palette.text,
                 );
@@ -2410,15 +2451,41 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
     }
 }
 
-/// Opens `path` with the system: the app for its kind, or the Finder.
-fn reveal(path: &std::path::Path, in_finder: bool) {
-    let mut command = std::process::Command::new("/usr/bin/open");
-    if in_finder {
-        command.arg("-R");
-    }
-    if let Err(error) = command.arg(path).spawn() {
-        log::warn!("projects: the call could not be opened: {error}");
-    }
+/// Opens `path` with the system, off the interface thread: the app for its
+/// kind, or its folder (with the file picked where the system can).
+pub(crate) fn reveal(path: &std::path::Path, in_folder: bool) {
+    let path = path.to_owned();
+    std::thread::spawn(move || {
+        let opened = if in_folder {
+            show_in_folder(&path)
+        } else {
+            crate::opener::open_or_reveal(&path)
+        };
+        if let Err(error) = opened {
+            log::warn!("projects: the call could not be opened: {error}");
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn show_in_folder(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .map_err(|e| e.to_string())
+        .and_then(|status| {
+            status
+                .success()
+                .then_some(())
+                .ok_or_else(|| status.to_string())
+        })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_in_folder(path: &std::path::Path) -> Result<(), String> {
+    let folder = path.parent().unwrap_or(path);
+    open::that(folder).map_err(|e| e.to_string())
 }
 
 /// Runs `work` on a call off the interface thread, marking it busy with
@@ -2451,6 +2518,7 @@ fn call_job(
 
 enum CallAction {
     Toggle,
+    Review,
     Play,
     Finder,
     Retranscribe(crate::media_ai::SpeechEngine),
@@ -2461,15 +2529,107 @@ enum CallAction {
     Delete,
 }
 
+/// What a read call said, as the project's calls and a recorded call's sheet
+/// both show it: its summary, decisions, commitments, tasks and next steps,
+/// then its transcript, folded. `empty` stands in for a missing summary.
+pub(crate) fn call_details(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    call: &crate::call_library::Call,
+    empty: Option<&str>,
+) {
+    ui.set_width(ui.available_width());
+    ui.spacing_mut().item_spacing.y = 6.0;
+    match &call.analysis {
+        Some(analysis) => {
+            if !analysis.summary.is_empty() {
+                wrapped(ui, &analysis.summary, theme::regular(14.0), palette.text);
+            }
+            let list = |ui: &mut egui::Ui, title: &str, items: Vec<String>| {
+                if items.is_empty() {
+                    return;
+                }
+                theme::text(ui, title, theme::semibold(13.0), palette.accent);
+                for item in items {
+                    wrapped(
+                        ui,
+                        &format!("•  {item}"),
+                        theme::regular(13.5),
+                        palette.text,
+                    );
+                }
+            };
+            list(
+                ui,
+                gettext(locale, "Decisions").as_ref(),
+                analysis.decisions.clone(),
+            );
+            list(
+                ui,
+                gettext(locale, "Commitments").as_ref(),
+                analysis.commitments.iter().map(commitment).collect(),
+            );
+            list(
+                ui,
+                gettext(locale, "Tasks").as_ref(),
+                analysis.tasks.clone(),
+            );
+            list(
+                ui,
+                gettext(locale, "Next steps").as_ref(),
+                analysis.next_steps.clone(),
+            );
+        }
+        None => {
+            if let Some(empty) = empty {
+                theme::text(ui, empty, theme::regular(13.0), palette.dim);
+            }
+        }
+    }
+    if let Some(transcript) = call.transcript() {
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new(
+            egui::RichText::new(
+                gettext(locale, "Transcript · {engine} · {n} versions")
+                    .replace("{engine}", &transcript.engine)
+                    .replace("{n}", &call.transcripts.len().to_string()),
+            )
+            .font(theme::medium(13.0))
+            .color(palette.secondary),
+        )
+        .id_salt(("call-transcript", &call.id))
+        .show(ui, |ui| {
+            wrapped(ui, &transcript.text, theme::regular(13.5), palette.text);
+        });
+    }
+}
+
+/// A commitment on one line: who, what, and by when.
+pub(crate) fn commitment(c: &crate::call_library::Commitment) -> String {
+    let who = c.who.trim();
+    let what = if who.is_empty() {
+        c.what.clone()
+    } else {
+        format!("{who}: {}", c.what)
+    };
+    match &c.due {
+        Some(due) => format!("{what} ({due})"),
+        None => what,
+    }
+}
+
 /// The project's calls: each kept file with what was made of it, and what
 /// can be done with it.
 fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
     let palette = app.palette;
     let locale = app.locale;
     let library = crate::call_library::Library::cached(&app.dirs.state);
+    // A locked chat's call stays out while its folder is closed.
     let calls: Vec<crate::call_library::Call> = library
         .of_project(&project.id)
         .into_iter()
+        .filter(|call| !call.private || app.locked_folder_open())
         .cloned()
         .collect();
     if calls.is_empty() {
@@ -2480,7 +2640,19 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .clone();
-    if !busy.is_empty() {
+    // What reading each call is doing, for the calls recorded in a WhatsApp
+    // call: the read runs on its own, outside this page.
+    let jobs: HashMap<String, crate::call_capture::JobPhase> = calls
+        .iter()
+        .filter_map(|call| crate::call_capture::job(&call.id).map(|job| (call.id.clone(), job)))
+        .collect();
+    let reading = jobs.values().any(|job| {
+        matches!(
+            job,
+            crate::call_capture::JobPhase::Reading | crate::call_capture::JobPhase::Summarizing
+        )
+    });
+    if !busy.is_empty() || reading {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(500));
     }
@@ -2553,17 +2725,43 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                         ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
                         chip(ui, &crate::util::moment_stamp(locale, call.at), palette.secondary);
                         if call.seconds > 0 {
-                            chip(
-                                ui,
-                                &format!("{}:{:02}", call.seconds / 60, call.seconds % 60),
-                                palette.secondary,
-                            );
+                            chip(ui, &crate::util::call_duration(call.seconds), palette.secondary);
                         }
-                        match status {
-                            Some(label) if !label.starts_with('!') => {
+                        if call.pending_review {
+                            chip(ui, gettext(locale, "Not reviewed").as_ref(), palette.warning);
+                            if theme::link(
+                                ui,
+                                gettext(locale, "Review"),
+                                theme::medium(11.5),
+                                palette.link,
+                            )
+                            .clicked()
+                            {
+                                actions.push((call.id.clone(), CallAction::Review));
+                            }
+                        }
+                        let job = jobs.get(&call.id);
+                        match (status, job) {
+                            (None, Some(crate::call_capture::JobPhase::Reading)) => {
+                                chip(ui, gettext(locale, "Transcribing…").as_ref(), palette.warning);
+                            }
+                            (None, Some(crate::call_capture::JobPhase::Summarizing)) => {
+                                chip(ui, gettext(locale, "Summarizing…").as_ref(), palette.warning);
+                            }
+                            (None, Some(crate::call_capture::JobPhase::Failed(error)))
+                                if call.analysis.is_none() =>
+                            {
+                                chip(ui, gettext(locale, "Error").as_ref(), palette.danger);
+                                ui.label(
+                                    egui::RichText::new(error)
+                                        .font(theme::regular(11.5))
+                                        .color(palette.danger),
+                                );
+                            }
+                            (Some(label), _) if !label.starts_with('!') => {
                                 chip(ui, label, palette.warning);
                             }
-                            Some(error) => {
+                            (Some(error), _) => {
                                 chip(ui, gettext(locale, "Error").as_ref(), palette.danger);
                                 ui.label(
                                     egui::RichText::new(error.trim_start_matches('!'))
@@ -2571,10 +2769,11 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                                         .color(palette.danger),
                                 );
                             }
-                            None if call.analysis.is_some() => {
+                            (None, _) if call.analysis.is_some() => {
                                 chip(ui, gettext(locale, "Summarized").as_ref(), palette.accent);
                             }
-                            None => match call.transcript() {
+                            (None, _) if call.pending_review => {}
+                            (None, _) => match call.transcript() {
                                 Some(t) => chip(
                                     ui,
                                     &gettext(locale, "Transcribed · {engine}").replace("{engine}", &t.engine),
@@ -2609,6 +2808,10 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                             )
                         })
                         .chain([
+                            (
+                                gettext(locale, "View recording and summary").into_owned(),
+                                CallAction::Review,
+                            ),
                             (gettext(locale, "Redo the summary").into_owned(), CallAction::Reanalyze),
                             (gettext(locale, "Copy summary and transcript").into_owned(), CallAction::Copy),
                             (gettext(locale, "Export as Markdown").into_owned(), CallAction::Export),
@@ -2623,6 +2826,7 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                         .show(|ui| {
                             for (label, action) in options {
                                 let icon = match action {
+                                    CallAction::Review => Icon::Record,
                                     CallAction::Retranscribe(_) => Icon::Refresh,
                                     CallAction::Reanalyze => Icon::ListChecks,
                                     CallAction::Copy => Icon::Copy,
@@ -2661,63 +2865,11 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                 Frame::new()
                     .inner_margin(Margin { left: 23, right: 4, top: 0, bottom: 6 })
                     .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.spacing_mut().item_spacing.y = 6.0;
-                        match &call.analysis {
-                            Some(analysis) => {
-                                if !analysis.summary.is_empty() {
-                                    wrapped(ui, &analysis.summary, theme::regular(14.0), palette.text);
-                                }
-                                let list = |ui: &mut egui::Ui, title: &str, items: Vec<String>| {
-                                    if items.is_empty() {
-                                        return;
-                                    }
-                                    theme::text(ui, title, theme::semibold(13.0), palette.accent);
-                                    for item in items {
-                                        wrapped(ui, &format!("•  {item}"), theme::regular(13.5), palette.text);
-                                    }
-                                };
-                                list(ui, gettext(locale, "Decisions").as_ref(), analysis.decisions.clone());
-                                list(
-                                    ui,
-                                    gettext(locale, "Commitments").as_ref(),
-                                    analysis
-                                        .commitments
-                                        .iter()
-                                        .map(|c| match &c.due {
-                                            Some(due) => format!("{}: {} ({due})", c.who, c.what),
-                                            None => format!("{}: {}", c.who, c.what),
-                                        })
-                                        .collect(),
-                                );
-                                list(ui, gettext(locale, "Tasks").as_ref(), analysis.tasks.clone());
-                                list(ui, gettext(locale, "Next steps").as_ref(), analysis.next_steps.clone());
-                            }
-                            None => {
-                                theme::text(
-                                    ui,
-                                    gettext(locale, "No summary yet. Turn on the analysis, or use Redo the summary."),
-                                    theme::regular(13.0),
-                                    palette.dim,
-                                );
-                            }
-                        }
-                        if let Some(transcript) = call.transcript() {
-                            ui.add_space(4.0);
-                            egui::CollapsingHeader::new(
-                                egui::RichText::new(
-                                    gettext(locale, "Transcript · {engine} · {n} versions")
-                                        .replace("{engine}", &transcript.engine)
-                                        .replace("{n}", &call.transcripts.len().to_string()),
-                                )
-                                .font(theme::medium(13.0))
-                                .color(palette.secondary),
-                            )
-                            .id_salt(("call-transcript", &call.id))
-                            .show(ui, |ui| {
-                                wrapped(ui, &transcript.text, theme::regular(13.5), palette.text);
-                            });
-                        }
+                        let empty = gettext(
+                            locale,
+                            "No summary yet. Turn on the analysis, or use Redo the summary.",
+                        );
+                        call_details(ui, &palette, locale, call, Some(empty.as_ref()));
                     });
             }
             ui.add_space(6.0);
@@ -2737,8 +2889,12 @@ fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
                     Some(id)
                 };
             }
+            CallAction::Review => app.actions.push(Action::OpenRecordedCall(id)),
             CallAction::Play => reveal(&call.path(&reader.state), false),
             CallAction::Finder => reveal(&call.path(&reader.state), true),
+            CallAction::Retranscribe(_) | CallAction::Reanalyze if call.pending_review => {
+                app.actions.push(Action::OpenRecordedCall(id));
+            }
             CallAction::Retranscribe(engine) => {
                 let mut engines = reader.engines.clone();
                 engines.speech = engine;
