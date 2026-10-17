@@ -17,17 +17,30 @@ whatsapp="${WHATSAPP_APP:-/Applications/WhatsApp.app}/Contents/Resources"
 
 "$here/bundle.sh" "$root/target/release/zapfast" "$app" "$version" >/dev/null
 
+# The branded icon and sound are kept beside the app's data, so a later
+# build still has them after WhatsApp itself is removed from this Mac.
+brand="${WHATSPRO_BRANDING:-$HOME/Library/Application Support/me.paolino.zapfast-julito/branding}"
+mkdir -p "$brand"
 if [ -d "$whatsapp" ]; then
     # WhatsApp's icon with a "PRO" badge (pro-icon.swift).
-    swift "$here/pro-icon.swift" "$(dirname "$(dirname "$whatsapp")")" \
-        "$app/Contents/Resources/zapfast.icns"
-    echo "icon: WhatsApp's with the PRO badge"
+    swift "$here/pro-icon.swift" "$(dirname "$(dirname "$whatsapp")")" "$brand/whatspro.icns"
 fi
 if [ -f "$whatsapp/incoming_message_notification.m4a" ]; then
-    # Notifications play the bundle's sound by name (src/notify.rs).
     afconvert -f WAVE -d LEI16@44100 "$whatsapp/incoming_message_notification.m4a" \
-        "$app/Contents/Resources/zapfast-receive.wav"
+        "$brand/receive.wav"
+fi
+if [ -f "$brand/whatspro.icns" ]; then
+    cp "$brand/whatspro.icns" "$app/Contents/Resources/zapfast.icns"
+    echo "icon: Whats Pro (WhatsApp with the PRO badge)"
+else
+    echo "icon: ZapFast's (no WhatsApp installed and no saved Whats Pro icon)" >&2
+fi
+if [ -f "$brand/receive.wav" ]; then
+    # Notifications play the bundle's sound by name (src/notify.rs).
+    cp "$brand/receive.wav" "$app/Contents/Resources/zapfast-receive.wav"
     echo "message sound: WhatsApp's"
+else
+    echo "message sound: ZapFast's (install WhatsApp once to take its sound)" >&2
 fi
 
 codesign --force --entitlements "$here/entitlements.plist" --sign - "$app"
