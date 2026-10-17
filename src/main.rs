@@ -330,6 +330,10 @@ fn run() -> eframe::Result<()> {
         log::error!("could not move the linked account into its folder: {error}");
         return Err(eframe::Error::AppCreation(error.into()));
     }
+    // The local read-only bridge for tools on this computer (src/bridge.rs).
+    if !demo {
+        zapfast::bridge::start(&dirs.config, &dirs.state);
+    }
     let settings = settings::Settings::load(&dirs.settings_file());
     // The drawn title bar (Windows and Linux): GNOME's button layout and
     // icons, read once, and the choice every window is made with.

@@ -258,6 +258,19 @@ fn keyed(path: &Path, key: &[u8; 32]) -> Result<Connection> {
     Ok(connection)
 }
 
+/// A second, query-only connection to an archive the app has already opened
+/// and migrated. It never creates, migrates or writes the file.
+pub(super) fn open_reader(path: &Path) -> Result<Connection> {
+    ensure!(
+        path.exists() && !plaintext(path)?,
+        "The archive is not an encrypted archive yet"
+    );
+    let key = key_for(path)?;
+    let connection = keyed(path, &key)?;
+    connection.pragma_update(None, "query_only", "ON")?;
+    Ok(connection)
+}
+
 fn private_file(path: &Path) -> Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
