@@ -59,6 +59,8 @@ pub enum ControlCommand {
     Quit,
     /// Confirms an instance is running and changes nothing.
     Ping,
+    /// Shows a test notification with its sound.
+    TestNotification,
     /// Opens the chat a link named, showing the window as it does.
     OpenChat(crate::target::Request),
     /// Opens the invite dialog for the group a link named.
@@ -248,6 +250,7 @@ fn parse(verb: &str) -> Option<ControlCommand> {
         "reload-themes" => Some(ControlCommand::ReloadThemes),
         "quit" => Some(ControlCommand::Quit),
         "ping" => Some(ControlCommand::Ping),
+        "test-notification" => Some(ControlCommand::TestNotification),
         _ => None,
     }
 }

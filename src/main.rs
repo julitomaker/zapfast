@@ -117,6 +117,8 @@ enum Control {
     ReloadThemes,
     /// Quit an already-running Whats Pro, which closing its window leaves in the tray.
     Quit,
+    /// Show a test notification, with its sound, from the running Whats Pro.
+    TestNotification,
 }
 
 impl Control {
@@ -125,6 +127,7 @@ impl Control {
         match self {
             Control::ReloadThemes => "reload-themes",
             Control::Quit => "quit",
+            Control::TestNotification => "test-notification",
         }
     }
 }
@@ -151,6 +154,9 @@ fn control(command: &Control, sent: single_instance::Sent) -> (i32, Option<Strin
                     .to_owned(),
             ),
         ),
+        (Control::TestNotification, Sent::NotRunning | Sent::Older) => {
+            (1, Some("Whats Pro is not running.".to_owned()))
+        }
         (_, Sent::Failed(error)) => (1, Some(format!("Could not reach the running Whats Pro: {error}"))),
     }
 }

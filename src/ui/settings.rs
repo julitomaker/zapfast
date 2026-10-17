@@ -525,6 +525,38 @@ fn sections(app: &App) -> Vec<Section> {
         ),
         |settings| &mut settings.notifications,
     );
+    notifications.row(
+        translated(locale, "Test and permission"),
+        translated(
+            locale,
+            "Sends a test notification. If none appears, allow Whats Pro in macOS notification settings.",
+        ),
+        move |ui, app| {
+            if theme::soft_button(
+                ui,
+                &palette,
+                None,
+                &crate::i18n::gettext(app.locale, "Test"),
+                false,
+            )
+            .clicked()
+            {
+                app.actions.push(Action::TestNotification);
+            }
+            if cfg!(target_os = "macos")
+                && theme::soft_button(
+                    ui,
+                    &palette,
+                    Some(Icon::ExternalLink),
+                    &crate::i18n::gettext(app.locale, "macOS settings"),
+                    false,
+                )
+                .clicked()
+            {
+                app.actions.push(Action::OpenNotificationSettings);
+            }
+        },
+    );
     if app.account().settings.notifications {
         let (title, description) = sound_text(locale, false);
         notifications.toggle(

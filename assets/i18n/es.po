@@ -2644,3 +2644,18 @@ msgstr "Liquid Glass"
 
 msgid "Connect"
 msgstr "Conectar"
+
+msgid "Test and permission"
+msgstr "Prueba y permiso"
+
+msgid "Sends a test notification. If none appears, allow Whats Pro in macOS notification settings."
+msgstr "Envía una notificación de prueba. Si no aparece, permití Whats Pro en los ajustes de notificaciones de macOS."
+
+msgid "macOS settings"
+msgstr "Ajustes de macOS"
+
+msgid "Notifications are working."
+msgstr "Las notificaciones funcionan."
+
+msgid "Test"
+msgstr "Probar"

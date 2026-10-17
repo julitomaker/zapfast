@@ -1941,6 +1941,7 @@ impl App {
                 ControlCommand::ReloadThemes => self.actions.push(Action::ReloadThemes),
                 ControlCommand::Quit => self.actions.push(Action::Quit),
                 ControlCommand::Ping => {}
+                ControlCommand::TestNotification => self.actions.push(Action::TestNotification),
                 ControlCommand::OpenInvite(code) => {
                     self.actions.push(Action::ShowWindow);
                     self.actions
@@ -6590,6 +6591,28 @@ impl App {
                 }
             }
             Action::OpenLog(path) => self.backend.send(Command::OpenLog(path)),
+            Action::OpenNotificationSettings => {
+                let _ = std::process::Command::new("open")
+                    .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.julitomaker.zapfast")
+                    .spawn();
+            }
+            Action::TestNotification => {
+                let waker = self.waker.clone();
+                self.notifications.show(
+                    crate::paths::APP_TITLE.to_owned(),
+                    crate::i18n::gettext(self.locale, "Notifications are working.").into_owned(),
+                    None,
+                    self.settings.message_sound.clone(),
+                    crate::notify::NotificationTarget {
+                        account: self.account().id.clone(),
+                        chat: String::new(),
+                        message: None,
+                    },
+                    std::sync::Arc::clone(&self.notification_opens),
+                    move || waker.wake(),
+                    false,
+                );
+            }
             Action::ConnectClaudeDesktop => match crate::mcp::connect_claude_desktop() {
                 Ok(_) => self.toast(crate::i18n::gettext(
                     self.locale,

@@ -2461,6 +2461,10 @@ pub enum Action {
     OpenLog(PathBuf),
     /// Registers this app as an MCP server in Claude Desktop (src/mcp.rs).
     ConnectClaudeDesktop,
+    /// Shows a test notification with the message sound.
+    TestNotification,
+    /// Opens the system's notification settings for this app (macOS).
+    OpenNotificationSettings,
     OpenFolder(PathBuf),
     /// Saves a copy of a downloaded attachment where the person chooses.
     SaveAttachmentAs {

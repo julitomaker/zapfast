@@ -280,13 +280,20 @@ impl Notifications {
         let spawned = std::thread::Builder::new()
             .name("notification".into())
             .spawn(move || {
+                // Fork: when the desktop does not show the notification (no
+                // permission, for one), its sound must still play.
+                let by_notification = played_by_notification(&sound);
+                let fallback = sound.clone();
                 let failed = move || {
+                    if by_notification {
+                        play_sound(fallback);
+                    }
                     if let Some(undo) = undo_spawn.lock().unwrap_or_else(|p| p.into_inner()).take()
                     {
                         undo();
                     }
                 };
-                if !played_by_notification(&sound) {
+                if !by_notification {
                     play_sound(sound.clone());
                 }
                 deliver(
@@ -441,7 +448,8 @@ fn deliver(
         )
     }) {
         Ok(client) => client,
-        Err(_) => {
+        Err(error) => {
+            log::warn!("native notifications unavailable: {error}");
             failed();
             return;
         }
@@ -460,7 +468,7 @@ fn deliver(
         // Retain the existing permission request on first notification. The
         // framework rechecks OS settings without caching a permission denial.
         if let Err(error) = client.request_permission().await {
-            log::debug!("native notification permission unavailable: {error}");
+            log::warn!("native notification permission unavailable: {error}");
             failed();
             return;
         }
@@ -474,7 +482,7 @@ fn deliver(
         let (events, mut responses) = tokio::sync::mpsc::unbounded_channel();
         let handle = match client.show_with(notification, move |event| { let _ = events.send(event); }) {
             Ok(handle) => handle,
-            Err(error) => { log::debug!("native notification unavailable: {error}"); failed(); return; }
+            Err(error) => { log::warn!("native notification unavailable: {error}"); failed(); return; }
         };
         loop {
             tokio::select! {
@@ -491,7 +499,7 @@ fn deliver(
                         wake();
                         return;
                     }
-                    Some(Event::Failed(error)) => { log::debug!("native notification unavailable: {error}"); failed(); return; }
+                    Some(Event::Failed(error)) => { log::warn!("native notification unavailable: {error}"); failed(); return; }
                     _ => return,
                 }
             }
