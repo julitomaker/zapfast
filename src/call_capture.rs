@@ -502,9 +502,12 @@ fn lead_note(
     let Some(lead) = store.get_mut(lead) else {
         return;
     };
+    // The same note the lead's own recordings get: how long it was, what
+    // happened, and who agreed to what.
+    let heading = crate::leads::call_heading(call.seconds);
     let summary = analysis
         .as_ref()
-        .map(|analysis| analysis.summary.clone())
+        .map(|analysis| crate::leads::call_note(&heading, analysis))
         .unwrap_or_else(|_| {
             format!(
                 "{}: {}",
@@ -989,7 +992,9 @@ mod tests {
             .filter(|entry| entry.kind == crate::leads::Kind::Call)
             .collect();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].text, "Updated summary");
+        // The lead's note: the call's length, then its summary.
+        assert!(calls[0].text.starts_with('('), "{}", calls[0].text);
+        assert!(calls[0].text.ends_with("Updated summary"), "{}", calls[0].text);
         assert_eq!(calls[0].transcript.as_deref(), Some("Fixture transcript"));
     }
 

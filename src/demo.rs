@@ -18492,8 +18492,8 @@ mod call_recording_tests {
             let shown = nodes(&mut app, &ctx, size);
             for label in [
                 "Reproducir",
-                "Mostrar en Finder",
-                "Guardar y transcribir",
+                "Guardar una copia…",
+                "Guardar y analizar",
                 "Descartar",
             ] {
                 let rect = find(&shown, label).unwrap_or_else(|| panic!("{label}: {shown:?}"));

@@ -5082,3 +5082,24 @@ msgstr "Nota guardada"
 
 msgid "Saving recording…"
 msgstr "Guardando grabación…"
+
+msgid "Save in {project} and analyze"
+msgstr "Guardar en {project} y analizar"
+
+msgid "Save and analyze"
+msgstr "Guardar y analizar"
+
+msgid "Transcribes and summarizes it, adds it to the project's notes and to the lead's history."
+msgstr "La transcribe y la resume, y la suma a las notas del proyecto y al historial del lead."
+
+msgid "Transcribes and summarizes it, and adds it to the project's notes."
+msgstr "La transcribe y la resume, y la suma a las notas del proyecto."
+
+msgid "Save a copy…"
+msgstr "Guardar una copia…"
+
+msgid "Saves the audio file wherever you choose"
+msgstr "Guarda el archivo de audio donde elijas"
+
+msgid "Playback speed"
+msgstr "Velocidad de reproducción"

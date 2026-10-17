@@ -683,7 +683,18 @@ impl App {
                 }
                 self.recorded_call_open = Some(id);
             }
-            Action::CloseRecordedCall => self.recorded_call_open = None,
+            Action::CloseRecordedCall => {
+                // Its player stops with the sheet.
+                if let Some(id) = self.recorded_call_open.take()
+                    && self
+                        .player
+                        .status(&crate::ui::call_review::player_key(&id))
+                        .state
+                        != crate::audio::State::Idle
+                {
+                    self.player.stop();
+                }
+            }
             Action::TranscribeRecordedCall(id) => crate::call_capture::save_and_read(self, &id),
             Action::MoveRecordedCall { id, project } => {
                 crate::call_capture::move_to(self, &id, project);

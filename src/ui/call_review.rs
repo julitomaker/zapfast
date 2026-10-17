@@ -254,6 +254,8 @@ pub fn subtitle(locale: Locale, call: &Call) -> String {
 fn body(app: &App, ui: &mut egui::Ui, call: &Call, sheet: &mut Sheet, actions: &mut Vec<Action>) {
     let palette = app.palette;
     let locale = app.locale;
+    player(app, ui, call, actions);
+    ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         theme::text(
@@ -506,20 +508,45 @@ fn footer(app: &App, ui: &mut egui::Ui, call: &Call, sheet: &mut Sheet, actions:
     }
     let path = call.path(&app.dirs.state);
     if call.pending_review {
+        // Keeping it is what starts the reading: the transcript and summary
+        // go into the project's notes and, for a lead, into its history.
+        let project = call.project.as_ref().and_then(|id| {
+            sheet
+                .projects
+                .iter()
+                .find(|(project, _)| project == id)
+                .map(|(_, name)| name.clone())
+        });
+        let save = match &project {
+            Some(name) => {
+                gettext(locale, "Save in {project} and analyze").replace("{project}", name)
+            }
+            None => gettext(locale, "Save and analyze").into_owned(),
+        };
+        let tip = if sheet.lead.is_some() {
+            gettext(
+                locale,
+                "Transcribes and summarizes it, adds it to the project's notes and to the lead's history.",
+            )
+        } else {
+            gettext(
+                locale,
+                "Transcribes and summarizes it, and adds it to the project's notes.",
+            )
+        };
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-            if theme::pill_button(ui, &palette, &gettext(locale, "Play"), false).clicked() {
-                crate::ui::projects::reveal(&path, false);
-            }
-            if theme::pill_button(ui, &palette, &gettext(locale, "Show in Finder"), false).clicked()
+            if theme::pill_button(ui, &palette, &save, true)
+                .on_hover_text(tip)
+                .clicked()
             {
-                crate::ui::projects::reveal(&path, true);
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            let save = gettext(locale, "Save and transcribe");
-            if theme::pill_button(ui, &palette, &save, true).clicked() {
                 actions.push(Action::TranscribeRecordedCall(call.id.clone()));
+            }
+            if theme::pill_button(ui, &palette, &gettext(locale, "Save a copy…"), false)
+                .on_hover_text(gettext(locale, "Saves the audio file wherever you choose"))
+                .clicked()
+            {
+                save_copy(&path, &call.title);
             }
             if theme::pill_button(ui, &palette, &gettext(locale, "Discard"), false).clicked() {
                 sheet.confirm = Some(Confirm::Discard);
@@ -529,8 +556,8 @@ fn footer(app: &App, ui: &mut egui::Ui, call: &Call, sheet: &mut Sheet, actions:
     }
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
-        if theme::pill_button(ui, &palette, &gettext(locale, "Play"), false).clicked() {
-            crate::ui::projects::reveal(&path, false);
+        if theme::pill_button(ui, &palette, &gettext(locale, "Save a copy…"), false).clicked() {
+            save_copy(&path, &call.title);
         }
         if theme::pill_button(ui, &palette, &gettext(locale, "Show in Finder"), false).clicked() {
             crate::ui::projects::reveal(&path, true);
@@ -572,6 +599,137 @@ fn footer(app: &App, ui: &mut egui::Ui, call: &Call, sheet: &mut Sheet, actions:
                 sheet.confirm = Some(Confirm::Delete);
             }
         });
+    });
+}
+
+/// The recording's own player: play or pause, a track to seek on, the time
+/// and the speed, through the same player as voice messages.
+fn player(app: &App, ui: &mut egui::Ui, call: &Call, actions: &mut Vec<Action>) {
+    use crate::audio::State;
+    let palette = app.palette;
+    let locale = app.locale;
+    let path = call.path(&app.dirs.state);
+    let key = player_key(&call.id);
+    let status = app.player.status(&key);
+    let size = 36.0;
+    let fill = palette.accent.gamma_multiply(0.22);
+    let hover = palette.accent.gamma_multiply(0.38);
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), size),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            let (icon, tip) = if status.state == State::Playing {
+                (Icon::Pause, gettext(locale, "Pause"))
+            } else {
+                (Icon::Play, gettext(locale, "Play"))
+            };
+            if status.state == State::Loading {
+                let (rect, _) = ui.allocate_exact_size(vec2(size, size), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), size / 2.0, fill);
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    ui.centered_and_justified(|ui| theme::spinner(ui, 18.0, palette.accent));
+                });
+            } else if theme::circle_button(ui, icon, size, fill, hover, palette.accent, &tip)
+                .clicked()
+            {
+                actions.push(Action::PlayVoice {
+                    message: key.clone(),
+                    path: path.clone(),
+                });
+            }
+            let total = if status.total.is_zero() {
+                call.seconds
+            } else {
+                status.total.as_secs()
+            };
+            let time = format!(
+                "{} / {}",
+                crate::util::call_duration(status.position.as_secs()),
+                crate::util::call_duration(total)
+            );
+            let speed = crate::audio::speed_label(app.player.speed());
+            let reserved = 92.0 + 44.0;
+            let (rect, response) = ui.allocate_exact_size(
+                vec2((ui.available_width() - reserved).max(40.0), 20.0),
+                egui::Sense::click(),
+            );
+            let fraction = if status.total.is_zero() {
+                0.0
+            } else {
+                (status.position.as_secs_f32() / status.total.as_secs_f32()).clamp(0.0, 1.0)
+            };
+            let track = egui::Rect::from_center_size(rect.center(), vec2(rect.width(), 4.0));
+            ui.painter()
+                .rect_filled(track, 2.0, palette.secondary.gamma_multiply(0.5));
+            let played = track.left() + fraction * track.width();
+            ui.painter().rect_filled(
+                egui::Rect::from_min_max(track.min, egui::pos2(played, track.bottom())),
+                2.0,
+                palette.accent,
+            );
+            ui.painter()
+                .circle_filled(egui::pos2(played, track.center().y), 6.0, palette.accent);
+            if response.clicked()
+                && let Some(at) = response.interact_pointer_pos()
+            {
+                actions.push(Action::SeekVoice {
+                    message: key.clone(),
+                    path: path.clone(),
+                    fraction: ((at.x - track.left()) / track.width()).clamp(0.0, 1.0),
+                });
+            }
+            ui.allocate_ui_with_layout(
+                vec2(92.0, size),
+                Layout::left_to_right(Align::Center),
+                |ui| theme::text(ui, &time, theme::regular(12.5), palette.secondary),
+            );
+            if theme::pill_button(ui, &palette, &speed, false)
+                .on_hover_text(gettext(locale, "Playback speed"))
+                .clicked()
+            {
+                actions.push(Action::SetVoiceSpeed(crate::audio::next_cycled_speed(
+                    app.player.speed(),
+                )));
+            }
+            if status.state == State::Playing {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(200));
+            }
+        },
+    );
+}
+
+/// The player's key for a recorded call, apart from any message id.
+pub fn player_key(id: &str) -> String {
+    format!("recorded-call:{id}")
+}
+
+/// Asks where to save a copy of the audio and copies it there.
+fn save_copy(path: &std::path::Path, title: &str) {
+    let path = path.to_path_buf();
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("wav")
+        .to_string();
+    let title: String = title
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | ':' | '\\') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = format!("{title}.{extension}");
+    std::thread::spawn(move || {
+        if let Some(target) = rfd::FileDialog::new().set_file_name(&name).save_file()
+            && let Err(error) = std::fs::copy(&path, &target)
+        {
+            log::warn!("call review: could not save a copy: {error}");
+        }
     });
 }
 
