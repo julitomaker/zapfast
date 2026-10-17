@@ -961,6 +961,7 @@ fastframe_icons::icons! {
         Pause => lucide "pause",
         Pencil => lucide "pencil",
         Phone => "phone",
+        Record => "record",
         PhoneIncoming => "phone-incoming",
         PhoneMissed => "phone-missed",
         PhoneOff => "phone-off",

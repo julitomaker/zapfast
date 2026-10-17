@@ -18,7 +18,7 @@
 //! written by the dashboard shows here and the map changed here shows there.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
@@ -110,23 +110,29 @@ struct State {
     history_filter: Option<Verdict>,
     /// A call being recorded, or a recording or file being read.
     call: Arc<Mutex<CallJob>>,
+    /// Calls being read again, by id, with what is happening (or `!error`).
+    call_busy: Arc<Mutex<HashMap<String, String>>>,
+    call_open: Option<String>,
+    renaming: Option<(String, String)>,
 }
 
 /// Recording a call or reading an audio file into the project's notes. It
 /// runs on a thread of its own: starting waits for macOS to allow the
 /// computer's sound, and reading takes a while.
 #[derive(Default)]
-struct CallJob {
+pub(crate) struct CallJob {
     phase: CallPhase,
     stop: Option<std::sync::mpsc::Sender<()>>,
 }
 
 #[derive(Clone, Default)]
-enum CallPhase {
+pub(crate) enum CallPhase {
     #[default]
     Idle,
     Starting,
     Recording(Instant),
+    /// The file is kept; reading it comes next.
+    Kept,
     Reading,
     Saved(Instant),
     Failed(String),
@@ -190,6 +196,9 @@ impl Default for State {
             notes_filter: None,
             history_filter: None,
             call: Arc::default(),
+            call_busy: Arc::default(),
+            call_open: None,
+            renaming: None,
         }
     }
 }
@@ -1925,70 +1934,111 @@ fn set_phase(job: &Arc<Mutex<CallJob>>, ctx: &egui::Context, phase: CallPhase) {
     ctx.request_repaint();
 }
 
-/// Reads `path` with the chosen media engine and keeps it, under `title`,
-/// as a spoken note; the panel is then read again.
-fn read_into_notes(
-    reader: (
-        crate::media_ai::MediaEngines,
-        std::path::PathBuf,
-        std::path::PathBuf,
-    ),
-    project: &str,
-    path: &std::path::Path,
-    title: &str,
-    job: &Arc<Mutex<CallJob>>,
-    ctx: &egui::Context,
-) {
-    let (engines, state_dir, config) = reader;
-    set_phase(job, ctx, CallPhase::Reading);
-    match crate::media_ai::speech(&engines, &state_dir, path) {
-        Ok(text) if !text.trim().is_empty() => {
-            let mut journal = Journal::load(&config, project);
-            journal.add_kind(
-                &format!("{title}\n{}", text.trim()),
-                true,
-                crate::projects::NoteKind::Log,
-            );
-            match journal.save(&config, project) {
-                Ok(()) => {
-                    engine::refresh(project);
-                    set_phase(job, ctx, CallPhase::Saved(Instant::now()));
-                }
-                Err(error) => set_phase(job, ctx, CallPhase::Failed(error.to_string())),
+/// What the calls pipeline needs from the app, to run on a thread.
+#[derive(Clone)]
+pub(crate) struct CallReader {
+    pub(crate) engines: crate::media_ai::MediaEngines,
+    pub(crate) state: std::path::PathBuf,
+    pub(crate) config: std::path::PathBuf,
+}
+
+impl CallReader {
+    pub(crate) fn of(app: &App) -> Self {
+        Self {
+            engines: app.settings.media_engines.clone(),
+            state: app.dirs.state.clone(),
+            config: app.dirs.config.clone(),
+        }
+    }
+}
+
+/// The project's context, for reading its calls.
+fn call_context(config: &std::path::Path, project: &str) -> String {
+    let map = ProjectMap::load(config);
+    let Some(project) = map.project(project) else {
+        return String::new();
+    };
+    let mut text = format!("Proyecto: {}\n", project.name);
+    if !project.context.trim().is_empty() {
+        text.push_str(&format!("Contexto: {}\n", project.context.trim()));
+    }
+    for member in &project.members {
+        text.push_str(&format!("- {} {}\n", member.name, member.role));
+    }
+    text.push('\n');
+    text
+}
+
+/// After a call is kept: read it, analyze it, and note what it said in the
+/// project, so its panel picks up the commitments. Each step is kept as it
+/// finishes; a step that fails leaves the call and what came before.
+pub(crate) fn read_call(reader: CallReader, project: String, id: String, job: Arc<Mutex<CallJob>>, ctx: egui::Context) {
+    set_phase(&job, &ctx, CallPhase::Reading);
+    if let Err(error) = crate::call_library::transcribe(&reader.engines, &reader.state, &id) {
+        return set_phase(&job, &ctx, CallPhase::Failed(error));
+    }
+    analyze_call(&reader, &project, &id);
+    set_phase(&job, &ctx, CallPhase::Saved(Instant::now()));
+}
+
+/// Analyzes a transcribed call and notes it in the project's journal.
+fn analyze_call(reader: &CallReader, project: &str, id: &str) {
+    let analysis = crate::call_library::analyze(
+        &reader.config,
+        &reader.state,
+        id,
+        &call_context(&reader.config, project),
+    );
+    let Some(call) = crate::call_library::Library::load(&reader.state).get(id).cloned() else {
+        return;
+    };
+    let mut note = format!("{}:", call.title);
+    match &analysis {
+        Ok(analysis) => {
+            note.push(' ');
+            note.push_str(&analysis.summary);
+            for c in &analysis.commitments {
+                let due = c.due.as_deref().map(|d| format!(" (para {d})")).unwrap_or_default();
+                note.push_str(&format!("\nCompromiso: {} — {}{due}", c.who, c.what));
+            }
+            for task in &analysis.tasks {
+                note.push_str(&format!("\nTarea: {task}"));
             }
         }
-        Ok(_) => set_phase(
-            job,
-            ctx,
-            CallPhase::Failed(
-                crate::i18n::gettext(crate::i18n::detect(), "Nothing was heard in it").into_owned(),
-            ),
-        ),
-        Err(error) => set_phase(job, ctx, CallPhase::Failed(error)),
+        // Without an analysis engine the transcript itself is the note.
+        Err(_) => {
+            if let Some(transcript) = call.transcript() {
+                note.push('\n');
+                note.push_str(&transcript.text);
+            }
+        }
+    }
+    let mut journal = Journal::load(&reader.config, project);
+    journal.add_kind(&note, true, crate::projects::NoteKind::Log);
+    if journal.save(&reader.config, project).is_ok() {
+        engine::refresh(project);
     }
 }
 
 /// Records a call (the microphone and the computer's sound) until it is
-/// ended, then reads it into the notes.
-fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context) {
+/// ended, keeps the file, then reads it.
+fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context, title: String) {
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     {
         let mut held = job.lock().unwrap_or_else(|p| p.into_inner());
         held.phase = CallPhase::Starting;
         held.stop = Some(stop);
     }
-    let reader = (
-        app.settings.media_engines.clone(),
-        app.dirs.state.clone(),
-        app.dirs.config.clone(),
-    );
+    let reader = CallReader::of(app);
     let project = project.to_owned();
     std::thread::spawn(move || {
-        let recording =
-            match crate::recorder::Recording::start(&reader.1, crate::recorder::Source::Both) {
-                Ok(recording) => recording,
-                Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
-            };
+        let recording = match crate::recorder::Recording::start(
+            &reader.state,
+            crate::recorder::Source::Both,
+        ) {
+            Ok(recording) => recording,
+            Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+        };
         set_phase(&job, &ctx, CallPhase::Recording(Instant::now()));
         let _ = stopped.recv();
         let seconds = recording.elapsed().as_secs();
@@ -1996,43 +2046,56 @@ fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Co
             Ok(path) => path,
             Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
         };
-        let title = format!("Llamada ({}:{:02}):", seconds / 60, seconds % 60);
-        read_into_notes(reader, &project, &path, &title, &job, &ctx);
+        // The file first: kept before anything reads it.
+        let call = match crate::call_library::Library::keep(
+            &reader.state,
+            &path,
+            crate::call_library::Origin::Recorded,
+            seconds,
+            &title,
+            Some(&project),
+            None,
+        ) {
+            Ok(call) => call,
+            Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+        };
+        set_phase(&job, &ctx, CallPhase::Kept);
+        read_call(reader, project, call.id, job, ctx);
     });
 }
 
-/// Picks an audio or video file and reads it into the notes.
+/// Picks an audio or video file, keeps a copy, then reads it.
 fn add_file(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context, label: String) {
-    let reader = (
-        app.settings.media_engines.clone(),
-        app.dirs.state.clone(),
-        app.dirs.config.clone(),
-    );
+    let reader = CallReader::of(app);
     let project = project.to_owned();
     std::thread::spawn(move || {
         let Some(path) = rfd::FileDialog::new()
             .add_filter(
                 &label,
-                &[
-                    "ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm",
-                ],
+                &["ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm"],
             )
             .pick_file()
         else {
             return;
         };
-        let name = path
-            .file_name()
+        let title = path
+            .file_stem()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        read_into_notes(
-            reader,
-            &project,
+        let call = match crate::call_library::Library::keep(
+            &reader.state,
             &path,
-            &format!("Audio: {name}"),
-            &job,
-            &ctx,
-        );
+            crate::call_library::Origin::Uploaded,
+            0,
+            &title,
+            Some(&project),
+            None,
+        ) {
+            Ok(call) => call,
+            Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+        };
+        set_phase(&job, &ctx, CallPhase::Kept);
+        read_call(reader, project, call.id, job, ctx);
     });
 }
 
@@ -2081,11 +2144,11 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
                 palette.secondary,
             );
         }
-        CallPhase::Reading => {
+        CallPhase::Reading | CallPhase::Kept => {
             ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
             theme::text(
                 ui,
-                gettext(locale, "Reading the audio…"),
+                gettext(locale, "Recording saved in Calls. Reading it…"),
                 theme::regular(12.5),
                 palette.secondary,
             );
@@ -2104,7 +2167,9 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
             )
             .clicked()
             {
-                record_call(app, &project.id, state.call.clone(), ui.ctx().clone());
+                let title = gettext(locale, "Call of {date}")
+                    .replace("{date}", &crate::util::moment_stamp(locale, jiff::Timestamp::now().as_second()));
+                record_call(app, &project.id, state.call.clone(), ui.ctx().clone(), title);
             }
             if theme::icon_button(
                 ui,
@@ -2129,7 +2194,7 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
                     theme::icon(ui, Icon::CircleCheck, 14.0, palette.accent);
                     theme::text(
                         ui,
-                        gettext(locale, "Saved in Notes"),
+                        gettext(locale, "Saved in Calls and Notes"),
                         theme::regular(12.5),
                         palette.accent,
                     );
@@ -2301,6 +2366,384 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
     }
 }
 
+/// Opens `path` with the system: the app for its kind, or the Finder.
+fn reveal(path: &std::path::Path, in_finder: bool) {
+    let mut command = std::process::Command::new("/usr/bin/open");
+    if in_finder {
+        command.arg("-R");
+    }
+    if let Err(error) = command.arg(path).spawn() {
+        log::warn!("projects: the call could not be opened: {error}");
+    }
+}
+
+/// Runs `work` on a call off the interface thread, marking it busy with
+/// `label` meanwhile.
+fn call_job(
+    busy: &Arc<Mutex<HashMap<String, String>>>,
+    ctx: &egui::Context,
+    id: &str,
+    label: String,
+    work: impl FnOnce() -> Result<(), String> + Send + 'static,
+) {
+    busy.lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id.to_owned(), label);
+    let (busy, ctx, id) = (busy.clone(), ctx.clone(), id.to_owned());
+    std::thread::spawn(move || {
+        let result = work();
+        let mut held = busy.lock().unwrap_or_else(|p| p.into_inner());
+        match result {
+            Ok(()) => {
+                held.remove(&id);
+            }
+            Err(error) => {
+                held.insert(id, format!("!{error}"));
+            }
+        }
+        ctx.request_repaint();
+    });
+}
+
+enum CallAction {
+    Toggle,
+    Play,
+    Finder,
+    Retranscribe(crate::media_ai::SpeechEngine),
+    Reanalyze,
+    Copy,
+    Export,
+    Rename,
+    Delete,
+}
+
+/// The project's calls: each kept file with what was made of it, and what
+/// can be done with it.
+fn calls_section(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let library = crate::call_library::Library::load(&app.dirs.state);
+    let calls: Vec<crate::call_library::Call> =
+        library.of_project(&project.id).into_iter().cloned().collect();
+    if calls.is_empty() {
+        return;
+    }
+    let busy = state.call_busy.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    if !busy.is_empty() {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    let mut actions: Vec<(String, CallAction)> = Vec::new();
+    card_frame(&palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, Icon::Phone, 16.0, palette.accent);
+            theme::text(ui, gettext(locale, "Calls"), theme::semibold(14.5), palette.text);
+            chip(ui, &calls.len().to_string(), palette.accent);
+        });
+        wrapped(
+            ui,
+            gettext(locale, "Each call keeps its audio file. Read it again with another engine, redo its summary, or take it to another tool.").as_ref(),
+            theme::regular(12.5),
+            palette.secondary,
+        );
+        ui.add_space(6.0);
+        for (index, call) in calls.iter().enumerate() {
+            if index > 0 {
+                let x = ui.max_rect().x_range();
+                let y = ui.cursor().top();
+                ui.painter().hline(x, y, palette.glass_edge());
+            }
+            let open = state.call_open.as_deref() == Some(call.id.as_str());
+            let status = busy.get(&call.id);
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let icon = match call.origin {
+                    crate::call_library::Origin::Recorded => Icon::Mic,
+                    crate::call_library::Origin::Uploaded => Icon::Paperclip,
+                };
+                theme::icon(ui, icon, 15.0, palette.secondary);
+                let width = (ui.available_width() - 150.0).max(120.0);
+                let clicked = column(ui, width, |ui| {
+                    ui.spacing_mut().item_spacing.y = 3.0;
+                    if let Some((id, title)) = state.renaming.as_mut()
+                        && id == &call.id
+                    {
+                        let field = field_frame(ui, &palette, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(title)
+                                    .font(theme::medium(14.0))
+                                    .frame(Frame::NONE)
+                                    .desired_width(f32::INFINITY),
+                            )
+                        });
+                        if !field.has_focus() && !field.lost_focus() {
+                            field.request_focus();
+                        }
+                        if field.lost_focus() {
+                            actions.push((call.id.clone(), CallAction::Rename));
+                        }
+                        return false;
+                    }
+                    let title = ui
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(&call.title)
+                                    .font(theme::medium(14.5))
+                                    .color(palette.text),
+                            )
+                            .truncate()
+                            .sense(Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = vec2(5.0, 4.0);
+                        chip(ui, &crate::util::moment_stamp(locale, call.at), palette.secondary);
+                        if call.seconds > 0 {
+                            chip(
+                                ui,
+                                &format!("{}:{:02}", call.seconds / 60, call.seconds % 60),
+                                palette.secondary,
+                            );
+                        }
+                        match status {
+                            Some(label) if !label.starts_with('!') => {
+                                chip(ui, label, palette.warning);
+                            }
+                            Some(error) => {
+                                chip(ui, gettext(locale, "Error").as_ref(), palette.danger);
+                                ui.label(
+                                    egui::RichText::new(error.trim_start_matches('!'))
+                                        .font(theme::regular(11.5))
+                                        .color(palette.danger),
+                                );
+                            }
+                            None if call.analysis.is_some() => {
+                                chip(ui, gettext(locale, "Summarized").as_ref(), palette.accent);
+                            }
+                            None => match call.transcript() {
+                                Some(t) => chip(
+                                    ui,
+                                    &gettext(locale, "Transcribed · {engine}").replace("{engine}", &t.engine),
+                                    palette.accent,
+                                ),
+                                None => chip(ui, gettext(locale, "Not transcribed").as_ref(), palette.dim),
+                            },
+                        }
+                    });
+                    title.clicked()
+                });
+                if clicked {
+                    actions.push((call.id.clone(), CallAction::Toggle));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    let more = theme::icon_button(
+                        ui,
+                        Icon::Ellipsis,
+                        16.0,
+                        palette.secondary,
+                        palette.text,
+                        &gettext(locale, "Call options"),
+                    );
+                    let again = gettext(locale, "Transcribe again with {engine}");
+                    let options: Vec<(String, CallAction)> = crate::media_ai::SpeechEngine::EVERY
+                        .into_iter()
+                        .map(|engine| {
+                            (
+                                again.replace("{engine}", engine.label()),
+                                CallAction::Retranscribe(engine),
+                            )
+                        })
+                        .chain([
+                            (gettext(locale, "Redo the summary").into_owned(), CallAction::Reanalyze),
+                            (gettext(locale, "Copy summary and transcript").into_owned(), CallAction::Copy),
+                            (gettext(locale, "Export as Markdown").into_owned(), CallAction::Export),
+                            (gettext(locale, "Rename").into_owned(), CallAction::Rename),
+                            (gettext(locale, "Delete call").into_owned(), CallAction::Delete),
+                        ])
+                        .collect();
+                    let labels: Vec<&str> = options.iter().map(|(l, _)| l.as_str()).collect();
+                    egui::Popup::menu(&more)
+                        .width(widgets::menu_width(ui, &labels, true))
+                        .frame(widgets::menu_frame(&palette))
+                        .show(|ui| {
+                            for (label, action) in options {
+                                let icon = match action {
+                                    CallAction::Retranscribe(_) => Icon::Refresh,
+                                    CallAction::Reanalyze => Icon::ListChecks,
+                                    CallAction::Copy => Icon::Copy,
+                                    CallAction::Export => Icon::Download,
+                                    CallAction::Rename => Icon::Pencil,
+                                    _ => Icon::Trash,
+                                };
+                                if widgets::menu_item(ui, &palette, Some(icon), &label) {
+                                    actions.push((call.id.clone(), action));
+                                    ui.close();
+                                }
+                            }
+                        });
+                    if theme::icon_button(ui, Icon::ExternalLink, 15.0, palette.secondary, palette.text, &gettext(locale, "Show in Finder")).clicked() {
+                        actions.push((call.id.clone(), CallAction::Finder));
+                    }
+                    if theme::icon_button(ui, Icon::Play, 16.0, palette.accent, palette.text, &gettext(locale, "Play")).clicked() {
+                        actions.push((call.id.clone(), CallAction::Play));
+                    }
+                    if theme::icon_button(
+                        ui,
+                        if open { Icon::ChevronUp } else { Icon::ChevronDown },
+                        16.0,
+                        palette.secondary,
+                        palette.text,
+                        &gettext(locale, "Details"),
+                    )
+                    .clicked()
+                    {
+                        actions.push((call.id.clone(), CallAction::Toggle));
+                    }
+                });
+            });
+            if open {
+                ui.add_space(6.0);
+                Frame::new()
+                    .inner_margin(Margin { left: 23, right: 4, top: 0, bottom: 6 })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        match &call.analysis {
+                            Some(analysis) => {
+                                if !analysis.summary.is_empty() {
+                                    wrapped(ui, &analysis.summary, theme::regular(14.0), palette.text);
+                                }
+                                let list = |ui: &mut egui::Ui, title: &str, items: Vec<String>| {
+                                    if items.is_empty() {
+                                        return;
+                                    }
+                                    theme::text(ui, title, theme::semibold(13.0), palette.accent);
+                                    for item in items {
+                                        wrapped(ui, &format!("•  {item}"), theme::regular(13.5), palette.text);
+                                    }
+                                };
+                                list(ui, gettext(locale, "Decisions").as_ref(), analysis.decisions.clone());
+                                list(
+                                    ui,
+                                    gettext(locale, "Commitments").as_ref(),
+                                    analysis
+                                        .commitments
+                                        .iter()
+                                        .map(|c| match &c.due {
+                                            Some(due) => format!("{}: {} ({due})", c.who, c.what),
+                                            None => format!("{}: {}", c.who, c.what),
+                                        })
+                                        .collect(),
+                                );
+                                list(ui, gettext(locale, "Tasks").as_ref(), analysis.tasks.clone());
+                                list(ui, gettext(locale, "Next steps").as_ref(), analysis.next_steps.clone());
+                            }
+                            None => {
+                                theme::text(
+                                    ui,
+                                    gettext(locale, "No summary yet. Turn on the analysis, or use Redo the summary."),
+                                    theme::regular(13.0),
+                                    palette.dim,
+                                );
+                            }
+                        }
+                        if let Some(transcript) = call.transcript() {
+                            ui.add_space(4.0);
+                            egui::CollapsingHeader::new(
+                                egui::RichText::new(
+                                    gettext(locale, "Transcript · {engine} · {n} versions")
+                                        .replace("{engine}", &transcript.engine)
+                                        .replace("{n}", &call.transcripts.len().to_string()),
+                                )
+                                .font(theme::medium(13.0))
+                                .color(palette.secondary),
+                            )
+                            .id_salt(("call-transcript", &call.id))
+                            .show(ui, |ui| {
+                                wrapped(ui, &transcript.text, theme::regular(13.5), palette.text);
+                            });
+                        }
+                    });
+            }
+            ui.add_space(6.0);
+        }
+    });
+    ui.add_space(12.0);
+    let reader = CallReader::of(app);
+    for (id, action) in actions {
+        let Some(call) = calls.iter().find(|c| c.id == id) else {
+            continue;
+        };
+        match action {
+            CallAction::Toggle => {
+                state.call_open = if state.call_open.as_deref() == Some(id.as_str()) {
+                    None
+                } else {
+                    Some(id)
+                };
+            }
+            CallAction::Play => reveal(&call.path(&reader.state), false),
+            CallAction::Finder => reveal(&call.path(&reader.state), true),
+            CallAction::Retranscribe(engine) => {
+                let mut engines = reader.engines.clone();
+                engines.speech = engine;
+                engines.speech_model = String::new();
+                let (state_dir, label) = (reader.state.clone(), gettext(locale, "Transcribing…").into_owned());
+                call_job(&state.call_busy, ui.ctx(), &id, label, {
+                    let id = id.clone();
+                    move || crate::call_library::transcribe(&engines, &state_dir, &id).map(|_| ())
+                });
+            }
+            CallAction::Reanalyze => {
+                let reader = reader.clone();
+                let project = project.id.clone();
+                let label = gettext(locale, "Summarizing…").into_owned();
+                call_job(&state.call_busy, ui.ctx(), &id, label, {
+                    let id = id.clone();
+                    move || {
+                        crate::call_library::analyze(
+                            &reader.config,
+                            &reader.state,
+                            &id,
+                            &call_context(&reader.config, &project),
+                        )
+                        .map(|_| engine::refresh(&project))
+                    }
+                });
+            }
+            CallAction::Copy => ui.ctx().copy_text(call.markdown()),
+            CallAction::Export => {
+                let (markdown, name) = (call.markdown(), format!("{}.md", call.title));
+                std::thread::spawn(move || {
+                    if let Some(path) = rfd::FileDialog::new().set_file_name(&name).save_file()
+                        && let Err(error) = std::fs::write(&path, markdown)
+                    {
+                        log::warn!("projects: the call could not be exported: {error}");
+                    }
+                });
+            }
+            CallAction::Rename => match state.renaming.take() {
+                Some((renamed, title)) if renamed == id => {
+                    if !title.trim().is_empty() {
+                        let _ = crate::call_library::Library::update(&reader.state, &id, |c| {
+                            c.title = title.trim().to_owned();
+                        });
+                    }
+                }
+                _ => state.renaming = Some((id, call.title.clone())),
+            },
+            CallAction::Delete => {
+                if let Err(error) = crate::call_library::Library::remove(&reader.state, &id) {
+                    log::warn!("projects: the call could not be deleted: {error}");
+                }
+            }
+        }
+    }
+}
+
 /// The journal: every note, newest first, under the box to add one.
 fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
     let palette = app.palette;
@@ -2317,6 +2760,7 @@ fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                     ui.set_width(ui.available_width().min(760.0));
                     note_card(app, ui, state, project);
                     ui.add_space(14.0);
+                    calls_section(app, ui, state, project);
                     let mut filter = state.notes_filter;
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;

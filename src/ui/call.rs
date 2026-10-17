@@ -35,6 +35,8 @@ const VIDEO_SCRIM: Color32 = Color32::from_black_alpha(150);
 /// Draws the call surface over the window, when a call wants the screen.
 /// A call the reader stepped away from is drawn by [`strip`] instead.
 pub fn show(app: &mut App, ctx: &egui::Context) {
+    // A recording of a call stops when the call does.
+    crate::call_capture::follow(app);
     let Some(call) = app.call.clone() else {
         return;
     };
@@ -509,7 +511,7 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
     // library refuses to turn a group's voice call into one, so no button
     // offers it.
     let camera = call.group.is_none() || call.video;
-    let buttons = if camera { 4.0 } else { 3.0 };
+    let buttons = if camera { 5.0 } else { 4.0 };
     {
         ui.spacing_mut().item_spacing.x = CONTROL_GAP;
         let width = buttons * CONTROL + (buttons - 1.0) * CONTROL_GAP;
@@ -572,6 +574,35 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
         };
         if control(ui, Icon::Volume2, fill, tint, &tip, live).clicked() {
             app.call_devices_open = !open;
+        }
+
+        // Recording: the microphone and the computer's sound, kept in the
+        // call's project once it ends.
+        let recording = crate::call_capture::recording(call.generation);
+        let (tip, fill, tint) = match recording {
+            Some(started) => {
+                let seconds = started.elapsed().as_secs();
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(500));
+                (
+                    gettext(locale, "Recording {time}: click to stop and keep it")
+                        .replace("{time}", &format!("{}:{:02}", seconds / 60, seconds % 60)),
+                    palette.danger,
+                    Color32::WHITE,
+                )
+            }
+            None => (
+                gettext(locale, "Record the call (tell the other side)").into_owned(),
+                palette.surface_active,
+                palette.text,
+            ),
+        };
+        if control(ui, Icon::Record, fill, tint, &tip, call.phase.is_connected()).clicked() {
+            if recording.is_some() {
+                crate::call_capture::stop();
+            } else {
+                crate::call_capture::start(app, ui.ctx());
+            }
         }
 
         let tip = gettext(locale, "Hang up");
