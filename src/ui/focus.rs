@@ -28,6 +28,7 @@ pub enum Stop {
     Chats,
     Calls,
     Starred,
+    Projects,
     Archived,
     Locked,
     Settings,

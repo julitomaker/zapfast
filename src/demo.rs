@@ -15667,6 +15667,7 @@ mod tests {
                 Stop::Chats,
                 Stop::Calls,
                 Stop::Starred,
+                Stop::Projects,
                 Stop::Archived,
                 Stop::Locked,
                 Stop::Settings,
@@ -18077,6 +18078,9 @@ mod rail_tests {
                     ];
                     if page == "rail" {
                         expected.push(Stop::Sidebar);
+                    } else {
+                        // Projects joins the rail while the list is shown.
+                        expected.insert(3, Stop::Projects);
                     }
                     for stop in &expected {
                         assert!(stop_rect(&ctx, *stop).is_some(), "{stop:?} is offered");

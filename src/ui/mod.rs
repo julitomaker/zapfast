@@ -20,6 +20,7 @@ pub mod message_info;
 pub mod pane;
 pub mod picker;
 pub mod polls;
+pub mod projects;
 pub mod rail;
 pub mod settings;
 pub mod update;
@@ -91,7 +92,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         banner(app, ui);
     }
     let narrow = narrow(ctx);
-    let list_only = narrow && list_pane_only(app);
+    let list_only = narrow && list_pane_only(app, ctx);
     let view = narrow.then_some(if list_only {
         NarrowView::List
     } else {
@@ -123,10 +124,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 /// Whether a narrow window shows the list pane: the chat list with no chat
 /// open, or the Calls tab's history with no call picked from it. Its header's
 /// buttons, its rows and the rail beside it lead on to the rest.
-fn list_pane_only(app: &App) -> bool {
+fn list_pane_only(app: &App, ctx: &egui::Context) -> bool {
     match app.page {
         Page::Chats => app.current_chat().is_none(),
         Page::Calls => app.current_chat().is_none() || !app.call_picked(),
+        Page::Projects => !projects::picked(ctx),
         Page::Settings | Page::Wallpaper => false,
     }
 }
@@ -150,7 +152,8 @@ fn main_view(app: &mut App, ui: &mut egui::Ui, list_only: bool) {
     // too little room for it and the conversation, the list and the rail
     // step aside while the panel is open. The Calls tab's history needs the
     // full list pane: only the chats collapse into the rail's avatars.
-    let full_list = app.sidebar_mode() == SidebarDisplayMode::Expanded || app.page == Page::Calls;
+    let full_list = app.sidebar_mode() == SidebarDisplayMode::Expanded
+        || matches!(app.page, Page::Calls | Page::Projects);
     let mut list_width = chats::compact_width(ui.ctx());
     if full_list {
         list_width += app.settings.sidebar_width;
@@ -181,6 +184,7 @@ fn main_view(app: &mut App, ui: &mut egui::Ui, list_only: bool) {
                 // The open chat stays beside the call history.
                 Page::Calls if app.current_chat().is_some() => conversation::show(app, ui),
                 Page::Calls => calls::show(app, ui),
+                Page::Projects => projects::show(app, ui),
                 Page::Wallpaper => settings::wallpaper_show(app, ui),
             }
         });

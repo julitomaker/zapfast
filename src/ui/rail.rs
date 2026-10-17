@@ -65,6 +65,7 @@ pub enum Destination {
     Chats,
     Calls,
     Starred,
+    Projects,
     Archived,
     Locked,
     Settings,
@@ -78,6 +79,7 @@ impl Destination {
             Self::Chats => chats && !app.show_archived && !app.locked_folder_open(),
             Self::Calls => app.page == Page::Calls,
             Self::Starred => app.page == Page::Chats && app.show_starred,
+            Self::Projects => app.page == Page::Projects,
             Self::Archived => chats && app.show_archived,
             Self::Locked => chats && app.locked_folder_open(),
             Self::Settings => matches!(app.page, Page::Settings | Page::Wallpaper),
@@ -119,6 +121,11 @@ impl Destination {
             Self::Calls => {
                 if app.page != Page::Calls {
                     actions.push(Action::Open(Page::Calls));
+                }
+            }
+            Self::Projects => {
+                if app.page != Page::Projects {
+                    actions.push(Action::Open(Page::Projects));
                 }
             }
             Self::Starred => {
@@ -186,7 +193,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
         .filter(|destination| destination.offered(app))
         .collect();
         let foot = bottom.len() as f32 * (PLATE + GAP) + GAP + AVATAR + GAP;
-        let minimum = 3.0 * CELL
+        // Projects, last so nothing above it moves, waits while the list is
+        // hidden: the chats' avatars need the room in a short window, and
+        // Projects shows the full list anyway.
+        let top: Vec<Destination> = [
+            Destination::Chats,
+            Destination::Calls,
+            Destination::Starred,
+            Destination::Projects,
+        ]
+        .into_iter()
+        .filter(|destination| !hidden || *destination != Destination::Projects)
+        .collect();
+        let minimum = top.len() as f32 * CELL
             + foot
             + if hidden {
                 CELL + GAP + MIN_AVATARS
@@ -203,7 +222,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui, hidden: bool) {
                 // the content keeps its minimum height and scrolls instead
                 // of leaving the bottom buttons beyond the window.
                 ui.set_height(height);
-                for destination in [Destination::Chats, Destination::Calls, Destination::Starred] {
+                for destination in top {
                     destination_button(app, ui, &palette, destination, CELL);
                 }
                 if hidden {
@@ -301,6 +320,11 @@ fn destination_button(
                 gettext(app.locale, "Calls"),
                 super::keys::label("Ctrl+Shift+2")
             ),
+        ),
+        Destination::Projects => (
+            Icon::Tag,
+            Stop::Projects,
+            gettext(app.locale, "Projects").into_owned(),
         ),
         Destination::Starred => (
             Icon::Star,

@@ -1595,6 +1595,8 @@ pub enum Page {
     Chats,
     /// Every call of the account, newest first.
     Calls,
+    /// Chats grouped by project, with each project's feed and summary.
+    Projects,
     Settings,
     Wallpaper,
 }

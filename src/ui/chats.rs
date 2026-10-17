@@ -57,6 +57,8 @@ pub fn full_show(app: &mut App, ui: &mut egui::Ui) {
 fn body(app: &mut App, ui: &mut egui::Ui) {
     if app.page == Page::Calls {
         super::calls::list(app, ui);
+    } else if app.page == Page::Projects {
+        super::projects::list(app, ui);
     } else {
         list(app, ui);
     }
@@ -166,7 +168,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                     let buttons_width = header_buttons_width(ui, &buttons) + room.right;
                     if app.page == Page::Calls && app.new_call {
                         new_call_header(app, ui, 20.0, buttons_width);
-                    } else if app.page != Page::Calls && app.show_starred {
+                    } else if app.page == Page::Chats && app.show_starred {
                         if theme::icon_button(
                             ui,
                             Icon::ArrowLeft,
@@ -187,7 +189,7 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                             palette.text,
                             buttons_width,
                         );
-                    } else if app.page != Page::Calls && (app.show_archived || app.locked_folder) {
+                    } else if app.page == Page::Chats && (app.show_archived || app.locked_folder) {
                         if theme::icon_button(
                             ui,
                             Icon::ArrowLeft,
@@ -244,6 +246,8 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
 fn tab_title(page: &Page) -> &'static str {
     if *page == Page::Calls {
         "Calls"
+    } else if *page == Page::Projects {
+        "Projects"
     } else {
         "Chats"
     }
@@ -279,6 +283,10 @@ fn new_call_header(app: &mut App, ui: &mut egui::Ui, title: f32, buttons: f32) {
 /// under it. The Calls tab searches its own list by name or number, and its
 /// chips pick every call or the missed ones.
 fn search_and_filters(app: &mut App, ui: &mut egui::Ui) {
+    // Projects list everything they hold; there is nothing to search.
+    if app.page == Page::Projects {
+        return;
+    }
     let palette = app.palette;
     let width = ui.available_width();
     if app.page == Page::Calls {
@@ -335,6 +343,7 @@ fn search_and_filters(app: &mut App, ui: &mut egui::Ui) {
 enum HeaderButton {
     NewChat,
     NewCall,
+    NewProject,
     HideList,
 }
 
@@ -367,6 +376,9 @@ fn header_buttons(ctx: &egui::Context, calls: bool) -> Vec<HeaderButton> {
 /// new-call list or the starred messages, whose Back leads out of them.
 fn list_header_buttons(app: &App, ctx: &egui::Context) -> Vec<HeaderButton> {
     let calls = app.page == Page::Calls;
+    if app.page == Page::Projects {
+        return vec![HeaderButton::NewProject];
+    }
     if (calls && app.new_call) || (!calls && app.show_starred) {
         return Vec::new();
     }
@@ -409,6 +421,7 @@ fn header_button_row(app: &mut App, ui: &mut egui::Ui, buttons: &[HeaderButton],
                     app.actions.push(Action::ShowNewCall(true));
                 }
             }
+            HeaderButton::NewProject => super::projects::add_button(app, ui),
             HeaderButton::HideList => {
                 if theme::icon_button(
                     ui,
@@ -498,7 +511,7 @@ fn macos_header(app: &mut App, ui: &mut egui::Ui) {
                 let buttons = list_header_buttons(app, ui.ctx());
                 if app.page == Page::Calls && app.new_call {
                     new_call_header(app, ui, 16.0, header_buttons_width(ui, &buttons));
-                } else if app.page != Page::Calls && app.show_starred {
+                } else if app.page == Page::Chats && app.show_starred {
                     if theme::icon_button(
                         ui,
                         Icon::ArrowLeft,
@@ -519,7 +532,7 @@ fn macos_header(app: &mut App, ui: &mut egui::Ui) {
                         palette.text,
                         header_buttons_width(ui, &buttons),
                     );
-                } else if app.page != Page::Calls && (app.show_archived || app.locked_folder) {
+                } else if app.page == Page::Chats && (app.show_archived || app.locked_folder) {
                     if theme::icon_button(
                         ui,
                         Icon::ArrowLeft,

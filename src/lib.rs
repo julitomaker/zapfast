@@ -39,6 +39,7 @@ pub mod notify;
 pub mod opener;
 pub mod paths;
 pub mod privacy;
+pub mod projects;
 pub mod proxy;
 pub mod qr;
 pub mod safety;

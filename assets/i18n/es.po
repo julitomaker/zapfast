@@ -2659,3 +2659,151 @@ msgstr "Las notificaciones funcionan."
 
 msgid "Test"
 msgstr "Probar"
+
+#: src/ui/projects.rs
+msgid "3 days"
+msgstr "3 días"
+
+#: src/ui/projects.rs
+msgid "30 days"
+msgstr "30 días"
+
+#: src/ui/projects.rs
+msgid "No projects yet"
+msgstr "Todavía no hay proyectos"
+
+#: src/ui/projects.rs
+msgid "Create one with + and file your chats in it."
+msgstr "Creá uno con + y asignale tus chats."
+
+#: src/ui/projects.rs
+msgid "Organize"
+msgstr "Organizar"
+
+#: src/ui/projects.rs
+msgid "To file"
+msgstr "Sin asignar"
+
+#: src/ui/projects.rs
+msgid "Personal"
+msgstr "Personal"
+
+#: src/ui/projects.rs
+msgid "Ignored"
+msgstr "Ignorados"
+
+#: src/ui/projects.rs
+msgid "New project"
+msgstr "Nuevo proyecto"
+
+#: src/ui/projects.rs
+msgid "{count} chats"
+msgstr "{count} chats"
+
+#: src/ui/projects.rs
+msgid "{count} messages"
+msgstr "{count} mensajes"
+
+#: src/ui/projects.rs
+msgid "Project options"
+msgstr "Opciones del proyecto"
+
+#: src/ui/projects.rs
+msgid "Delete project"
+msgstr "Eliminar proyecto"
+
+#: src/ui/projects.rs
+msgid "This project has no chats"
+msgstr "Este proyecto no tiene chats"
+
+#: src/ui/projects.rs
+msgid "File chats in it from To file."
+msgstr "Asignale chats desde Sin asignar."
+
+#: src/ui/projects.rs
+msgid "Could not load the messages"
+msgstr "No se pudieron cargar los mensajes"
+
+#: src/ui/projects.rs
+msgid "Reading this project's chats."
+msgstr "Leyendo los chats del proyecto."
+
+#: src/ui/projects.rs
+msgid "No messages in this range"
+msgstr "No hay mensajes en este período"
+
+#: src/ui/projects.rs
+msgid "Choose a longer range above."
+msgstr "Elegí un período más largo arriba."
+
+#: src/ui/projects.rs
+msgid "Open the chat"
+msgstr "Abrir el chat"
+
+#: src/ui/projects.rs
+msgid "Summary"
+msgstr "Resumen"
+
+#: src/ui/projects.rs
+msgid "No summary yet. When one is made, the summary, decisions and who owes what show here."
+msgstr "Todavía no hay resumen. Cuando se genere, acá aparecen el resumen, las decisiones y quién debe qué."
+
+#: src/ui/projects.rs
+msgid "Updated {when}"
+msgstr "Actualizado {when}"
+
+#: src/ui/projects.rs
+msgid "Pending"
+msgstr "Pendientes"
+
+#: src/ui/projects.rs
+msgid "Waiting on others"
+msgstr "Esperando de otros"
+
+#: src/ui/projects.rs
+msgid "Decisions"
+msgstr "Decisiones"
+
+#: src/ui/projects.rs
+msgid "Links with other projects"
+msgstr "Cruces con otros proyectos"
+
+#: src/ui/projects.rs
+msgid "Move to"
+msgstr "Mover a"
+
+#: src/ui/projects.rs
+msgid "Ignore"
+msgstr "Ignorar"
+
+#: src/ui/projects.rs
+msgid "Personal chats stay out of projects and summaries."
+msgstr "Los chats personales quedan fuera de los proyectos y los resúmenes."
+
+#: src/ui/projects.rs
+msgid "Ignored chats stay out of projects and summaries."
+msgstr "Los chats ignorados quedan fuera de los proyectos y los resúmenes."
+
+#: src/ui/projects.rs
+msgid "Choose a project for each chat with its menu."
+msgstr "Elegí un proyecto para cada chat desde su menú."
+
+#: src/ui/projects.rs
+msgid "Nothing here"
+msgstr "No hay nada acá"
+
+#: src/ui/projects.rs
+msgid "Name it, then file chats in it."
+msgstr "Ponele un nombre y después asignale chats."
+
+#: src/ui/projects.rs
+msgid "Project name"
+msgstr "Nombre del proyecto"
+
+#: src/ui/projects.rs
+msgid "Projects"
+msgstr "Proyectos"
+
+#: src/ui/projects.rs
+msgid "Back to the projects"
+msgstr "Volver a los proyectos"
