@@ -284,38 +284,51 @@ fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
 
-/// The command the Terminal runs to sign in to `tool`.
-pub fn sign_in_command(tool: Tool) -> Option<String> {
+/// The script the Terminal runs to sign in to `tool`. It is opened as a
+/// file rather than typed: a typed command this long would be cut off by
+/// the terminal's line limit.
+pub fn sign_in_script(tool: Tool) -> Option<String> {
     let binary = find(tool.binary())?;
-    let mut command = format!(
-        "export PATH={}; clear; echo {}; {}",
-        shell_quote(&path().to_string_lossy()),
-        shell_quote(&format!(
-            "Whats Pro · sign in with your {} account. When it says you are in, close this window.",
+    let mut run = shell_quote(&binary.to_string_lossy());
+    for arg in tool.sign_in_args() {
+        run.push(' ');
+        run.push_str(arg);
+    }
+    Some(format!(
+        "#!/bin/bash\n\
+         export PATH={path}\n\
+         clear\n\
+         echo {intro}\n\
+         echo\n\
+         {run}\n\
+         echo\n\
+         echo {done}\n",
+        path = shell_quote(&path().to_string_lossy()),
+        intro = shell_quote(&format!(
+            "Whats Pro: sign in with your {} account. Follow the steps (a browser window may open).",
             tool.account()
         )),
-        shell_quote(&binary.to_string_lossy()),
-    );
-    for arg in tool.sign_in_args() {
-        command.push(' ');
-        command.push_str(arg);
-    }
-    Some(command)
+        done = shell_quote("Done. You can close this window and go back to Whats Pro."),
+    ))
 }
 
 /// Opens the Terminal on `tool`'s sign-in.
 pub fn sign_in(tool: Tool) -> Result<(), String> {
-    let command = sign_in_command(tool).ok_or("The tool is not installed yet")?;
+    let script = sign_in_script(tool).ok_or("The tool is not installed yet")?;
+    let file = tools_dir().join(format!("sign-in-{}.command", tool.binary()));
+    std::fs::create_dir_all(tools_dir()).map_err(|e| e.to_string())?;
+    std::fs::write(&file, script).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
     #[cfg(target_os = "macos")]
     {
-        let script = command.replace('\\', "\\\\").replace('"', "\\\"");
-        let status = std::process::Command::new("/usr/bin/osascript")
-            .args([
-                "-e",
-                &format!("tell application \"Terminal\" to do script \"{script}\""),
-                "-e",
-                "tell application \"Terminal\" to activate",
-            ])
+        let status = std::process::Command::new("/usr/bin/open")
+            .args(["-a", "Terminal"])
+            .arg(&file)
             .status()
             .map_err(|e| e.to_string())?;
         if status.success() {
@@ -326,7 +339,7 @@ pub fn sign_in(tool: Tool) -> Result<(), String> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Err(format!("Run this in a terminal: {command}"))
+        Err(format!("Run this in a terminal: {}", file.display()))
     }
 }
 
@@ -360,6 +373,24 @@ mod tests {
         println!("{}", job(tool).map(|job| job.log).unwrap_or_default());
         assert_eq!(result, Ok(String::new()));
         assert!(installed(tool), "{tool:?} is found after its install");
+    }
+
+    #[test]
+    fn the_sign_in_script_runs_the_tool_with_its_path() {
+        let Some(script) = sign_in_script(Tool::Codex) else {
+            return;
+        };
+        assert!(script.starts_with("#!/bin/bash\nexport PATH='"));
+        assert!(script.contains("codex' login\n"), "{script}");
+        let file = std::env::temp_dir().join("whatspro-sign-in-test.command");
+        std::fs::write(&file, &script).unwrap();
+        let syntax = std::process::Command::new("/bin/bash")
+            .arg("-n")
+            .arg(&file)
+            .status()
+            .unwrap();
+        let _ = std::fs::remove_file(&file);
+        assert!(syntax.success(), "the script is valid bash");
     }
 
     #[test]
