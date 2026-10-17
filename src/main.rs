@@ -211,6 +211,34 @@ fn run() -> eframe::Result<()> {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         std::process::exit(zapfast::mcp::run(&paths::AppDirs::discover().config));
     }
+    // `record <seconds> [microphone|system|both]`: records a call to a WAV
+    // and prints its path, for checking src/recorder.rs.
+    if std::env::args().nth(1).as_deref() == Some("record") {
+        let seconds: u64 = std::env::args()
+            .nth(2)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+        let source = match std::env::args().nth(3).as_deref() {
+            Some("system") => zapfast::recorder::Source::System,
+            Some("both") => zapfast::recorder::Source::Both,
+            _ => zapfast::recorder::Source::Microphone,
+        };
+        let state = paths::AppDirs::discover().state;
+        let result = zapfast::recorder::Recording::start(&state, source).and_then(|recording| {
+            std::thread::sleep(std::time::Duration::from_secs(seconds));
+            recording.stop()
+        });
+        match result {
+            Ok(path) => {
+                println!("{}", path.display());
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
     // `transcribe <file>`: prints a media file's transcription, for checking
     // the local speech-to-text (src/transcribe.rs).
     if std::env::args().nth(1).as_deref() == Some("transcribe") {

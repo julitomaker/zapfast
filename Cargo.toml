@@ -330,3 +330,28 @@ whisper-rs = { version = "0.16", features = ["metal"] }
 version = "0.3"
 default-features = false
 features = ["std", "VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes"]
+
+# Call recording (src/recorder.rs): the system's sound, and on macOS 15 and
+# later the microphone, through ScreenCaptureKit.
+[target.'cfg(target_os = "macos")'.dependencies.objc2-screen-capture-kit]
+version = "0.3"
+default-features = false
+features = ["std", "SCStream", "SCShareableContent", "block2", "dispatch2", "objc2-core-media"]
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-media]
+version = "0.3"
+default-features = false
+features = ["std", "CMSampleBuffer", "CMBlockBuffer", "CMFormatDescription", "CMBase", "objc2-core-audio-types"]
+
+[target.'cfg(target_os = "macos")'.dependencies.dispatch2]
+version = "0.3"
+default-features = false
+features = ["std", "objc2"]
+
+[target.'cfg(target_os = "macos")'.dependencies.block2]
+version = "0.6"
+
+[target.'cfg(target_os = "macos")'.dependencies.objc2-core-audio-types]
+version = "0.3"
+default-features = false
+features = ["std", "CoreAudioBaseTypes"]

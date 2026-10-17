@@ -47,6 +47,7 @@ pub mod privacy;
 pub mod projects;
 pub mod proxy;
 pub mod qr;
+pub mod recorder;
 pub mod safety;
 pub mod settings;
 pub mod single_instance;
