@@ -2807,3 +2807,315 @@ msgstr "Proyectos"
 #: src/ui/projects.rs
 msgid "Back to the projects"
 msgstr "Volver a los proyectos"
+
+#: src/ui/projects.rs
+msgid "A chat with one person: other topics come up too"
+msgstr "Chat con una persona: también se hablan otras cosas"
+
+#: src/ui/projects.rs
+msgid "API key"
+msgstr "API key"
+
+#: src/ui/projects.rs
+msgid "Add a chat"
+msgstr "Agregar un chat"
+
+#: src/ui/projects.rs
+msgid "Add chat"
+msgstr "Agregar chat"
+
+#: src/ui/projects.rs
+msgid "Add chats"
+msgstr "Agregar chats"
+
+#: src/ui/projects.rs
+msgid "Add chats in Sources."
+msgstr "Agregá chats en Fuentes."
+
+#: src/ui/projects.rs
+msgid "Add · {mode}"
+msgstr "Agregar · {mode}"
+
+#: src/ui/projects.rs
+msgid "Also in {projects}"
+msgstr "También en {projects}"
+
+#: src/ui/projects.rs
+msgid "Analysis"
+msgstr "Análisis con IA"
+
+#: src/ui/projects.rs
+msgid "Analyze now"
+msgstr "Analizar ahora"
+
+#: src/ui/projects.rs
+msgid "Analyzing {project}…"
+msgstr "Analizando {project}…"
+
+#: src/ui/projects.rs
+msgid "Analyzing…"
+msgstr "Analizando…"
+
+#: src/ui/projects.rs
+msgid "Belongs here"
+msgstr "Va en este proyecto"
+
+#: src/ui/projects.rs
+msgid "Claude Code is not installed on this computer. Install it, or choose an API."
+msgstr "Claude Code no está instalado en esta Mac. Instalalo o elegí una API."
+
+#: src/ui/projects.rs
+msgid "Clear the selection"
+msgstr "Limpiar la selección"
+
+#: src/ui/projects.rs
+msgid "Dismiss"
+msgstr "Descartar"
+
+#: src/ui/projects.rs
+msgid "Engine"
+msgstr "Motor"
+
+#: src/ui/projects.rs
+msgid "Every source"
+msgstr "Todas las fuentes"
+
+#: src/ui/projects.rs
+msgid "Everything"
+msgstr "Todo"
+
+#: src/ui/projects.rs
+msgid "Everything brings the whole chat. Smart lets the analysis keep only what is about this project. Picked brings only the messages you choose in Messages."
+msgstr "Todo trae el chat completo. Inteligente deja que el análisis se quede solo con lo que es de este proyecto. Elegidos trae solo los mensajes que marques en Mensajes."
+
+#: src/ui/projects.rs
+msgid "File in…"
+msgstr "Mandar a…"
+
+#: src/ui/projects.rs
+msgid "How often"
+msgstr "Cada cuánto"
+
+#: src/ui/projects.rs
+msgid "Ignored chats stay out of projects and the analysis."
+msgstr "Los chats ignorados quedan fuera de los proyectos y del análisis."
+
+#: src/ui/projects.rs
+msgid "In the project"
+msgstr "Del proyecto"
+
+#: src/ui/projects.rs
+msgid "Last run {when} ago"
+msgstr "Último análisis hace {when}"
+
+#: src/ui/projects.rs
+msgid "Mark as done"
+msgstr "Marcar como hecho"
+
+#: src/ui/projects.rs
+msgid "Messages"
+msgstr "Mensajes"
+
+#: src/ui/projects.rs
+msgid "Messages worth reading"
+msgstr "Mensajes importantes a revisar"
+
+#: src/ui/projects.rs
+msgid "Model"
+msgstr "Modelo"
+
+#: src/ui/projects.rs
+msgid "Model name"
+msgstr "Nombre del modelo"
+
+#: src/ui/projects.rs
+msgid "Name it, then add its chats."
+msgstr "Ponele un nombre y después sumale chats."
+
+#: src/ui/projects.rs
+msgid "Needs that came up"
+msgstr "Necesidades que aparecieron"
+
+#: src/ui/projects.rs
+msgid "New needs"
+msgstr "Necesidades nuevas"
+
+#: src/ui/projects.rs
+msgid "No chats yet."
+msgstr "Todavía no tiene chats."
+
+#: src/ui/projects.rs
+msgid "No new needs."
+msgstr "No hay necesidades nuevas."
+
+#: src/ui/projects.rs
+msgid "Nobody owes us an answer."
+msgstr "Nadie nos debe respuesta."
+
+#: src/ui/projects.rs
+msgid "Not this project"
+msgstr "No es de este proyecto"
+
+#: src/ui/projects.rs
+msgid "Nothing happened in this period."
+msgstr "No pasó nada en este período."
+
+#: src/ui/projects.rs
+msgid "Nothing is slipping."
+msgstr "No se está cayendo nada."
+
+#: src/ui/projects.rs
+msgid "Nothing pending."
+msgstr "Nada pendiente."
+
+#: src/ui/projects.rs
+msgid "Nothing stands out."
+msgstr "Nada para destacar."
+
+#: src/ui/projects.rs
+msgid "Only projects with new messages are read again."
+msgstr "Solo se vuelven a leer los proyectos con mensajes nuevos."
+
+#: src/ui/projects.rs
+msgid "Panel"
+msgstr "Panel"
+
+#: src/ui/projects.rs
+msgid "Paste your key"
+msgstr "Pegá tu key"
+
+#: src/ui/projects.rs
+msgid "Personal chats stay out of projects and the analysis."
+msgstr "Los chats personales quedan fuera de los proyectos y del análisis."
+
+#: src/ui/projects.rs
+msgid "Picked"
+msgstr "Elegidos"
+
+#: src/ui/projects.rs
+msgid "Remove from the project"
+msgstr "Sacar del proyecto"
+
+#: src/ui/projects.rs
+msgid "Save key"
+msgstr "Guardar key"
+
+#: src/ui/projects.rs
+msgid "Saved in the keychain"
+msgstr "Guardada en el llavero"
+
+#: src/ui/projects.rs
+msgid "Search chats"
+msgstr "Buscar chats"
+
+#: src/ui/projects.rs
+msgid "See its messages"
+msgstr "Ver sus mensajes"
+
+#: src/ui/projects.rs
+msgid "Select"
+msgstr "Seleccionar"
+
+#: src/ui/projects.rs
+msgid "Slipping"
+msgstr "Posibles fugas"
+
+#: src/ui/projects.rs
+msgid "Smart"
+msgstr "Inteligente"
+
+#: src/ui/projects.rs
+msgid "Source options"
+msgstr "Opciones de la fuente"
+
+#: src/ui/projects.rs
+msgid "Sources"
+msgstr "Fuentes"
+
+#: src/ui/projects.rs
+msgid "The analysis sends the last week of messages from your projects' sources to the provider you choose. Personal and ignored chats, and chats in no project, are never sent. Messages you mark as not belonging to a project are not sent for it."
+msgstr "El análisis manda la última semana de mensajes de las fuentes de tus proyectos al proveedor que elijas. Los chats personales, los ignorados y los que no están en ningún proyecto nunca se mandan. Los mensajes que marques como que no son de un proyecto no se mandan para ese proyecto."
+
+#: src/ui/projects.rs
+msgid "The panels stay empty and nothing leaves this computer."
+msgstr "Los paneles quedan vacíos y nada sale de esta Mac."
+
+#: src/ui/projects.rs
+msgid "To do"
+msgstr "Para hacer"
+
+#: src/ui/projects.rs
+msgid "To do · what we committed to"
+msgstr "Para hacer · nos comprometimos"
+
+#: src/ui/projects.rs
+msgid "To follow up"
+msgstr "A seguir"
+
+#: src/ui/projects.rs
+msgid "To follow up · waiting on others"
+msgstr "A seguir · esperando a otros"
+
+#: src/ui/projects.rs
+msgid "Turn on the analysis"
+msgstr "Activar el análisis"
+
+#: src/ui/projects.rs
+msgid "Uses Claude Code on this computer with your Claude plan. No key needed."
+msgstr "Usa Claude Code en esta Mac con tu plan de Claude. No hace falta key."
+
+#: src/ui/projects.rs
+msgid "Week"
+msgstr "Semana"
+
+#: src/ui/projects.rs
+msgid "What you have to do, whom to follow up, what is slipping, the needs that came up and a summary by day, read from this project's chats."
+msgstr "Lo que tenés que hacer, a quién darle seguimiento, qué se está cayendo, las necesidades que aparecieron y un resumen por día, leído de los chats de este proyecto."
+
+#: src/ui/projects.rs
+msgid "Who reads your projects' chats to fill their panels"
+msgstr "Quién lee los chats de tus proyectos para armar sus paneles"
+
+#: src/ui/projects.rs
+msgid "Your project panel"
+msgstr "El panel de tu proyecto"
+
+#: src/ui/projects.rs
+msgid "analyzing…"
+msgstr "analizando…"
+
+#: src/ui/projects.rs
+msgid "not analyzed yet"
+msgstr "sin analizar todavía"
+
+#: src/ui/projects.rs
+msgid "not classified yet"
+msgstr "sin clasificar"
+
+#: src/ui/projects.rs
+msgid "updated {when} ago"
+msgstr "actualizado hace {when}"
+
+#: src/ui/projects.rs
+msgid "{count} sources"
+msgstr "{count} fuentes"
+
+#: src/ui/projects.rs
+msgid "{n} closed"
+msgstr "{n} cerrados"
+
+#: src/ui/projects.rs
+msgid "{n} d"
+msgstr "{n} d"
+
+#: src/ui/projects.rs
+msgid "{n} h"
+msgstr "{n} h"
+
+#: src/ui/projects.rs
+msgid "{n} min"
+msgstr "{n} min"
+
+#: src/ui/projects.rs
+msgid "{n} selected"
+msgstr "{n} seleccionados"

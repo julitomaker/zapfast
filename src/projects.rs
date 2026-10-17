@@ -1,13 +1,26 @@
 //! Projects: chats grouped by what they are about, for the Projects page.
 //!
 //! The map lives in `projects.json` in the config folder, shared with the
-//! local dashboard (`whatspro-dashboard`), and each project's summary in
-//! `digests/<project id>.json` beside it. A project's feed (every message of
-//! its chats in one timeline) is read on a thread of its own through a
-//! query-only archive connection, the bridge's, so the interface never waits
-//! for it.
+//! local dashboard (`whatspro-dashboard`). A project draws on sources: chats,
+//! each with a mode. `All` takes the whole chat, `Selected` only the
+//! messages picked by hand, and `Smart` the messages the analysis judges to
+//! belong (a chat with one person, or one shared with another project, also
+//! talks about other things). A chat may be a source of several projects.
+//! Picks made by hand always win, and they are what the analysis learns
+//! from.
+//!
+//! The analysis of each project (what to do, whom to follow up, what is
+//! slipping, what came up, the summary) is `analysis/<project>.json`,
+//! written by `engine`; what the user ticked off is kept beside it.
+//!
+//! A project's feed (every message of its sources in one timeline) is read
+//! on a thread of its own through a query-only archive connection, the
+//! bridge's, so the interface never waits for it.
+
+pub mod engine;
 
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -24,7 +37,27 @@ pub const COLORS: [&str; 12] = [
 ];
 
 /// The most messages one feed holds.
-pub const FEED_LIMIT: usize = 1500;
+pub const FEED_LIMIT: usize = 3000;
+
+/// How much of a chat a project takes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    /// Every message.
+    #[default]
+    All,
+    /// The messages the analysis judges to belong, and the ones picked.
+    Smart,
+    /// Only the messages picked by hand.
+    Selected,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Source {
+    pub chat: String,
+    #[serde(default)]
+    pub mode: Mode,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Project {
@@ -32,6 +65,9 @@ pub struct Project {
     pub name: String,
     pub color: String,
     #[serde(default)]
+    pub sources: Vec<Source>,
+    /// The first map's whole chats, moved into `sources` on load.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chats: Vec<String>,
 }
 
@@ -39,15 +75,44 @@ impl Project {
     pub fn color(&self) -> Color32 {
         parse_color(&self.color).unwrap_or(Color32::from_rgb(0x25, 0xd3, 0x66))
     }
+
+    pub fn source(&self, chat: &str) -> Option<&Source> {
+        self.sources.iter().find(|source| source.chat == chat)
+    }
+
+    pub fn chat_ids(&self) -> Vec<String> {
+        self.sources
+            .iter()
+            .map(|source| source.chat.clone())
+            .collect()
+    }
 }
 
-/// Where a chat is filed.
+/// A message filed in, or kept out of, a project by hand.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pick {
+    pub chat: String,
+    pub message: String,
+    pub project: String,
+    pub include: bool,
+}
+
+/// Where a chat stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Bucket {
     Project(String),
     Personal,
     Ignored,
     Unassigned,
+}
+
+/// Whether a message belongs to a project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inclusion {
+    In,
+    Out,
+    /// A smart source the analysis has not read this far yet.
+    Unsure,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -58,6 +123,8 @@ pub struct ProjectMap {
     pub personal: Vec<String>,
     #[serde(default)]
     pub ignored: Vec<String>,
+    #[serde(default)]
+    pub picks: Vec<Pick>,
 }
 
 impl ProjectMap {
@@ -65,12 +132,24 @@ impl ProjectMap {
         config.join("projects.json")
     }
 
-    /// The saved map, or an empty one.
+    /// The saved map, or an empty one. Whole chats of the first map become
+    /// `All` sources.
     pub fn load(config: &Path) -> Self {
-        std::fs::read_to_string(Self::file(config))
+        let mut map: Self = std::fs::read_to_string(Self::file(config))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for project in &mut map.projects {
+            for chat in std::mem::take(&mut project.chats) {
+                if project.source(&chat).is_none() {
+                    project.sources.push(Source {
+                        chat,
+                        mode: Mode::All,
+                    });
+                }
+            }
+        }
+        map
     }
 
     /// Writes the map through a temporary file, so a reader never sees half.
@@ -85,12 +164,20 @@ impl ProjectMap {
         self.projects.iter().find(|project| project.id == id)
     }
 
-    pub fn bucket_of(&self, chat: &str) -> Bucket {
-        if let Some(project) = self
-            .projects
+    fn project_mut(&mut self, id: &str) -> Option<&mut Project> {
+        self.projects.iter_mut().find(|project| project.id == id)
+    }
+
+    /// The projects that draw on `chat`, with their mode.
+    pub fn projects_of(&self, chat: &str) -> Vec<(&Project, Mode)> {
+        self.projects
             .iter()
-            .find(|project| project.chats.iter().any(|id| id == chat))
-        {
+            .filter_map(|project| project.source(chat).map(|source| (project, source.mode)))
+            .collect()
+    }
+
+    pub fn bucket_of(&self, chat: &str) -> Bucket {
+        if let Some((project, _)) = self.projects_of(chat).first() {
             return Bucket::Project(project.id.clone());
         }
         if self.personal.iter().any(|id| id == chat) {
@@ -102,22 +189,126 @@ impl ProjectMap {
         Bucket::Unassigned
     }
 
-    /// Files `chat` in `bucket`, taking it out of wherever it was.
-    pub fn assign(&mut self, chat: &str, bucket: &Bucket) {
-        for project in &mut self.projects {
-            project.chats.retain(|id| id != chat);
+    /// The mode a chat starts with in `project`: a group no other project
+    /// uses brings everything; a chat with one person, or one another
+    /// project draws on too, talks about other things as well.
+    pub fn default_mode(&self, project: &str, chat: &str) -> Mode {
+        let group = crate::model::ChatKind::from_id(chat) == crate::model::ChatKind::Group;
+        let elsewhere = self
+            .projects_of(chat)
+            .iter()
+            .any(|(other, _)| other.id != project);
+        if group && !elsewhere {
+            Mode::All
+        } else {
+            Mode::Smart
         }
+    }
+
+    /// Adds `chat` to `project` (taking it out of Personal and Ignored).
+    pub fn add_source(&mut self, project: &str, chat: &str, mode: Mode) {
+        self.personal.retain(|id| id != chat);
+        self.ignored.retain(|id| id != chat);
+        if let Some(project) = self.project_mut(project) {
+            match project
+                .sources
+                .iter_mut()
+                .find(|source| source.chat == chat)
+            {
+                Some(source) => source.mode = mode,
+                None => project.sources.push(Source {
+                    chat: chat.to_owned(),
+                    mode,
+                }),
+            }
+        }
+    }
+
+    pub fn remove_source(&mut self, project: &str, chat: &str) {
+        if let Some(project) = self.project_mut(project) {
+            project.sources.retain(|source| source.chat != chat);
+        }
+        self.picks
+            .retain(|pick| !(pick.project == project && pick.chat == chat));
+    }
+
+    /// Takes `chat` out of every project and files it as personal or
+    /// ignored, or leaves it to file.
+    pub fn set_bucket(&mut self, chat: &str, bucket: &Bucket) {
+        for project in &mut self.projects {
+            project.sources.retain(|source| source.chat != chat);
+        }
+        self.picks.retain(|pick| pick.chat != chat);
         self.personal.retain(|id| id != chat);
         self.ignored.retain(|id| id != chat);
         match bucket {
             Bucket::Project(id) => {
-                if let Some(project) = self.projects.iter_mut().find(|p| &p.id == id) {
-                    project.chats.push(chat.to_owned());
-                }
+                let mode = self.default_mode(id, chat);
+                self.add_source(id, chat, mode);
             }
             Bucket::Personal => self.personal.push(chat.to_owned()),
             Bucket::Ignored => self.ignored.push(chat.to_owned()),
             Bucket::Unassigned => {}
+        }
+    }
+
+    /// Files a message in a project, or keeps it out, by hand. A message
+    /// filed in a project its chat is not a source of makes the chat a
+    /// `Selected` source there.
+    pub fn pick(&mut self, chat: &str, message: &str, project: &str, include: bool) {
+        self.picks.retain(|pick| {
+            !(pick.chat == chat && pick.message == message && pick.project == project)
+        });
+        self.picks.push(Pick {
+            chat: chat.to_owned(),
+            message: message.to_owned(),
+            project: project.to_owned(),
+            include,
+        });
+        if include
+            && self
+                .project(project)
+                .is_some_and(|p| p.source(chat).is_none())
+        {
+            self.add_source(project, chat, Mode::Selected);
+        }
+    }
+
+    pub fn picked(&self, chat: &str, message: &str, project: &str) -> Option<bool> {
+        self.picks
+            .iter()
+            .rev()
+            .find(|pick| pick.chat == chat && pick.message == message && pick.project == project)
+            .map(|pick| pick.include)
+    }
+
+    /// Whether `message` belongs to `project`, given its analysis.
+    pub fn inclusion(
+        &self,
+        project: &Project,
+        message: &FeedMessage,
+        analysis: Option<&Analysis>,
+    ) -> Inclusion {
+        if let Some(include) = self.picked(&message.chat, &message.id, &project.id) {
+            return if include {
+                Inclusion::In
+            } else {
+                Inclusion::Out
+            };
+        }
+        match project.source(&message.chat).map(|source| source.mode) {
+            None | Some(Mode::Selected) => Inclusion::Out,
+            Some(Mode::All) => Inclusion::In,
+            Some(Mode::Smart) => match analysis {
+                Some(analysis) if analysis.read_through(&message.chat) >= message.timestamp => {
+                    if analysis.is_relevant(&message.chat, &message.id) {
+                        Inclusion::In
+                    } else {
+                        Inclusion::Out
+                    }
+                }
+                _ => Inclusion::Unsure,
+            },
         }
     }
 
@@ -148,6 +339,7 @@ impl ProjectMap {
             id: id.clone(),
             name: name.trim().to_owned(),
             color: COLORS[self.projects.len() % COLORS.len()].to_owned(),
+            sources: Vec::new(),
             chats: Vec::new(),
         });
         id
@@ -155,6 +347,7 @@ impl ProjectMap {
 
     pub fn remove(&mut self, id: &str) {
         self.projects.retain(|project| project.id != id);
+        self.picks.retain(|pick| pick.project != id);
     }
 }
 
@@ -172,61 +365,126 @@ pub fn parse_color(hex: &str) -> Option<Color32> {
     ))
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Pending {
-    #[serde(default)]
-    pub owner: Option<String>,
+/// One thing the analysis found: something to do, someone to follow up,
+/// something slipping, a need, or a message worth reading.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Finding {
+    /// Stable across runs, so a ticked-off item stays ticked off.
+    pub id: String,
     pub text: String,
-    #[serde(default)]
+    /// Who it waits on, or who asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// When it was said, Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Waiting {
+/// A project's analysis.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Analysis {
     #[serde(default)]
-    pub who: Option<String>,
-    pub text: String,
+    pub updated: i64,
+    /// Summaries by period: "today", "yesterday", "week".
+    #[serde(default)]
+    pub summaries: HashMap<String, String>,
+    /// What we committed to.
+    #[serde(default)]
+    pub todo: Vec<Finding>,
+    /// What we wait on: questions with no answer, promises not kept.
+    #[serde(default)]
+    pub follow_up: Vec<Finding>,
+    /// Asks nobody answered, things dropped.
+    #[serde(default)]
+    pub leaks: Vec<Finding>,
+    /// Needs that came up.
+    #[serde(default)]
+    pub needs: Vec<Finding>,
+    /// Messages worth reading.
+    #[serde(default)]
+    pub highlights: Vec<Finding>,
+    /// For smart sources: the messages judged to belong, by chat.
+    #[serde(default)]
+    pub relevant: HashMap<String, Vec<String>>,
+    /// For smart sources: how far each chat has been read, Unix seconds.
+    #[serde(default)]
+    pub read: HashMap<String, i64>,
 }
 
-/// An item that may be a plain string or `{ "text": ... }`.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
-pub enum Item<T> {
-    Text(String),
-    Full(T),
-}
+impl Analysis {
+    pub fn file(config: &Path, project: &str) -> PathBuf {
+        config.join("analysis").join(format!("{project}.json"))
+    }
 
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Note {
-    pub text: String,
-}
-
-/// A project's summary, written by whatever summarizes the chats.
-#[derive(Clone, Debug, Default, Deserialize)]
-pub struct Digest {
-    #[serde(default)]
-    pub updated: Option<i64>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub pending: Vec<Item<Pending>>,
-    #[serde(default)]
-    pub decisions: Vec<Item<Note>>,
-    #[serde(default)]
-    pub waiting_on: Vec<Item<Waiting>>,
-    #[serde(default)]
-    pub links: Vec<Item<Note>>,
-}
-
-impl Digest {
     pub fn load(config: &Path, project: &str) -> Option<Self> {
-        let path = config.join("digests").join(format!("{project}.json"));
-        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+        serde_json::from_str(&std::fs::read_to_string(Self::file(config, project)).ok()?).ok()
+    }
+
+    pub fn save(&self, config: &Path, project: &str) -> std::io::Result<()> {
+        let path = Self::file(config, project);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(temporary, path)
+    }
+
+    pub fn read_through(&self, chat: &str) -> i64 {
+        self.read.get(chat).copied().unwrap_or(0)
+    }
+
+    pub fn is_relevant(&self, chat: &str, message: &str) -> bool {
+        self.relevant
+            .get(chat)
+            .is_some_and(|ids| ids.iter().any(|id| id == message))
     }
 }
 
-/// What a feed request asks for: these chats, since then. A newer version of
-/// the map or newer activity in the chats makes a new request.
+/// What the user did with the analysis' findings.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Ticks {
+    #[serde(default)]
+    pub done: HashSet<String>,
+    #[serde(default)]
+    pub dismissed: HashSet<String>,
+}
+
+impl Ticks {
+    fn file(config: &Path, project: &str) -> PathBuf {
+        config
+            .join("analysis")
+            .join(format!("{project}.ticks.json"))
+    }
+
+    pub fn load(config: &Path, project: &str) -> Self {
+        std::fs::read_to_string(Self::file(config, project))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, config: &Path, project: &str) -> std::io::Result<()> {
+        let path = Self::file(config, project);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn open(&self, id: &str) -> bool {
+        !self.done.contains(id) && !self.dismissed.contains(id)
+    }
+}
+
+/// What a feed request asks for: these chats, since then. Newer activity in
+/// the chats makes a new request.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FeedKey {
     pub chats: Vec<String>,
@@ -242,7 +500,7 @@ pub struct FeedState {
     pub error: Option<String>,
 }
 
-/// The feed of one project, loaded off the interface thread.
+/// The messages of a project's sources, loaded off the interface thread.
 #[derive(Clone, Default)]
 pub struct Feed(Arc<Mutex<FeedState>>);
 
@@ -275,7 +533,7 @@ impl Feed {
             let spawned = std::thread::Builder::new()
                 .name("project-feed".into())
                 .spawn(move || {
-                    let result = load(&archive, &key);
+                    let result = read_messages(&archive, &key.chats, key.since);
                     let mut state = feed.lock().unwrap_or_else(|p| p.into_inner());
                     state.loading = false;
                     if state.key.as_ref() == Some(&key) {
@@ -294,14 +552,19 @@ impl Feed {
     }
 }
 
-fn load(archive: &Path, key: &FeedKey) -> Result<Vec<FeedMessage>, String> {
+/// The messages of `chats` since `since`, in time order.
+pub fn read_messages(
+    archive: &Path,
+    chats: &[String],
+    since: i64,
+) -> Result<Vec<FeedMessage>, String> {
     let archive = crate::archive::Archive::open_reader(archive).map_err(|error| {
         log::warn!("projects: could not open the archive: {error}");
         "The archive could not be read".to_owned()
     })?;
     let mut messages = Vec::new();
-    for chat in &key.chats {
-        match archive.bridge_messages(Some(chat), Some(key.since), None, FEED_LIMIT) {
+    for chat in chats {
+        match archive.bridge_messages(Some(chat), Some(since), None, FEED_LIMIT) {
             Ok(mut batch) => messages.append(&mut batch),
             Err(error) => log::warn!("projects: a chat's messages could not be read: {error}"),
         }
@@ -317,39 +580,105 @@ fn load(archive: &Path, key: &FeedKey) -> Result<Vec<FeedMessage>, String> {
 mod tests {
     use super::*;
 
+    fn message(chat: &str, id: &str, timestamp: i64) -> FeedMessage {
+        FeedMessage {
+            chat: chat.into(),
+            chat_name: chat.into(),
+            id: id.into(),
+            sender: chat.into(),
+            sender_name: None,
+            from_me: false,
+            timestamp,
+            kind: "text".into(),
+            text: "x".into(),
+            reply_to: None,
+            edited: false,
+        }
+    }
+
     #[test]
-    fn assigning_moves_a_chat_between_buckets() {
+    fn a_chat_can_feed_several_projects_with_its_own_mode() {
         let mut map = ProjectMap::default();
         let obra = map.add("Obra Norte");
         assert_eq!(obra, "obra-norte");
         assert_eq!(map.add("Obra Norte"), "obra-norte-2");
-        map.assign("a@g.us", &Bucket::Project(obra.clone()));
-        assert_eq!(map.bucket_of("a@g.us"), Bucket::Project(obra.clone()));
-        map.assign("a@g.us", &Bucket::Personal);
-        assert_eq!(map.bucket_of("a@g.us"), Bucket::Personal);
-        assert!(map.project(&obra).unwrap().chats.is_empty());
-        map.assign("a@g.us", &Bucket::Unassigned);
-        assert_eq!(map.bucket_of("a@g.us"), Bucket::Unassigned);
+        let jas = map.add("JAS");
+        // A group nobody else uses brings everything; once another project
+        // draws on it, it talks about other things too.
+        assert_eq!(map.default_mode(&obra, "g@g.us"), Mode::All);
+        map.add_source(&obra, "g@g.us", Mode::All);
+        assert_eq!(map.default_mode(&jas, "g@g.us"), Mode::Smart);
+        assert_eq!(map.default_mode(&jas, "p@s.whatsapp.net"), Mode::Smart);
+        map.add_source(&jas, "g@g.us", Mode::Smart);
+        assert_eq!(map.projects_of("g@g.us").len(), 2);
+        map.set_bucket("g@g.us", &Bucket::Personal);
+        assert!(map.projects_of("g@g.us").is_empty());
+        assert_eq!(map.bucket_of("g@g.us"), Bucket::Personal);
     }
 
     #[test]
-    fn map_round_trips_through_its_file() {
-        let root = tempfile::tempdir().unwrap();
+    fn picks_win_over_modes_and_the_analysis() {
         let mut map = ProjectMap::default();
-        let id = map.add("JAS");
-        map.assign("b@g.us", &Bucket::Project(id));
-        map.save(root.path()).unwrap();
-        assert_eq!(ProjectMap::load(root.path()), map);
+        let jas = map.add("JAS");
+        map.add_source(&jas, "p@s.whatsapp.net", Mode::Smart);
+        let mut analysis = Analysis::default();
+        let project = map.project(&jas).unwrap().clone();
+        let early = message("p@s.whatsapp.net", "a", 100);
+        assert_eq!(map.inclusion(&project, &early, None), Inclusion::Unsure);
+        analysis.read.insert("p@s.whatsapp.net".into(), 200);
+        analysis
+            .relevant
+            .insert("p@s.whatsapp.net".into(), vec!["a".into()]);
+        assert_eq!(
+            map.inclusion(&project, &early, Some(&analysis)),
+            Inclusion::In
+        );
+        let other = message("p@s.whatsapp.net", "b", 150);
+        assert_eq!(
+            map.inclusion(&project, &other, Some(&analysis)),
+            Inclusion::Out
+        );
+        map.pick("p@s.whatsapp.net", "b", &jas, true);
+        map.pick("p@s.whatsapp.net", "a", &jas, false);
+        let project = map.project(&jas).unwrap().clone();
+        assert_eq!(
+            map.inclusion(&project, &other, Some(&analysis)),
+            Inclusion::In
+        );
+        assert_eq!(
+            map.inclusion(&project, &early, Some(&analysis)),
+            Inclusion::Out
+        );
     }
 
     #[test]
-    fn digests_take_strings_or_objects() {
-        let digest: Digest = serde_json::from_str(
-            r#"{"summary":"x","pending":["a",{"owner":"Vos","text":"b","due":"lunes"}],"decisions":[{"text":"c"}]}"#,
+    fn picking_into_a_project_adds_its_chat_as_selected() {
+        let mut map = ProjectMap::default();
+        let obra = map.add("Obra");
+        map.pick("x@s.whatsapp.net", "m1", &obra, true);
+        assert_eq!(
+            map.project(&obra)
+                .unwrap()
+                .source("x@s.whatsapp.net")
+                .map(|s| s.mode),
+            Some(Mode::Selected)
+        );
+    }
+
+    #[test]
+    fn the_first_maps_chats_become_whole_sources() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            ProjectMap::file(root.path()),
+            r##"{"projects":[{"id":"jas","name":"JAS","color":"#25d366","chats":["a@g.us"]}],"personal":[],"ignored":[]}"##,
         )
         .unwrap();
-        assert_eq!(digest.pending.len(), 2);
-        assert!(matches!(&digest.pending[1], Item::Full(p) if p.owner.as_deref() == Some("Vos")));
+        let map = ProjectMap::load(root.path());
+        let project = map.project("jas").unwrap();
+        assert!(project.chats.is_empty());
+        assert_eq!(project.source("a@g.us").map(|s| s.mode), Some(Mode::All));
+        map.save(root.path()).unwrap();
+        assert_eq!(ProjectMap::load(root.path()), map);
         assert_eq!(
             parse_color("#21c063"),
             Some(Color32::from_rgb(0x21, 0xc0, 0x63))
