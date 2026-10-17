@@ -34,7 +34,18 @@ func catalogIcon(app: String) -> NSImage? {
         .max { $0.width < $1.width }
     return best.map { NSImage(cgImage: $0, size: NSSize(width: $0.width, height: $0.height)) }
 }
-let source = catalogIcon(app: arguments[1]) ?? NSWorkspace.shared.icon(forFile: arguments[1])
+/// The icon exactly as macOS draws it for the app (its layered icon rendered
+/// by the system), so the logo keeps the same size; the catalog's flat
+/// rendition is the fallback.
+func systemIcon(app: String) -> NSImage? {
+    _ = NSApplication.shared
+    let icon = NSWorkspace.shared.icon(forFile: app)
+    // The system renders layered icons asynchronously.
+    RunLoop.current.run(until: Date().addingTimeInterval(2))
+    icon.size = NSSize(width: 1024, height: 1024)
+    return icon
+}
+let source = systemIcon(app: arguments[1]) ?? catalogIcon(app: arguments[1])!
 let output = URL(fileURLWithPath: arguments[2])
 
 /// The icon at `side` pixels, drawn at 1024 and scaled so the badge keeps its
@@ -53,46 +64,37 @@ func render(side: Int) -> Data {
     source.draw(in: NSRect(x: 0, y: 0, width: canvas, height: canvas),
                 from: .zero, operation: .sourceOver, fraction: 1)
 
-    // A dark pill across the lower edge of the squircle (macOS icons sit in
-    // 824 points centred on the 1024 canvas, so its bottom is at y = 100).
-    let pill = NSRect(x: 512 - 200, y: 42, width: 400, height: 150)
-    let path = NSBezierPath(roundedRect: pill, xRadius: 75, yRadius: 75)
-
+    // A pill inside the squircle's lower edge. macOS 26 shrinks an icon into
+    // a grey tile when anything sticks out of the standard squircle (824
+    // points centred on the 1024 canvas), so the badge stays well inside it,
+    // under the logo and clear of the bubble's tail.
+    let dark = ProcessInfo.processInfo.environment["PRO_STYLE"] == "dark"
+    let pill = NSRect(x: 512 - 128, y: 116, width: 256, height: 92)
+    let path = NSBezierPath(roundedRect: pill, xRadius: 46, yRadius: 46)
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = NSColor.black.withAlphaComponent(0.35)
-    shadow.shadowBlurRadius = 24
-    shadow.shadowOffset = NSSize(width: 0, height: -8)
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.18)
+    shadow.shadowBlurRadius = 14
+    shadow.shadowOffset = NSSize(width: 0, height: -4)
     shadow.set()
-    NSColor(srgbRed: 0.07, green: 0.11, blue: 0.13, alpha: 1).setFill()
+    (dark ? NSColor.black.withAlphaComponent(0.28) : NSColor.white).setFill()
     path.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    // A soft top-lit sheen, then a white rim that separates it from the green.
-    NSGraphicsContext.saveGraphicsState()
-    path.addClip()
-    NSGradient(colors: [
-        NSColor(srgbRed: 0.20, green: 0.25, blue: 0.27, alpha: 1),
-        NSColor(srgbRed: 0.05, green: 0.08, blue: 0.10, alpha: 1),
-    ])!.draw(in: pill, angle: -90)
-    NSGraphicsContext.restoreGraphicsState()
-    NSColor.white.setStroke()
-    path.lineWidth = 12
-    path.stroke()
-
-    // "PRO" in the system's rounded heavy face, WhatsApp green.
-    var font = NSFont.systemFont(ofSize: 100, weight: .heavy)
+    var font = NSFont.systemFont(ofSize: 60, weight: .heavy)
     if let rounded = font.fontDescriptor.withDesign(.rounded) {
-        font = NSFont(descriptor: rounded, size: 100) ?? font
+        font = NSFont(descriptor: rounded, size: 60) ?? font
     }
     let text = NSAttributedString(string: "PRO", attributes: [
         .font: font,
-        .foregroundColor: NSColor(srgbRed: 0.145, green: 0.827, blue: 0.400, alpha: 1),
-        .kern: 9,
+        .foregroundColor: dark
+            ? NSColor.white
+            : NSColor(srgbRed: 0.08, green: 0.66, blue: 0.33, alpha: 1),
+        .kern: 6,
     ])
     let size = text.size()
-    text.draw(at: NSPoint(x: pill.midX - size.width / 2 + 4.5,
-                          y: pill.midY - size.height / 2 + 3))
+    text.draw(at: NSPoint(x: pill.midX - size.width / 2 + 3,
+                          y: pill.midY - size.height / 2 + 1.5))
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!

@@ -689,9 +689,45 @@ mod backend {
                 Ok(number) => CameraIndex::Index(number),
                 Err(_) => CameraIndex::String(id.to_owned()),
             };
-            let any = RequestedFormat::with_formats(RequestedFormatType::None, &READABLE);
-            let mut camera = nokhwa::Camera::new(index, any)
-                .map_err(|error| format!("the camera could not be opened: {error}"))?;
+            // nokhwa's default request (640x480 at 15 fps in YUYV) is refused by
+            // some Mac cameras, Continuity Camera among them, before any format
+            // can be chosen. Fall back to requests the camera picks itself, then
+            // to one readable pixel format at a time.
+            let mut requests = vec![
+                RequestedFormat::with_formats(RequestedFormatType::None, &READABLE),
+                RequestedFormat::with_formats(
+                    RequestedFormatType::AbsoluteHighestFrameRate,
+                    &READABLE,
+                ),
+                RequestedFormat::with_formats(
+                    RequestedFormatType::AbsoluteHighestResolution,
+                    &READABLE,
+                ),
+            ];
+            requests.extend(READABLE.iter().map(|format| {
+                RequestedFormat::with_formats(
+                    RequestedFormatType::AbsoluteHighestFrameRate,
+                    std::slice::from_ref(format),
+                )
+            }));
+            let mut failure = String::new();
+            let mut opened = None;
+            for request in requests {
+                match nokhwa::Camera::new(index.clone(), request) {
+                    Ok(camera) => {
+                        opened = Some(camera);
+                        break;
+                    }
+                    Err(error) => {
+                        log::debug!("[CALL] camera request refused: {error}");
+                        if failure.is_empty() {
+                            failure = error.to_string();
+                        }
+                    }
+                }
+            }
+            let mut camera =
+                opened.ok_or_else(|| format!("the camera could not be opened: {failure}"))?;
             let modes: Vec<Mode> = camera
                 .compatible_camera_formats()
                 .map_err(|error| format!("the camera's formats could not be read: {error}"))?
