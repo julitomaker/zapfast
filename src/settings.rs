@@ -562,6 +562,8 @@ pub struct Settings {
     pub window_maximized: bool,
     /// Who transcribes speech and reads pictures (src/media_ai.rs).
     pub media_engines: crate::media_ai::MediaEngines,
+    /// Whether the first-run choice of those engines was shown.
+    pub media_setup_done: bool,
 }
 
 impl Default for Settings {
@@ -620,6 +622,7 @@ impl Default for Settings {
             window_y: None,
             window_maximized: false,
             media_engines: crate::media_ai::MediaEngines::default(),
+            media_setup_done: false,
         }
     }
 }

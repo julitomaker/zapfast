@@ -22,6 +22,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .backdrop_color(palette.shadow)
         .show(ctx, |ui| {
             ui.set_width(match dialog {
+                Dialog::MediaSetup => 440.0,
                 Dialog::Shortcuts => shortcuts_width(ui.ctx().content_rect().width()),
                 Dialog::About => 380.0,
                 Dialog::ConfirmUnlink => 380.0,
@@ -65,6 +66,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     button,
                 } => interactive_list(app, ui, &chat, &message, button),
                 Dialog::Labels => super::labels::manager(app, ui, &palette),
+                Dialog::MediaSetup => super::media_setup::show(app, ui),
                 Dialog::Shortcuts => shortcuts(app, ui),
                 Dialog::About => about(app, ui),
                 Dialog::ConfirmUnlink => confirm_unlink(app, ui),

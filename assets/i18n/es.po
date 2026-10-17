@@ -3350,3 +3350,53 @@ msgstr "Probar conexión"
 #: src/ui/projects.rs
 msgid "Connected"
 msgstr "Conectado"
+msgid "Voice messages and pictures"
+msgstr "Audios e imágenes"
+
+msgid "Whats Pro can transcribe voice messages and videos, and read pictures, in the chats you choose. This is what we suggest for this computer:"
+msgstr "Whats Pro puede transcribir audios y videos, y leer imágenes, de los chats que elijas. Esto es lo que te sugerimos para esta computadora:"
+
+msgid "free"
+msgstr "libres"
+
+msgid "suggested"
+msgstr "sugerido"
+
+msgid "Pictures"
+msgstr "Imágenes"
+
+msgid "Do it in every chat"
+msgstr "Hacerlo en todos los chats"
+
+msgid "Otherwise, choose chats from their right-click menu. All of this can be changed in Settings > Transcription."
+msgstr "Si no, elegí los chats desde su menú (clic derecho). Todo esto se puede cambiar en Ajustes → Transcripción."
+
+msgid "Later"
+msgstr "Más tarde"
+
+msgid "There is not enough free disk for the local model (about 2 GB). Groq transcribes in the cloud, fast and cheap."
+msgstr "No hay suficiente espacio libre para el modelo local (unos 2 GB). Groq transcribe en la nube, rápido y barato."
+
+msgid "Your Mac's Apple chip runs Whisper on its GPU: fast, free and private. Nothing leaves this computer."
+msgstr "El chip Apple de tu Mac corre Whisper en su GPU: rápido, gratis y privado. Nada sale de esta computadora."
+
+msgid "With less than 8 GB of memory the local model would slow your Mac down. Groq transcribes in the cloud, fast and cheap."
+msgstr "Con menos de 8 GB de memoria el modelo local haría lenta tu Mac. Groq transcribe en la nube, rápido y barato."
+
+msgid "Your Intel Mac can run Whisper on its processor, free and private, though slower than on an Apple chip. If it feels slow, switch to Groq."
+msgstr "Tu Mac Intel puede correr Whisper en el procesador, gratis y privado, aunque más lento que en un chip Apple. Si va lento, pasate a Groq."
+
+msgid "On this Intel Mac the local model would be slow. Groq transcribes in the cloud in seconds, for a few cents."
+msgstr "En esta Mac Intel el modelo local sería lento. Groq transcribe en la nube en segundos, por unos centavos."
+
+msgid "Claude Code is installed: it describes pictures and reads their text with your Claude subscription."
+msgstr "Claude Code está instalado: describe las imágenes y lee su texto con tu suscripción de Claude."
+
+msgid "Codex is installed: it describes pictures and reads their text with your ChatGPT subscription."
+msgstr "Codex está instalado: describe las imágenes y lee su texto con tu suscripción de ChatGPT."
+
+msgid "Gemini CLI is installed: it describes pictures and reads their text with your Google account."
+msgstr "Gemini CLI está instalado: describe las imágenes y lee su texto con tu cuenta de Google."
+
+msgid "macOS reads the text in pictures on this computer, free. Install Claude Code, Codex or Gemini CLI to also get descriptions."
+msgstr "macOS lee el texto de las imágenes en esta computadora, gratis. Instalá Claude Code, Codex o Gemini CLI para tener también descripciones."

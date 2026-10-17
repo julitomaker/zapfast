@@ -16,6 +16,7 @@ pub mod labels;
 pub mod locations;
 pub mod lock;
 pub mod login;
+pub mod media_setup;
 pub mod message_info;
 pub mod pane;
 pub mod picker;

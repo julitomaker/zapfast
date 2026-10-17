@@ -2011,6 +2011,8 @@ pub struct InfoPanel {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Dialog {
+    /// First run: who transcribes voice and reads pictures (ui/media_setup.rs).
+    MediaSetup,
     Shortcuts,
     About,
     ConfirmUnlink,

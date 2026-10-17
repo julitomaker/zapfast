@@ -632,6 +632,10 @@ pub struct App {
 
     pub page: Page,
     pub dialog: Option<Dialog>,
+    /// The first-run engine choice while it is open, and whether it waits
+    /// for the account to link (only real launches ask, see `App::new`).
+    pub media_setup: Option<crate::ui::media_setup::State>,
+    media_setup_pending: bool,
     /// Places visited in this window, for the mouse's back and forward
     /// buttons. Cleared when the account on screen changes.
     nav_history: History,
@@ -1148,6 +1152,7 @@ impl App {
             .unwrap_or(0)
             .min(accounts.len() - 1);
         let mut app = Self::with_accounts(dirs, settings, roster, accounts, active, waker.clone());
+        app.media_setup_pending = !app.settings.media_setup_done;
         app.pauses_media = true;
         app.call_tones = crate::call_tones::Tones::new(true);
         app.badge = Some(crate::notify::Badge::new(fastframe_desktop::desktop_entry(
@@ -1409,6 +1414,8 @@ impl App {
             scroll_route: ScrollRoute::default(),
             page: Page::Chats,
             dialog: None,
+            media_setup: None,
+            media_setup_pending: false,
             nav_history: History::default(),
             forward_search: String::new(),
             forward_recipients: Vec::new(),
@@ -5666,6 +5673,12 @@ impl App {
 
     fn tick(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
+        // Once linked, the first run asks who reads voice and pictures.
+        if self.media_setup_pending && self.dialog.is_none() && self.link.is_connected() {
+            self.media_setup_pending = false;
+            self.media_setup = Some(crate::ui::media_setup::State::new(&self.dirs.state));
+            self.dialog = Some(Dialog::MediaSetup);
+        }
         self.tick_call(ctx);
         if self.composing
             && let Some(last) = self.last_keystroke
