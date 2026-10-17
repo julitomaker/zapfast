@@ -85,6 +85,10 @@ pub struct Member {
     pub name: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub role: String,
+    /// Who they are, in the owner's words: what they do, how to deal with
+    /// them.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub about: String,
 }
 
 impl Project {
@@ -493,6 +497,14 @@ pub struct Feedback {
     pub text: String,
     pub verdict: Verdict,
     pub at: i64,
+    /// How it was solved, or why it was dismissed, when the owner said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The finding's chat and message, to show where it came from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 impl Ticks {
@@ -523,6 +535,11 @@ impl Ticks {
 
     /// Records what the user made of a finding.
     pub fn judge(&mut self, finding: &Finding, verdict: Verdict) {
+        self.judge_with(finding, verdict, None);
+    }
+
+    /// Records what the user made of a finding, with how it was solved.
+    pub fn judge_with(&mut self, finding: &Finding, verdict: Verdict, note: Option<String>) {
         match verdict {
             Verdict::Done => {
                 self.done.insert(finding.id.clone());
@@ -539,11 +556,22 @@ impl Ticks {
             text: finding.text.clone(),
             verdict,
             at: jiff::Timestamp::now().as_second(),
+            note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
+            chat: finding.chat.clone(),
+            message: finding.message.clone(),
         });
         // The newest 200 are plenty to learn from.
         if self.feedback.len() > 200 {
             self.feedback.drain(..self.feedback.len() - 200);
         }
+    }
+
+    /// Puts a closed finding back on the panel.
+    pub fn reopen(&mut self, id: &str) {
+        self.done.remove(id);
+        self.dismissed.remove(id);
+        self.feedback
+            .retain(|f| !(f.id == id && matches!(f.verdict, Verdict::Done | Verdict::Dismissed)));
     }
 
     pub fn verdict(&self, id: &str) -> Option<Verdict> {
@@ -564,6 +592,17 @@ pub struct Note {
     pub text: String,
     #[serde(default)]
     pub spoken: bool,
+    #[serde(default)]
+    pub kind: NoteKind,
+}
+
+/// A log of what happened, or a note kept for reference.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoteKind {
+    #[default]
+    Log,
+    Memo,
 }
 
 /// A project's notes, oldest first.
@@ -596,10 +635,15 @@ impl Journal {
     }
 
     pub fn add(&mut self, text: &str, spoken: bool) {
+        self.add_kind(text, spoken, NoteKind::Log);
+    }
+
+    pub fn add_kind(&mut self, text: &str, spoken: bool, kind: NoteKind) {
         self.notes.push(Note {
             at: jiff::Timestamp::now().as_second(),
             text: text.trim().to_owned(),
             spoken,
+            kind,
         });
     }
 }

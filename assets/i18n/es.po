@@ -3548,3 +3548,67 @@ msgstr "Rol"
 #: src/ui/projects.rs
 msgid "Add: a name or a number"
 msgstr "Agregar: un nombre o un número"
+
+#: src/ui/projects.rs
+msgid "History"
+msgstr "Historial"
+
+#: src/ui/projects.rs
+msgid "Notes"
+msgstr "Notas"
+
+#: src/ui/projects.rs
+msgid "See the messages it came from"
+msgstr "Ver los mensajes de donde salió"
+
+#: src/ui/projects.rs
+msgid "Done"
+msgstr "Hecho"
+
+#: src/ui/projects.rs
+msgid "Dismissed"
+msgstr "Descartado"
+
+#: src/ui/projects.rs
+msgid "Undo"
+msgstr "Deshacer"
+
+#: src/ui/projects.rs
+msgid "closes in {n} s"
+msgstr "se cierra en {n} s"
+
+#: src/ui/projects.rs
+msgid "How was it solved? (optional, helps the analysis)"
+msgstr "¿Cómo se resolvió? (opcional, ayuda al análisis)"
+
+#: src/ui/projects.rs
+msgid "Where it came from: {finding}"
+msgstr "De dónde salió: {finding}"
+
+#: src/ui/projects.rs
+msgid "Nothing closed yet"
+msgstr "Todavía no cerraste nada"
+
+#: src/ui/projects.rs
+msgid "What you tick off, dismiss or judge on the panel is kept here."
+msgstr "Lo que tildás, descartás o valorás en el panel queda guardado acá."
+
+#: src/ui/projects.rs
+msgid "Reopen"
+msgstr "Reabrir"
+
+#: src/ui/projects.rs
+msgid "How it was solved: {note}"
+msgstr "Cómo se resolvió: {note}"
+
+#: src/ui/projects.rs
+msgid "Note to keep"
+msgstr "Apunte"
+
+#: src/ui/projects.rs
+msgid "Notes to keep"
+msgstr "Apuntes"
+
+#: src/ui/projects.rs
+msgid "Who they are: what they do, how to deal with them, what they care about…"
+msgstr "Quién es: qué hace, cómo tratarlo, qué le importa…"

@@ -52,6 +52,7 @@ enum Tab {
     #[default]
     Panel,
     Journal,
+    History,
     Context,
     Messages,
     Sources,
@@ -98,6 +99,37 @@ struct State {
     /// The context being edited, for which project, and a member search.
     context: Option<(String, String)>,
     member_search: String,
+    /// A finding just ticked or dismissed, kept a few seconds to undo it
+    /// or to say how it was solved.
+    pending: Option<Pending>,
+    /// The messages a finding came from, shown and marked in Messages.
+    highlight: Option<Highlight>,
+    note_kind: crate::projects::NoteKind,
+    notes_filter: Option<crate::projects::NoteKind>,
+    history_filter: Option<Verdict>,
+}
+
+/// How long a ticked or dismissed finding can be undone.
+const UNDO_SECONDS: f64 = 5.0;
+
+#[derive(Clone)]
+struct Pending {
+    finding: Finding,
+    verdict: Verdict,
+    started: f64,
+    note: String,
+    /// While the person writes how it was solved, it waits for them.
+    writing: bool,
+    undone: bool,
+}
+
+#[derive(Clone)]
+struct Highlight {
+    chat: String,
+    message: String,
+    at: i64,
+    text: String,
+    scroll: bool,
 }
 
 impl Default for State {
@@ -129,6 +161,11 @@ impl Default for State {
             transcribing: false,
             context: None,
             member_search: String::new(),
+            pending: None,
+            highlight: None,
+            note_kind: crate::projects::NoteKind::Log,
+            notes_filter: None,
+            history_filter: None,
         }
     }
 }
@@ -850,7 +887,8 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
                 (Tab::Sources, gettext(locale, "Sources")),
                 (Tab::Messages, gettext(locale, "Messages")),
                 (Tab::Context, gettext(locale, "Context")),
-                (Tab::Journal, gettext(locale, "Journal")),
+                (Tab::History, gettext(locale, "History")),
+                (Tab::Journal, gettext(locale, "Notes")),
                 (Tab::Panel, gettext(locale, "Panel")),
             ] {
                 if widgets::filter_chip(ui, &palette, label.as_ref(), 0, tab == value).clicked() {
@@ -875,6 +913,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
     match state.tab {
         Tab::Panel => panel(app, ui, state, &project, analysis.as_ref(), &ticks),
         Tab::Journal => journal(app, ui, state, &project),
+        Tab::History => history(app, ui, state, &project, &ticks),
         Tab::Context => context(app, ui, state, &project),
         Tab::Messages => messages(app, ui, state, &project, analysis.as_ref()),
         Tab::Sources => sources(app, ui, state, &project),
@@ -912,6 +951,8 @@ fn chip(ui: &mut egui::Ui, text: &str, color: Color32) {
 enum FindingAction {
     Judge(Finding, Verdict),
     Open(String),
+    /// Show the messages it came from.
+    Show(Finding),
 }
 
 /// One finding: a tick box where it can be done, its text, and chips for
@@ -927,9 +968,14 @@ fn finding_row(
     tickable: bool,
     ticks: &Ticks,
     action: &mut Option<FindingAction>,
+    pending: &mut Option<Pending>,
 ) {
     let palette = app.palette;
     let locale = app.locale;
+    if let Some(pending) = pending.as_mut().filter(|p| p.finding.id == finding.id) {
+        pending_row(app, ui, pending, action);
+        return;
+    }
     let id = ui.id().with(("finding", &finding.id));
     let previous = ui.ctx().data(|data| data.get_temp::<Rect>(id));
     let row_response = previous.map(|rect| ui.interact(rect, id, Sense::click()));
@@ -1053,6 +1099,17 @@ fn finding_row(
     if previous.is_none() {
         ui.ctx().request_repaint();
     }
+    if let Some(response) = &row_response
+        && finding.message.is_some()
+        && action.is_none()
+        && response
+            .clone()
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(gettext(locale, "See the messages it came from"))
+            .clicked()
+    {
+        *action = Some(FindingAction::Show(finding.clone()));
+    }
     if let Some(response) = row_response {
         let done = gettext(locale, "Mark as done");
         let dismiss = gettext(locale, "Dismiss");
@@ -1083,6 +1140,18 @@ fn finding_row(
                 widgets::menu_separator(ui, &palette);
                 pick(ui, Icon::Heart, &good, Verdict::Good);
                 pick(ui, Icon::Ban, &bad, Verdict::Bad);
+                if finding.message.is_some() {
+                    widgets::menu_separator(ui, &palette);
+                    if widgets::menu_item(
+                        ui,
+                        &palette,
+                        Some(Icon::MessageCircle),
+                        &gettext(locale, "See the messages it came from"),
+                    ) {
+                        *action = Some(FindingAction::Show(finding.clone()));
+                        ui.close();
+                    }
+                }
                 if let Some(chat) = &finding.chat {
                     widgets::menu_separator(ui, &palette);
                     if widgets::menu_item(ui, &palette, Some(Icon::ExternalLink), &open) {
@@ -1092,6 +1161,100 @@ fn finding_row(
                 }
             });
     }
+}
+
+/// A finding just ticked or dismissed: it can be undone for a few seconds,
+/// and a ticked one can say how it was solved, which waits for the person.
+fn pending_row(
+    app: &App,
+    ui: &mut egui::Ui,
+    pending: &mut Pending,
+    action: &mut Option<FindingAction>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let now = ui.ctx().input(|input| input.time);
+    let left = (UNDO_SECONDS - (now - pending.started)).max(0.0).ceil() as i64;
+    let done = pending.verdict == Verdict::Done;
+    let color = if done {
+        palette.accent
+    } else {
+        palette.secondary
+    };
+    Frame::new()
+        .fill(color.gamma_multiply(0.10))
+        .corner_radius(CornerRadius::same(theme::RADIUS + 2))
+        .inner_margin(Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                theme::icon(
+                    ui,
+                    if done { Icon::CircleCheck } else { Icon::X },
+                    16.0,
+                    color,
+                );
+                let label = if done {
+                    gettext(locale, "Done")
+                } else {
+                    gettext(locale, "Dismissed")
+                };
+                theme::text(ui, label, theme::semibold(13.5), color);
+                ui.set_max_width((ui.available_width() - 120.0).max(80.0));
+                theme::text(
+                    ui,
+                    &pending.finding.text,
+                    theme::regular(13.0),
+                    palette.secondary,
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if pill_button(ui, &palette, gettext(locale, "Undo").as_ref(), false).clicked()
+                    {
+                        pending.undone = true;
+                    }
+                    if !pending.writing && pending.note.trim().is_empty() {
+                        theme::text(
+                            ui,
+                            gettext(locale, "closes in {n} s").replace("{n}", &left.to_string()),
+                            theme::regular(12.0),
+                            palette.dim,
+                        );
+                    }
+                });
+            });
+            if done {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut pending.note)
+                            .hint_text(
+                                gettext(
+                                    locale,
+                                    "How was it solved? (optional, helps the analysis)",
+                                )
+                                .as_ref(),
+                            )
+                            .desired_width((ui.available_width() - 110.0).max(120.0)),
+                    );
+                    if field.has_focus() || !pending.note.trim().is_empty() {
+                        pending.writing = true;
+                    }
+                    if pending.writing
+                        && (pill_button(ui, &palette, gettext(locale, "Save").as_ref(), true)
+                            .clicked()
+                            || (field.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                    {
+                        pending.writing = false;
+                        pending.started = f64::NEG_INFINITY;
+                    }
+                });
+            }
+        });
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(250));
+    let _ = action;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1106,9 +1269,15 @@ fn findings_card(
     tickable: bool,
     empty: &str,
     action: &mut Option<FindingAction>,
+    pending: &mut Option<Pending>,
 ) {
     let palette = app.palette;
-    let open: Vec<&Finding> = findings.iter().filter(|f| ticks.open(&f.id)).collect();
+    // A finding waiting to be closed stays in place until it is.
+    let waiting = pending.as_ref().map(|p| p.finding.id.clone());
+    let open: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| ticks.open(&f.id) || waiting.as_deref() == Some(f.id.as_str()))
+        .collect();
     let closed = findings.len() - open.len();
     card_frame(&palette).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1143,7 +1312,7 @@ fn findings_card(
                 let y = ui.cursor().top();
                 ui.painter().hline(x, y, palette.glass_edge());
             }
-            finding_row(app, ui, finding, tickable, ticks, action);
+            finding_row(app, ui, finding, tickable, ticks, action, pending);
         }
     });
     ui.add_space(12.0);
@@ -1196,6 +1365,7 @@ fn panel(
     let open = |list: &[Finding]| list.iter().filter(|f| ticks.open(&f.id)).count();
     let mut action = None;
     let mut period = state.period;
+    let mut pending = state.pending.take();
     egui::ScrollArea::vertical()
         .id_salt(("project-panel", &project.id))
         .auto_shrink([false, false])
@@ -1252,14 +1422,14 @@ fn panel(
                         metric(&mut columns[3], &palette, Icon::Bell, gettext(locale, "New needs").as_ref(), open(&analysis.needs), palette.accent);
                     });
                     ui.add_space(12.0);
-                    let left = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>| {
-                        findings_card(app, ui, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), palette.danger, &analysis.leaks, ticks, true, gettext(locale, "Nothing is slipping.").as_ref(), action);
-                        findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &analysis.todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action);
-                        findings_card(app, ui, Icon::Clock, gettext(locale, "To follow up · waiting on others").as_ref(), palette.warning, &analysis.follow_up, ticks, true, gettext(locale, "Nobody owes us an answer.").as_ref(), action);
+                    let left = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>, pending: &mut Option<Pending>| {
+                        findings_card(app, ui, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), palette.danger, &analysis.leaks, ticks, true, gettext(locale, "Nothing is slipping.").as_ref(), action, pending);
+                        findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &analysis.todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action, pending);
+                        findings_card(app, ui, Icon::Clock, gettext(locale, "To follow up · waiting on others").as_ref(), palette.warning, &analysis.follow_up, ticks, true, gettext(locale, "Nobody owes us an answer.").as_ref(), action, pending);
                     };
-                    let right = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>| {
-                        findings_card(app, ui, Icon::Bell, gettext(locale, "Needs that came up").as_ref(), palette.accent, &analysis.needs, ticks, true, gettext(locale, "No new needs.").as_ref(), action);
-                        findings_card(app, ui, Icon::Star, gettext(locale, "Messages worth reading").as_ref(), palette.warning, &analysis.highlights, ticks, false, gettext(locale, "Nothing stands out.").as_ref(), action);
+                    let right = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>, pending: &mut Option<Pending>| {
+                        findings_card(app, ui, Icon::Bell, gettext(locale, "Needs that came up").as_ref(), palette.accent, &analysis.needs, ticks, true, gettext(locale, "No new needs.").as_ref(), action, pending);
+                        findings_card(app, ui, Icon::Star, gettext(locale, "Messages worth reading").as_ref(), palette.warning, &analysis.highlights, ticks, false, gettext(locale, "Nothing stands out.").as_ref(), action, pending);
                     };
                     if ui.available_width() >= TWO_COLUMNS {
                         let width = ui.available_width();
@@ -1267,20 +1437,20 @@ fn panel(
                         let left_width = (width - gap) * 0.58;
                         ui.horizontal_top(|ui| {
                             ui.allocate_ui_with_layout(vec2(left_width, 0.0), Layout::top_down(Align::Min), |ui| {
-                                left(app, ui, &mut action)
+                                left(app, ui, &mut action, &mut pending)
                             });
                             ui.add_space(gap);
                             ui.allocate_ui_with_layout(vec2(width - left_width - gap, 0.0), Layout::top_down(Align::Min), |ui| {
                                 note_card(app, ui, state, project);
                                 ui.add_space(12.0);
-                                right(app, ui, &mut action)
+                                right(app, ui, &mut action, &mut pending)
                             });
                         });
                     } else {
                         note_card(app, ui, state, project);
                         ui.add_space(12.0);
-                        left(app, ui, &mut action);
-                        right(app, ui, &mut action);
+                        left(app, ui, &mut action, &mut pending);
+                        right(app, ui, &mut action, &mut pending);
                     }
                     theme::text(
                         ui,
@@ -1291,21 +1461,110 @@ fn panel(
                 });
         });
     state.period = period;
-    match action {
-        Some(FindingAction::Judge(finding, verdict)) => {
-            let mut ticks = ticks.clone();
-            ticks.judge(&finding, verdict);
-            if let Err(error) = ticks.save(&app.dirs.config, &project.id) {
-                log::warn!("projects: ticks could not be saved: {error}");
-            }
-            state.analysis = None;
+    let now = ui.ctx().input(|input| input.time);
+    // A pending finding closes once its time is up, or when saved, unless
+    // it was undone or the person is still writing how it was solved.
+    if let Some(waiting) = pending.take() {
+        if waiting.undone {
+        } else if !waiting.writing && now - waiting.started >= UNDO_SECONDS {
+            commit(
+                app,
+                state,
+                project,
+                &waiting.finding,
+                waiting.verdict,
+                Some(waiting.note),
+            );
+        } else {
+            pending = Some(waiting);
         }
+    }
+    match action {
+        Some(FindingAction::Judge(finding, verdict)) => match verdict {
+            Verdict::Done | Verdict::Dismissed => {
+                // Another one already waiting closes now.
+                if let Some(earlier) = pending.take()
+                    && !earlier.undone
+                {
+                    commit(
+                        app,
+                        state,
+                        project,
+                        &earlier.finding,
+                        earlier.verdict,
+                        Some(earlier.note),
+                    );
+                }
+                pending = Some(Pending {
+                    finding,
+                    verdict,
+                    started: now,
+                    note: String::new(),
+                    writing: false,
+                    undone: false,
+                });
+            }
+            Verdict::Good | Verdict::Bad => commit(app, state, project, &finding, verdict, None),
+        },
         Some(FindingAction::Open(chat)) => {
             app.actions.push(Action::Open(Page::Chats));
             app.actions.push(Action::OpenChat(chat));
         }
+        Some(FindingAction::Show(finding)) => show_origin(state, &finding),
         None => {}
     }
+    state.pending = pending;
+}
+
+/// Keeps what the person made of a finding, with how it was solved; a
+/// resolution in their words makes the analysis read the project again.
+#[allow(clippy::too_many_arguments)]
+fn commit(
+    app: &App,
+    state: &mut State,
+    project: &Project,
+    finding: &Finding,
+    verdict: Verdict,
+    note: Option<String>,
+) {
+    let mut ticks = Ticks::load(&app.dirs.config, &project.id);
+    let explained = note.as_ref().is_some_and(|n| !n.trim().is_empty());
+    ticks.judge_with(finding, verdict, note);
+    if let Err(error) = ticks.save(&app.dirs.config, &project.id) {
+        log::warn!("projects: ticks could not be saved: {error}");
+    }
+    state.analysis = None;
+    if explained || matches!(verdict, Verdict::Bad) {
+        engine::refresh(&project.id);
+    }
+}
+
+/// Opens Messages on where a finding came from, marked.
+fn show_origin(state: &mut State, finding: &Finding) {
+    let (Some(chat), Some(message)) = (&finding.chat, &finding.message) else {
+        return;
+    };
+    let at = finding
+        .since
+        .unwrap_or_else(|| jiff::Timestamp::now().as_second());
+    let days = ((jiff::Timestamp::now().as_second() - at) / 86_400 + 1).clamp(1, 30);
+    state.days = RANGES
+        .iter()
+        .map(|(d, _)| *d)
+        .find(|d| *d >= days)
+        .unwrap_or(30)
+        .max(state.days);
+    state.only_chat = None;
+    state.show_all = true;
+    state.selected.clear();
+    state.highlight = Some(Highlight {
+        chat: chat.clone(),
+        message: message.clone(),
+        at,
+        text: finding.text.clone(),
+        scroll: true,
+    });
+    state.tab = Tab::Messages;
 }
 
 /// The panel before the first analysis: what it will show, and how to turn
@@ -1365,6 +1624,172 @@ fn no_analysis(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Pr
     });
 }
 
+// ------------------------------------------------------------------ history
+
+/// Everything closed or judged, newest first: what, when, how it was
+/// solved. A closed item can be opened again, and shows where it came from.
+fn history(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project, ticks: &Ticks) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let mut filter = state.history_filter;
+    let mut reopen = None;
+    let mut show = None;
+    Frame::new()
+        .inner_margin(Margin::symmetric(20, 10))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (value, label) in [
+                    (None, gettext(locale, "Everything")),
+                    (Some(Verdict::Done), gettext(locale, "Done")),
+                    (Some(Verdict::Dismissed), gettext(locale, "Dismissed")),
+                    (Some(Verdict::Good), gettext(locale, "Good recommendation")),
+                    (Some(Verdict::Bad), gettext(locale, "Bad recommendation")),
+                ] {
+                    if widgets::filter_chip(ui, &palette, label.as_ref(), 0, filter == value)
+                        .clicked()
+                    {
+                        filter = value;
+                    }
+                }
+            });
+        });
+    state.history_filter = filter;
+    let items: Vec<&crate::projects::Feedback> = ticks
+        .feedback
+        .iter()
+        .rev()
+        .filter(|f| filter.is_none_or(|v| v == f.verdict))
+        .collect();
+    if items.is_empty() {
+        widgets::empty_state(
+            ui,
+            &palette,
+            Icon::Clock,
+            gettext(locale, "Nothing closed yet").as_ref(),
+            gettext(
+                locale,
+                "What you tick off, dismiss or judge on the panel is kept here.",
+            )
+            .as_ref(),
+        );
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .id_salt(("project-history", &project.id))
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            Frame::new()
+                .inner_margin(Margin {
+                    left: 20,
+                    right: 20,
+                    top: 0,
+                    bottom: 16,
+                })
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width().min(820.0));
+                    let mut day = String::new();
+                    for item in items {
+                        let label = crate::util::day_label(locale, item.at);
+                        if label != day {
+                            day_chip(ui, &palette, &label);
+                            day = label;
+                        }
+                        let (icon, color, verdict) = match item.verdict {
+                            Verdict::Done => {
+                                (Icon::CircleCheck, palette.accent, gettext(locale, "Done"))
+                            }
+                            Verdict::Dismissed => {
+                                (Icon::X, palette.secondary, gettext(locale, "Dismissed"))
+                            }
+                            Verdict::Good => (
+                                Icon::Heart,
+                                palette.accent,
+                                gettext(locale, "Good recommendation"),
+                            ),
+                            Verdict::Bad => (
+                                Icon::Ban,
+                                palette.danger,
+                                gettext(locale, "Bad recommendation"),
+                            ),
+                        };
+                        card_frame(&palette).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 8.0;
+                                theme::icon(ui, icon, 15.0, color);
+                                chip(ui, verdict.as_ref(), color);
+                                theme::text(
+                                    ui,
+                                    crate::util::clock(item.at),
+                                    theme::regular(12.0),
+                                    palette.dim,
+                                );
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    if matches!(item.verdict, Verdict::Done | Verdict::Dismissed)
+                                        && pill_button(
+                                            ui,
+                                            &palette,
+                                            gettext(locale, "Reopen").as_ref(),
+                                            false,
+                                        )
+                                        .clicked()
+                                    {
+                                        reopen = Some(item.id.clone());
+                                    }
+                                    if item.message.is_some()
+                                        && theme::icon_button(
+                                            ui,
+                                            Icon::MessageCircle,
+                                            15.0,
+                                            palette.secondary,
+                                            palette.text,
+                                            &gettext(locale, "See the messages it came from"),
+                                        )
+                                        .clicked()
+                                    {
+                                        show = Some(Finding {
+                                            id: item.id.clone(),
+                                            text: item.text.clone(),
+                                            chat: item.chat.clone(),
+                                            message: item.message.clone(),
+                                            since: Some(item.at),
+                                            ..Finding::default()
+                                        });
+                                    }
+                                });
+                            });
+                            ui.add_space(4.0);
+                            wrapped(ui, &item.text, theme::regular(14.0), palette.text);
+                            if let Some(note) = &item.note {
+                                ui.add_space(2.0);
+                                wrapped(
+                                    ui,
+                                    &gettext(locale, "How it was solved: {note}")
+                                        .replace("{note}", note),
+                                    theme::regular(13.0),
+                                    palette.secondary,
+                                );
+                            }
+                        });
+                        ui.add_space(8.0);
+                    }
+                });
+        });
+    if let Some(id) = reopen {
+        let mut ticks = Ticks::load(&app.dirs.config, &project.id);
+        ticks.reopen(&id);
+        if let Err(error) = ticks.save(&app.dirs.config, &project.id) {
+            log::warn!("projects: ticks could not be saved: {error}");
+        }
+        state.analysis = None;
+    }
+    if let Some(finding) = show {
+        show_origin(state, &finding);
+    }
+}
+
 // ------------------------------------------------------------ notes, context
 
 /// Writing or saying what happened: a call, what was solved, what was
@@ -1411,6 +1836,14 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
             palette.secondary,
         );
         ui.add_space(6.0);
+        let options = [
+            (crate::projects::NoteKind::Log, gettext(locale, "What happened").into_owned()),
+            (crate::projects::NoteKind::Memo, gettext(locale, "Note to keep").into_owned()),
+        ];
+        if let Some(kind) = segmented(ui, &palette, &options, state.note_kind) {
+            state.note_kind = kind;
+        }
+        ui.add_space(4.0);
         Frame::new()
             .fill(palette.surface)
             .corner_radius(CornerRadius::same(theme::RADIUS + 2))
@@ -1503,7 +1936,7 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
     });
     if save {
         let mut journal = Journal::load(&app.dirs.config, &project.id);
-        journal.add(&state.note, false);
+        journal.add_kind(&state.note, false, state.note_kind);
         if let Err(error) = journal.save(&app.dirs.config, &project.id) {
             log::warn!("projects: the journal could not be saved: {error}");
         }
@@ -1528,6 +1961,21 @@ fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                     ui.set_width(ui.available_width().min(760.0));
                     note_card(app, ui, state, project);
                     ui.add_space(14.0);
+                    let mut filter = state.notes_filter;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (value, label) in [
+                            (None, gettext(locale, "Everything")),
+                            (Some(crate::projects::NoteKind::Log), gettext(locale, "What happened")),
+                            (Some(crate::projects::NoteKind::Memo), gettext(locale, "Notes to keep")),
+                        ] {
+                            if widgets::filter_chip(ui, &palette, label.as_ref(), 0, filter == value).clicked() {
+                                filter = value;
+                            }
+                        }
+                    });
+                    state.notes_filter = filter;
+                    ui.add_space(6.0);
                     if notes.notes.is_empty() {
                         widgets::empty_state(
                             ui,
@@ -1538,7 +1986,13 @@ fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                         );
                     }
                     let mut day = String::new();
-                    for (index, note) in notes.notes.iter().enumerate().rev() {
+                    for (index, note) in notes
+                        .notes
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .filter(|(_, note)| filter.is_none_or(|kind| kind == note.kind))
+                    {
                         let label = crate::util::day_label(locale, note.at);
                         if label != day {
                             day_chip(ui, &palette, &label);
@@ -1555,6 +2009,9 @@ fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                     palette.dim,
                                 );
                                 theme::text(ui, crate::util::clock(note.at), theme::regular(12.0), palette.dim);
+                                if note.kind == crate::projects::NoteKind::Memo {
+                                    chip(ui, gettext(locale, "Note to keep").as_ref(), palette.accent);
+                                }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if theme::icon_button(
                                         ui,
@@ -1667,6 +2124,7 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
     let mut add: Option<Member> = None;
     let mut remove = None;
     let mut roles: Vec<(usize, String)> = Vec::new();
+    let mut abouts: Vec<(usize, String)> = Vec::new();
     egui::ScrollArea::vertical()
         .id_salt(("project-context", &project.id))
         .auto_shrink([false, false])
@@ -1724,7 +2182,7 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                         let first = name.split_whitespace().next().unwrap_or(&name).to_owned();
                                         draft.push_str(&format!("@{first} "));
                                         if !project.members.iter().any(|m| m.id == id) {
-                                            add = Some(Member { id: id.clone(), name: name.clone(), role: String::new() });
+                                            add = Some(Member { id: id.clone(), name: name.clone(), ..Member::default() });
                                         }
                                     }
                                 });
@@ -1794,7 +2252,31 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                     }
                                 });
                             });
-                            ui.add_space(4.0);
+                            // Who they are, in a few lines, for the analysis.
+                            let key = egui::Id::new(("about", &project.id, &member.id));
+                            let mut about = ui
+                                .ctx()
+                                .data(|d| d.get_temp::<String>(key))
+                                .unwrap_or_else(|| member.about.clone());
+                            ui.horizontal(|ui| {
+                                ui.add_space(40.0);
+                                let field = ui.add(
+                                    egui::TextEdit::multiline(&mut about)
+                                        .hint_text(gettext(locale, "Who they are: what they do, how to deal with them, what they care about…").as_ref())
+                                        .font(theme::regular(13.0))
+                                        .desired_rows(1)
+                                        .desired_width(ui.available_width()),
+                                );
+                                if field.lost_focus() {
+                                    ui.ctx().data_mut(|d| d.remove_temp::<String>(key));
+                                    if about != member.about {
+                                        abouts.push((index, about.clone()));
+                                    }
+                                } else if field.changed() {
+                                    ui.ctx().data_mut(|d| d.insert_temp(key, about.clone()));
+                                }
+                            });
+                            ui.add_space(8.0);
                         }
                         ui.add_space(4.0);
                         let width = ui.available_width();
@@ -1819,7 +2301,7 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                     }
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         if pill_button(ui, &palette, gettext(locale, "Add").as_ref(), false).clicked() {
-                                            add = Some(Member { id: id.clone(), name: name.clone(), role: String::new() });
+                                            add = Some(Member { id: id.clone(), name: name.clone(), ..Member::default() });
                                         }
                                     });
                                 });
@@ -1842,6 +2324,12 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
         for (index, role) in roles {
             if let Some(member) = project.members.get_mut(index) {
                 member.role = role.trim().to_owned();
+                changed = true;
+            }
+        }
+        for (index, about) in abouts {
+            if let Some(member) = project.members.get_mut(index) {
+                member.about = about.trim().to_owned();
                 changed = true;
             }
         }
@@ -1892,6 +2380,53 @@ fn messages(
     let archive: PathBuf = app.account().dirs.archive_db();
     let (all, loading, error) = state.feed.get(ui.ctx(), &archive, key);
 
+    // A finding's origin: say which, and let it go.
+    let highlight = state.highlight.clone();
+    if let Some(origin) = &highlight {
+        let mut clear = false;
+        Frame::new()
+            .fill(palette.warning.gamma_multiply(0.12))
+            .corner_radius(CornerRadius::same(theme::RADIUS + 4))
+            .inner_margin(Margin::symmetric(12, 8))
+            .outer_margin(Margin {
+                left: 20,
+                right: 20,
+                top: 10,
+                bottom: 0,
+            })
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    theme::icon(ui, Icon::MessageCircle, 15.0, palette.warning);
+                    ui.set_max_width(ui.available_width() - 30.0);
+                    theme::text(
+                        ui,
+                        gettext(locale, "Where it came from: {finding}")
+                            .replace("{finding}", &origin.text),
+                        theme::medium(13.0),
+                        palette.text,
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if theme::icon_button(
+                            ui,
+                            Icon::X,
+                            14.0,
+                            palette.secondary,
+                            palette.text,
+                            &gettext(locale, "Clear"),
+                        )
+                        .clicked()
+                        {
+                            clear = true;
+                        }
+                    });
+                });
+            });
+        if clear {
+            state.highlight = None;
+        }
+    }
     // The bar: range, whose messages, and one source alone.
     let mut days = state.days;
     let mut show_all = state.show_all;
@@ -2004,7 +2539,7 @@ fn messages(
         egui::ScrollArea::vertical()
             .id_salt(("project-feed", &project.id, &state.only_chat))
             .auto_shrink([false, false])
-            .stick_to_bottom(true)
+            .stick_to_bottom(highlight.is_none())
             .show(&mut list_ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 ui.add_space(4.0);
@@ -2017,7 +2552,27 @@ fn messages(
                     }
                     let key = (message.chat.clone(), message.id.clone());
                     let selected = state.selected.contains(&key);
-                    match feed_row(app, ui, message, shade(&message.chat), *inclusion, selected) {
+                    let mark = highlight.as_ref().map_or(0, |h| {
+                        if h.chat == message.chat && h.message == message.id {
+                            2
+                        } else if h.chat == message.chat && (message.timestamp - h.at).abs() <= 1800
+                        {
+                            1
+                        } else {
+                            0
+                        }
+                    });
+                    let scroll = mark == 2 && highlight.as_ref().is_some_and(|h| h.scroll);
+                    match feed_row(
+                        app,
+                        ui,
+                        message,
+                        shade(&message.chat),
+                        *inclusion,
+                        selected,
+                        mark,
+                        scroll,
+                    ) {
                         RowClick::Toggle => toggle = Some(key),
                         RowClick::Open => open = Some(message.chat.clone()),
                         RowClick::None => {}
@@ -2025,6 +2580,9 @@ fn messages(
                 }
                 ui.add_space(16.0);
             });
+        if let Some(origin) = state.highlight.as_mut() {
+            origin.scroll = false;
+        }
         if let Some(key) = toggle
             && !state.selected.remove(&key)
         {
@@ -2158,6 +2716,7 @@ enum RowClick {
     Open,
 }
 
+#[allow(clippy::too_many_arguments)]
 /// One message: a box to select it, its chat and sender, when, what it
 /// says, and whether it belongs. Messages outside the project are dimmed.
 fn feed_row(
@@ -2167,6 +2726,8 @@ fn feed_row(
     color: Color32,
     inclusion: Inclusion,
     selected: bool,
+    mark: u8,
+    scroll: bool,
 ) -> RowClick {
     let palette = app.palette;
     let locale = app.locale;
@@ -2284,6 +2845,25 @@ fn feed_row(
             });
         });
     let rect = inner.response.rect;
+    // Where a finding came from: the message itself, and the talk around it.
+    if mark > 0 {
+        let band = rect.shrink2(vec2(8.0, 0.0));
+        ui.painter().rect_filled(
+            band,
+            CornerRadius::same(theme::RADIUS + 2),
+            palette
+                .warning
+                .gamma_multiply(if mark == 2 { 0.20 } else { 0.08 }),
+        );
+        ui.painter().rect_filled(
+            Rect::from_min_size(band.min, vec2(3.0, band.height())),
+            CornerRadius::same(2),
+            palette.warning,
+        );
+        if scroll {
+            ui.scroll_to_rect(rect, Some(Align::Center));
+        }
+    }
     if selected {
         ui.painter().rect_filled(
             rect.shrink2(vec2(8.0, 0.0)),

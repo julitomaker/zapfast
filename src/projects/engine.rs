@@ -489,15 +489,16 @@ fn prompt(
         text.push_str("Integrantes:\n");
         for member in &project.members {
             let phone = member.id.split('@').next().unwrap_or("");
-            if member.role.trim().is_empty() {
-                text.push_str(&format!("- {} ({phone})\n", member.name));
-            } else {
-                text.push_str(&format!(
-                    "- {}: {} ({phone})\n",
-                    member.name,
-                    member.role.trim()
-                ));
+            let mut line = format!("- {}", member.name);
+            if !member.role.trim().is_empty() {
+                line.push_str(&format!(": {}", member.role.trim()));
             }
+            line.push_str(&format!(" ({phone})"));
+            if !member.about.trim().is_empty() {
+                line.push_str(&format!(". {}", clip(member.about.trim())));
+            }
+            text.push_str(&line);
+            text.push('\n');
         }
         text.push('\n');
     }
@@ -507,9 +508,17 @@ fn prompt(
         .filter(|note| now - note.at < 30 * 86_400)
         .collect();
     if !recent.is_empty() {
-        text.push_str("Notas del dueño (bitácora, la más nueva al final):\n");
+        text.push_str("Notas del dueño (bitácora y apuntes, la más nueva al final):\n");
         for note in recent.iter().rev().take(40).rev() {
-            text.push_str(&format!("- {}: {}\n", stamp(note.at), clip(&note.text)));
+            let kind = match note.kind {
+                super::NoteKind::Log => "pasó",
+                super::NoteKind::Memo => "apunte",
+            };
+            text.push_str(&format!(
+                "- {} ({kind}): {}\n",
+                stamp(note.at),
+                clip(&note.text)
+            ));
         }
         text.push('\n');
     }
@@ -520,7 +529,10 @@ fn prompt(
             .rev()
             .filter(|f| verdicts.contains(&f.verdict))
             .take(40)
-            .map(|f| format!("- {}", clip(&f.text)))
+            .map(|f| match &f.note {
+                Some(note) => format!("- {} (cómo se resolvió: {})", clip(&f.text), clip(note)),
+                None => format!("- {}", clip(&f.text)),
+            })
             .collect()
     };
     for (title, kinds) in [
