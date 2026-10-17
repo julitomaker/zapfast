@@ -41,6 +41,8 @@ pub enum Provider {
     Anthropic,
     OpenAi,
     OpenRouter,
+    /// Google's Gemini API, with a key from Google AI Studio.
+    GeminiApi,
 }
 
 /// A model worth suggesting, with why.
@@ -55,7 +57,7 @@ const fn suggest(id: &'static str, note: &'static str) -> Suggestion {
 }
 
 impl Provider {
-    pub const EVERY: [Self; 7] = [
+    pub const EVERY: [Self; 8] = [
         Self::Off,
         Self::ClaudeCode,
         Self::CodexCli,
@@ -63,6 +65,7 @@ impl Provider {
         Self::Anthropic,
         Self::OpenAi,
         Self::OpenRouter,
+        Self::GeminiApi,
     ];
 
     pub fn label(self) -> &'static str {
@@ -74,11 +77,15 @@ impl Provider {
             Self::Anthropic => "Anthropic API",
             Self::OpenAi => "OpenAI API",
             Self::OpenRouter => "OpenRouter",
+            Self::GeminiApi => "Gemini API",
         }
     }
 
     pub fn needs_key(self) -> bool {
-        matches!(self, Self::Anthropic | Self::OpenAi | Self::OpenRouter)
+        matches!(
+            self,
+            Self::Anthropic | Self::OpenAi | Self::OpenRouter | Self::GeminiApi
+        )
     }
 
     /// The command-line tool it runs, for the providers that use a
@@ -121,6 +128,10 @@ impl Provider {
             suggest("claude-haiku-5-5", "Claude Haiku 5.5: the cheapest"),
         ];
         const OPENAI: &[Suggestion] = &[suggest("gpt-5", "GPT-5")];
+        const GEMINI_API: &[Suggestion] = &[
+            suggest("gemini-2.5-pro", "Gemini Pro: the most capable"),
+            suggest("gemini-2.5-flash", "Gemini Flash: faster, lighter"),
+        ];
         const OPENROUTER: &[Suggestion] = &[
             suggest(
                 "anthropic/claude-opus-5.5",
@@ -139,6 +150,7 @@ impl Provider {
             Self::Anthropic => ANTHROPIC,
             Self::OpenAi => OPENAI,
             Self::OpenRouter => OPENROUTER,
+            Self::GeminiApi => GEMINI_API,
         }
     }
 
@@ -209,7 +221,15 @@ impl EngineConfig {
 
 /// Keeps `key` for `provider` in the OS keyring (an empty key removes it).
 pub fn set_key(provider: Provider, key: &str) -> anyhow::Result<()> {
-    crate::keys::set(&format!("{provider:?}"), key)
+    crate::keys::set(&key_account(provider), key)
+}
+
+/// The keyring account of `provider`'s key: the name media uses too.
+fn key_account(provider: Provider) -> String {
+    match provider {
+        Provider::GeminiApi => "Gemini".to_owned(),
+        other => format!("{other:?}"),
+    }
 }
 
 pub fn has_key(provider: Provider) -> bool {
@@ -217,7 +237,7 @@ pub fn has_key(provider: Provider) -> bool {
 }
 
 fn key(provider: Provider) -> Option<String> {
-    crate::keys::get(&format!("{provider:?}"))
+    crate::keys::get(&key_account(provider))
 }
 
 // ---------------------------------------------------------------- status
@@ -664,6 +684,38 @@ fn complete(
                 .collect::<Vec<_>>()
                 .join(""))
         }
+        Provider::GeminiApi => {
+            let key = key(Provider::GeminiApi)
+                .ok_or_else(|| anyhow::anyhow!("Add your Gemini API key"))?;
+            let body = serde_json::json!({
+                "system_instruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {"responseMimeType": "application/json"},
+            });
+            let response = http()?
+                .post(format!(
+                    "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+                ))
+                .header("x-goog-api-key", key)
+                .header("content-type", "application/json")
+                .body(serde_json::to_vec(&body)?)
+                .send()?
+                .bytes()?;
+            let response: serde_json::Value = serde_json::from_slice(&response)?;
+            if let Some(error) = response.get("error") {
+                anyhow::bail!(
+                    "Gemini API: {}",
+                    error["message"].as_str().unwrap_or("error")
+                );
+            }
+            Ok(response["candidates"][0]["content"]["parts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|part| part["text"].as_str())
+                .collect::<Vec<_>>()
+                .join(""))
+        }
         Provider::OpenAi | Provider::OpenRouter => {
             let provider = settings.provider;
             let key = key(provider)
@@ -768,6 +820,16 @@ fn cli(provider: Provider, model: &str, system: &str, user: &str) -> anyhow::Res
         .ok_or_else(|| anyhow::anyhow!("{} did not take the prompt", provider.label()))?
         .write_all(input.as_bytes())?;
     let output = child.wait_with_output()?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if provider == Provider::GeminiCli && said.contains("no longer supported") {
+        anyhow::bail!(
+            "Google no longer lets personal accounts sign in to Gemini CLI. Choose Gemini API with a key from Google AI Studio."
+        );
+    }
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         let detail = detail
@@ -912,6 +974,12 @@ fn fetch_models(provider: Provider) -> anyhow::Result<Vec<String>> {
             .get("https://api.openai.com/v1/models")
             .bearer_auth(key(provider).ok_or_else(|| anyhow::anyhow!("Add your key first"))?),
         Provider::OpenRouter => client.get("https://openrouter.ai/api/v1/models"),
+        Provider::GeminiApi => client
+            .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+            .header(
+                "x-goog-api-key",
+                key(provider).ok_or_else(|| anyhow::anyhow!("Add your key first"))?,
+            ),
         _ => return Ok(Vec::new()),
     };
     let body = request.send()?.bytes()?;
@@ -923,6 +991,25 @@ fn fetch_models(provider: Provider) -> anyhow::Result<Vec<String>> {
                 .as_str()
                 .unwrap_or("the models could not be listed")
         );
+    }
+    // Google lists `models`, named `models/<id>`, with what each can do.
+    if provider == Provider::GeminiApi {
+        let mut ids: Vec<String> = reply["models"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|model| {
+                model["supportedGenerationMethods"]
+                    .as_array()
+                    .is_some_and(|methods| methods.iter().any(|m| m == "generateContent"))
+            })
+            .filter_map(|model| model["name"].as_str())
+            .map(|name| name.trim_start_matches("models/").to_owned())
+            .filter(|id| id.starts_with("gemini"))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        return Ok(ids);
     }
     let mut ids: Vec<String> = reply["data"]
         .as_array()

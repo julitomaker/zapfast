@@ -3400,3 +3400,51 @@ msgstr "Gemini CLI está instalado: describe las imágenes y lee su texto con tu
 
 msgid "macOS reads the text in pictures on this computer, free. Install Claude Code, Codex or Gemini CLI to also get descriptions."
 msgstr "macOS lee el texto de las imágenes en esta computadora, gratis. Instalá Claude Code, Codex o Gemini CLI para tener también descripciones."
+
+#: src/ui/projects.rs
+msgid "Whats Pro: sign in with your {account} account. Follow the steps (a browser window may open)."
+msgstr "Whats Pro: iniciá sesión con tu cuenta de {account}. Seguí los pasos (puede abrirse el navegador)."
+
+#: src/ui/projects.rs
+msgid "Done. You can close this window and go back to Whats Pro."
+msgstr "Listo. Ya podés cerrar esta ventana y volver a Whats Pro."
+
+#: src/ui/projects.rs
+msgid "Signed in."
+msgstr "Sesión iniciada."
+
+#: src/ui/projects.rs
+msgid "Waiting for you to sign in in the Terminal and the browser…"
+msgstr "Esperando que inicies sesión en la Terminal y el navegador…"
+
+#: src/ui/projects.rs
+msgid "Sign in again"
+msgstr "Volver a iniciar sesión"
+
+#: src/ui/projects.rs
+msgid "It answers. The analysis is ready to run."
+msgstr "Responde. El análisis está listo para correr."
+
+#: src/ui/projects.rs
+msgid "Asks it for one word to confirm everything works."
+msgstr "Le pide una palabra para confirmar que todo funciona."
+
+#: src/ui/projects.rs
+msgid "The analysis is off: choose an engine below."
+msgstr "El análisis está desactivado: elegí un motor abajo."
+
+#: src/ui/projects.rs
+msgid "Ready: {engine} is connected and analyzes your projects."
+msgstr "Listo: {engine} está conectado y analiza tus proyectos."
+
+#: src/ui/projects.rs
+msgid "{engine} is chosen. Finish the steps below to connect it."
+msgstr "Elegiste {engine}. Completá los pasos de abajo para conectarlo."
+
+#: src/ui/projects.rs
+msgid "Google no longer lets personal accounts use Gemini this way; for Gemini, use Gemini API below (Google AI Studio gives free keys)."
+msgstr "Google ya no deja usar Gemini así con cuentas personales; para Gemini usá Gemini API abajo (Google AI Studio da keys gratis)."
+
+#: src/ui/projects.rs
+msgid "Google no longer lets personal accounts sign in to Gemini CLI. Choose Gemini API with a key from Google AI Studio."
+msgstr "Google ya no deja iniciar sesión en Gemini CLI con cuentas personales. Elegí Gemini API con una key de Google AI Studio."

@@ -2297,7 +2297,6 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
         .as_ref(),
         |_| {},
     );
-    let mut save = false;
     let mut save_key = false;
     let ctx = ui.ctx().clone();
     let config_dir = app.dirs.config.clone();
@@ -2310,6 +2309,43 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width().min(680.0));
                     ui.spacing_mut().item_spacing.y = 12.0;
+                    // Where things stand, in one line.
+                    let connected = matches!(engine::tested(draft.provider), Some(Ok(_)));
+                    let (icon, color, line) = if draft.provider == Provider::Off {
+                        (
+                            Icon::CircleAlert,
+                            palette.secondary,
+                            gettext(locale, "The analysis is off: choose an engine below.").into_owned(),
+                        )
+                    } else if connected {
+                        (
+                            Icon::CircleCheck,
+                            palette.accent,
+                            gettext(locale, "Ready: {engine} is connected and analyzes your projects.")
+                                .replace("{engine}", draft.provider.label()),
+                        )
+                    } else {
+                        (
+                            Icon::Clock,
+                            palette.warning,
+                            gettext(locale, "{engine} is chosen. Finish the steps below to connect it.")
+                                .replace("{engine}", draft.provider.label()),
+                        )
+                    };
+                    Frame::new()
+                        .fill(color.gamma_multiply(0.12))
+                        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.5)))
+                        .corner_radius(CornerRadius::same(theme::RADIUS + 6))
+                        .inner_margin(Margin::symmetric(14, 12))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                theme::icon(ui, icon, 18.0, color);
+                                ui.set_max_width(ui.available_width() - 150.0);
+                                wrapped(ui, &line, theme::medium(14.0), palette.text);
+                            });
+                        });
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         card_title(
@@ -2347,13 +2383,24 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                         pick(
                             ui,
                             gettext(locale, "With your subscription, no key").as_ref(),
-                            &[Provider::ClaudeCode, Provider::CodexCli, Provider::GeminiCli],
+                            &[Provider::ClaudeCode, Provider::CodexCli],
+                        );
+                        theme::text(
+                            ui,
+                            gettext(locale, "Google no longer lets personal accounts use Gemini this way; for Gemini, use Gemini API below (Google AI Studio gives free keys)."),
+                            theme::regular(12.0),
+                            palette.dim,
                         );
                         ui.add_space(4.0);
                         pick(
                             ui,
                             gettext(locale, "With an API key, paid by use").as_ref(),
-                            &[Provider::Anthropic, Provider::OpenAi, Provider::OpenRouter],
+                            &[
+                                Provider::Anthropic,
+                                Provider::OpenAi,
+                                Provider::GeminiApi,
+                                Provider::OpenRouter,
+                            ],
                         );
                         ui.add_space(4.0);
                         pick(ui, "", &[Provider::Off]);
@@ -2368,7 +2415,7 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                             return;
                         }
                         if let Some(tool) = draft.provider.tool() {
-                            tool_setup(&ctx, ui, &palette, locale, tool);
+                            tool_setup(&ctx, ui, &palette, locale, tool, &config_dir, &draft);
                         } else {
                             let has = engine::has_key(draft.provider);
                             ui.horizontal(|ui| {
@@ -2411,8 +2458,10 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                         {
                             draft.model = model;
                         }
-                        ui.add_space(6.0);
-                        connection_test(&ctx, ui, &palette, locale, &config_dir, &draft);
+                        if draft.provider.tool().is_none() {
+                            ui.add_space(6.0);
+                            connection_test(&ctx, ui, &palette, locale, &config_dir, &draft);
+                        }
                     });
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -2458,12 +2507,6 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                     });
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
-                        if draft != saved
-                            && pill_button(ui, &palette, gettext(locale, "Save").as_ref(), true)
-                                .clicked()
-                        {
-                            save = true;
-                        }
                         if saved.provider != Provider::Off
                             && status.running.is_none()
                             && pill_button(
@@ -2506,14 +2549,13 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
         // The list of models needs the key.
         let _ = engine::models(&ctx, draft.provider, true);
     }
-    if save {
-        if let Err(error) = draft.save(&app.dirs.config) {
-            log::warn!("analysis: settings could not be saved: {error}");
-        }
-        state.engine_draft = None;
-    } else {
-        state.engine_draft = (draft != saved).then_some(draft);
+    // Every choice is kept as it is made.
+    if draft != saved
+        && let Err(error) = draft.save(&app.dirs.config)
+    {
+        log::warn!("analysis: settings could not be saved: {error}");
     }
+    state.engine_draft = None;
 }
 
 /// Where each API's keys are made.
@@ -2522,6 +2564,7 @@ fn key_page(provider: Provider) -> Option<&'static str> {
         Provider::Anthropic => Some("https://console.anthropic.com/settings/keys"),
         Provider::OpenAi => Some("https://platform.openai.com/api-keys"),
         Provider::OpenRouter => Some("https://openrouter.ai/keys"),
+        Provider::GeminiApi => Some("https://aistudio.google.com/apikey"),
         _ => None,
     }
 }
@@ -2585,8 +2628,30 @@ fn tool_setup(
     palette: &theme::Palette,
     locale: crate::i18n::Locale,
     tool: crate::ai_tools::Tool,
+    config: &std::path::Path,
+    draft: &EngineConfig,
 ) {
     use crate::ai_tools;
+    let tested = engine::tested(draft.provider);
+    let connected = matches!(tested, Some(Ok(_)));
+    let testing = matches!(tested, Some(Err(ref e)) if e.is_empty());
+    // After Sign in, the connection is tried every few seconds for three
+    // minutes, so the steps tick themselves once the person is in.
+    let started_id = egui::Id::new(("sign-in-started", tool.binary()));
+    let tried_id = egui::Id::new(("sign-in-tried", tool.binary()));
+    let now = ctx.input(|input| input.time);
+    let started = ctx.data(|data| data.get_temp::<f64>(started_id));
+    let waiting = !connected && started.is_some_and(|at| now - at < 180.0);
+    if waiting {
+        let tried = ctx
+            .data(|data| data.get_temp::<f64>(tried_id))
+            .unwrap_or(0.0);
+        if !testing && now - tried >= 6.0 {
+            ctx.data_mut(|data| data.insert_temp(tried_id, now));
+            engine::test(ctx, config, draft);
+        }
+        ctx.request_repaint_after(std::time::Duration::from_secs(1));
+    }
     let installed = ai_tools::installed(tool);
     let job = ai_tools::job(tool);
     let running = job.as_ref().is_some_and(|job| job.running);
@@ -2634,19 +2699,52 @@ fn tool_setup(
         }
     }
     let sign_in_error = egui::Id::new(("sign-in-error", tool.binary()));
+    let sign_in_detail = if connected {
+        gettext(locale, "Signed in.").into_owned()
+    } else if waiting {
+        gettext(
+            locale,
+            "Waiting for you to sign in in the Terminal and the browser…",
+        )
+        .into_owned()
+    } else {
+        gettext(locale, "Opens the Terminal on its sign-in. Follow it in the browser, then close the window. Only once.").into_owned()
+    };
     step(
         ui,
         palette,
         2,
-        false,
-        &gettext(locale, "Sign in with your {account} account").replace("{account}", tool.account()),
-        gettext(locale, "Opens the Terminal on its sign-in. Follow it in the browser, then close the window. Only once.").as_ref(),
+        connected,
+        &gettext(locale, "Sign in with your {account} account")
+            .replace("{account}", tool.account()),
+        &sign_in_detail,
         |ui| {
-            if installed
-                && pill_button(ui, palette, gettext(locale, "Sign in").as_ref(), false).clicked()
+            if waiting {
+                ui.add(egui::Spinner::new().size(18.0).color(palette.accent));
+            } else if installed
+                && pill_button(
+                    ui,
+                    palette,
+                    if connected {
+                        gettext(locale, "Sign in again")
+                    } else {
+                        gettext(locale, "Sign in")
+                    }
+                    .as_ref(),
+                    !connected,
+                )
+                .clicked()
             {
-                let result = ai_tools::sign_in(tool).err();
-                ui.ctx().data_mut(|data| data.insert_temp(sign_in_error, result));
+                let result = ai_tools::sign_in(tool, locale).err();
+                if result.is_none() {
+                    let now = ui.ctx().input(|input| input.time);
+                    ui.ctx().data_mut(|data| {
+                        data.insert_temp(started_id, now);
+                        data.insert_temp(tried_id, now);
+                    });
+                }
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(sign_in_error, result));
             }
         },
     );
@@ -2656,6 +2754,28 @@ fn tool_setup(
     {
         wrapped(ui, &error, theme::regular(12.5), palette.danger);
     }
+    let check_detail = match &tested {
+        Some(Ok(_)) => gettext(locale, "It answers. The analysis is ready to run.").into_owned(),
+        Some(Err(error)) if !error.is_empty() && !waiting => error.clone(),
+        _ => gettext(locale, "Asks it for one word to confirm everything works.").into_owned(),
+    };
+    step(
+        ui,
+        palette,
+        3,
+        connected,
+        gettext(locale, "Test the connection").as_ref(),
+        &check_detail,
+        |ui| {
+            if testing {
+                ui.add(egui::Spinner::new().size(18.0).color(palette.accent));
+            } else if installed
+                && pill_button(ui, palette, gettext(locale, "Test").as_ref(), false).clicked()
+            {
+                engine::test(ctx, config, draft);
+            }
+        },
+    );
 }
 
 /// Asks the chosen engine for one word and says whether it answered.

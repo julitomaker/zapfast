@@ -287,7 +287,7 @@ fn shell_quote(text: &str) -> String {
 /// The script the Terminal runs to sign in to `tool`. It is opened as a
 /// file rather than typed: a typed command this long would be cut off by
 /// the terminal's line limit.
-pub fn sign_in_script(tool: Tool) -> Option<String> {
+pub fn sign_in_script(tool: Tool, locale: crate::i18n::Locale) -> Option<String> {
     let binary = find(tool.binary())?;
     let mut run = shell_quote(&binary.to_string_lossy());
     for arg in tool.sign_in_args() {
@@ -304,17 +304,23 @@ pub fn sign_in_script(tool: Tool) -> Option<String> {
          echo\n\
          echo {done}\n",
         path = shell_quote(&path().to_string_lossy()),
-        intro = shell_quote(&format!(
-            "Whats Pro: sign in with your {} account. Follow the steps (a browser window may open).",
-            tool.account()
+        intro = shell_quote(
+            &crate::i18n::gettext(
+                locale,
+                "Whats Pro: sign in with your {account} account. Follow the steps (a browser window may open).",
+            )
+            .replace("{account}", tool.account())
+        ),
+        done = shell_quote(&crate::i18n::gettext(
+            locale,
+            "Done. You can close this window and go back to Whats Pro."
         )),
-        done = shell_quote("Done. You can close this window and go back to Whats Pro."),
     ))
 }
 
 /// Opens the Terminal on `tool`'s sign-in.
-pub fn sign_in(tool: Tool) -> Result<(), String> {
-    let script = sign_in_script(tool).ok_or("The tool is not installed yet")?;
+pub fn sign_in(tool: Tool, locale: crate::i18n::Locale) -> Result<(), String> {
+    let script = sign_in_script(tool, locale).ok_or("The tool is not installed yet")?;
     let file = tools_dir().join(format!("sign-in-{}.command", tool.binary()));
     std::fs::create_dir_all(tools_dir()).map_err(|e| e.to_string())?;
     std::fs::write(&file, script).map_err(|e| e.to_string())?;
@@ -377,7 +383,7 @@ mod tests {
 
     #[test]
     fn the_sign_in_script_runs_the_tool_with_its_path() {
-        let Some(script) = sign_in_script(Tool::Codex) else {
+        let Some(script) = sign_in_script(Tool::Codex, crate::i18n::Locale::English) else {
             return;
         };
         assert!(script.starts_with("#!/bin/bash\nexport PATH='"));
