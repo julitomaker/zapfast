@@ -11,6 +11,10 @@ pub use fastframe_update::{
 };
 use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 
+/// This is a fork built from source: an upstream release would replace it, so
+/// it never checks for or downloads updates. Pull upstream changes with git.
+pub const ENABLED: bool = false;
+
 /// ZapFast's releases and the names its installations have had.
 pub const CONFIG: UpdateConfig = UpdateConfig {
     // Cask and bundle names from before the rename. This also accepts

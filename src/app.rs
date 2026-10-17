@@ -5636,7 +5636,8 @@ impl App {
         self.toasts.retain(|toast| {
             toast.kind == ToastKind::Error || toast.created.elapsed() < INFO_TOAST_LIFETIME
         });
-        if self.settings.check_for_updates
+        if crate::updates::ENABLED
+            && self.settings.check_for_updates
             && !self.backend.is_offline()
             && self
                 .last_update_check
@@ -5682,7 +5683,8 @@ impl App {
     }
 
     fn maybe_download_update(&mut self) {
-        if !self.settings.check_for_updates
+        if !crate::updates::ENABLED
+            || !self.settings.check_for_updates
             || !self.settings.download_updates_automatically
             || self.update.is_none()
             || !matches!(self.update_download, crate::updates::DownloadState::Idle)
