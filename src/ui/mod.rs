@@ -13,6 +13,7 @@ pub mod image_preview;
 pub mod info;
 pub mod keys;
 pub mod labels;
+pub mod leads;
 pub mod locations;
 pub mod lock;
 pub mod login;

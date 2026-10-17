@@ -23,12 +23,14 @@ pub mod capabilities;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
 pub mod diagnostics;
+pub mod eleva;
 pub mod emoji;
 pub mod geo;
 pub mod i18n;
 pub mod image_cache;
 pub mod image_preview;
 pub mod keys;
+pub mod leads;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod markup;

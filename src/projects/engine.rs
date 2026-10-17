@@ -767,6 +767,13 @@ fn http() -> anyhow::Result<reqwest::blocking::Client> {
         .build()?)
 }
 
+/// One question to the analysis's provider and model, for pages other
+/// than the analysis (the Leads tab's chat summary). Blocks: call it off
+/// the interface thread.
+pub fn ask(config: &Path, system: &str, user: &str) -> anyhow::Result<String> {
+    complete(config, &EngineConfig::load(config), system, user)
+}
+
 fn complete(
     _config: &Path,
     settings: &EngineConfig,

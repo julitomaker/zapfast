@@ -51,6 +51,7 @@ enum Selection {
 enum Tab {
     #[default]
     Panel,
+    Leads,
     Journal,
     History,
     Context,
@@ -815,6 +816,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             });
         }
     }
+    if let Some((project, leads_tab, lead)) = super::leads::take_request() {
+        state.tab = if leads_tab { Tab::Leads } else { Tab::Panel };
+        super::leads::select(ui.ctx(), &project, lead);
+        state.selection = Some(Selection::Project(project));
+        state.picked = true;
+    }
     if state.adding {
         new_project(app, ui, &mut state);
         return;
@@ -956,6 +963,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
                 (Tab::Context, gettext(locale, "Context")),
                 (Tab::History, gettext(locale, "History")),
                 (Tab::Journal, gettext(locale, "Notes")),
+                (Tab::Leads, gettext(locale, "Leads")),
                 (Tab::Panel, gettext(locale, "Panel")),
             ] {
                 if widgets::filter_chip(ui, &palette, label.as_ref(), 0, tab == value).clicked() {
@@ -979,6 +987,7 @@ fn project(app: &mut App, ui: &mut egui::Ui, state: &mut State, id: &str) {
     }
     match state.tab {
         Tab::Panel => panel(app, ui, state, &project, analysis.as_ref(), &ticks),
+        Tab::Leads => super::leads::tab(app, ui, &project),
         Tab::Journal => journal(app, ui, state, &project),
         Tab::History => history(app, ui, state, &project, &ticks),
         Tab::Context => context(app, ui, state, &project),
@@ -1444,7 +1453,22 @@ fn panel(
     let palette = app.palette;
     let locale = app.locale;
     let Some(analysis) = analysis else {
-        no_analysis(app, ui, state, project);
+        if super::leads::has_cards(app, project) {
+            egui::ScrollArea::vertical()
+                .id_salt(("project-panel-sales", &project.id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    Frame::new()
+                        .inner_margin(Margin::symmetric(20, 16))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            sales_cards(app, ui, state, project);
+                        });
+                    no_analysis(app, ui, state, project);
+                });
+        } else {
+            no_analysis(app, ui, state, project);
+        }
         return;
     };
     let open = |list: &[Finding]| list.iter().filter(|f| ticks.open(&f.id)).count();
@@ -1507,6 +1531,7 @@ fn panel(
                         metric(&mut columns[3], &palette, Icon::Bell, gettext(locale, "New needs").as_ref(), open(&analysis.needs), palette.accent);
                     });
                     ui.add_space(12.0);
+                    sales_cards(app, ui, state, project);
                     let left = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>, pending: &mut Option<Pending>| {
                         findings_card(app, ui, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), palette.danger, &analysis.leaks, ticks, true, gettext(locale, "Nothing is slipping.").as_ref(), action, pending);
                         findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &analysis.todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action, pending);
@@ -1652,6 +1677,17 @@ fn show_origin(state: &mut State, finding: &Finding) {
         scroll: true,
     });
     state.tab = Tab::Messages;
+}
+
+/// The Leads tab's cards (sales, and the ElevaLeads brand's inbox); one of
+/// them may open the tab on a lead.
+fn sales_cards(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
+    if let Some(super::leads::PanelEvent::OpenLeads(lead)) =
+        super::leads::panel_cards(app, ui, project)
+    {
+        super::leads::select(ui.ctx(), &project.id, lead);
+        state.tab = Tab::Leads;
+    }
 }
 
 /// The panel before the first analysis: what it will show, and how to turn

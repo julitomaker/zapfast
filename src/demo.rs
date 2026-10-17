@@ -2530,6 +2530,9 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.typing.clear();
                 app.scroll_to_bottom = true;
             }
+            "leads" => leads_sample(app, true),
+            "leads-panel" => leads_sample(app, false),
+            "es" => app.locale = crate::i18n::Locale::Spanish,
             "settings" => app.page = Page::Settings,
             choice if choice.starts_with("settings-search=") => {
                 app.page = Page::Settings;
@@ -3959,6 +3962,148 @@ fn call_entries(now: i64) -> Vec<Message> {
         entry.status = Delivery::None;
     }
     entries
+}
+
+/// A sales project: leads in every stage, one linked to ElevaLeads, and the
+/// brand's inbox as it would read, on the Leads tab or on the panel.
+fn leads_sample(app: &mut App, leads_tab: bool) {
+    use crate::eleva::{Inbox, Situation, Waiting};
+    use crate::leads::{Brand, ElevaCustomer, Kind, Lead, Leads, Stage};
+    let config = app.dirs.config.clone();
+    let mut map = crate::projects::ProjectMap::default();
+    let project = map.add("Blackyak Labs");
+    if let Some(entry) = map.projects.iter_mut().find(|p| p.id == project) {
+        for chat in [SAMPLES[0].id, SAMPLES[2].id, SAMPLES[3].id] {
+            entry.sources.push(crate::projects::Source {
+                chat: chat.into(),
+                mode: crate::projects::Mode::Smart,
+            });
+        }
+    }
+    let _ = map.save(&config);
+    let today = |days: i64| crate::leads::in_days(days);
+    let mut leads = Leads::default();
+    let mut add = |name: &str, chat: Option<&str>, phone: &str, build: &dyn Fn(&mut Lead)| {
+        let mut lead = Lead::new(&project, name, chat.map(str::to_owned), Some(phone.into()));
+        build(&mut lead);
+        leads.leads.push(lead);
+    };
+    add(
+        "Ada Lovelace",
+        Some(SAMPLES[0].id),
+        "393331234567",
+        &|lead| {
+            lead.add(
+                Kind::Call,
+                "Wants 500 lab coats with the logo embroidered; asked for two fabrics.",
+            );
+            lead.set_stage(Stage::Quoted, None);
+            lead.value = Some("$ 850.000".into());
+            lead.set_next("Send the quote with both fabrics", Some(today(-2)));
+            lead.link(ElevaCustomer {
+                id: "demo".into(),
+                name: "Ada Lovelace".into(),
+                stage: Some("Interesado".into()),
+            });
+            for entry in &mut lead.entries {
+                entry.sync = crate::leads::Sync::Sent;
+            }
+            lead.add(Kind::FollowUp, "Sent the samples by courier.");
+        },
+    );
+    add(
+        "Grace Hopper",
+        Some(SAMPLES[2].id),
+        "441632960123",
+        &|lead| {
+            lead.set_stage(Stage::Contacted, None);
+            lead.set_next("Call to close the order", Some(today(0)));
+        },
+    );
+    add(
+        "Katherine Johnson",
+        Some(SAMPLES[3].id),
+        "4915112345678",
+        &|lead| {
+            lead.set_stage(Stage::Contacted, None);
+            lead.add(Kind::Note, "Runs three labs; buys every quarter.");
+        },
+    );
+    add("Laboratorio Ruiz", None, "5491155550000", &|lead| {
+        lead.set_next("First message", Some(today(0)));
+    });
+    add("Farmacia Sur", None, "5491155550001", &|lead| {
+        lead.set_next("Follow up on the sample", Some(today(3)));
+    });
+    add("Clínica Norte", None, "5491155550002", &|lead| {
+        lead.set_stage(Stage::Customer, None);
+    });
+    add("Óptica Centro", None, "5491155550003", &|lead| {
+        lead.set_stage(Stage::Lost, Some("Price"));
+    });
+    leads.brands.insert(
+        project.clone(),
+        Brand {
+            slug: "blackyak-labs".into(),
+            name: "Blackyak Labs".into(),
+            write: true,
+        },
+    );
+    leads.templates.insert(
+        project.clone(),
+        vec!["Hi {name}, I'm writing from Blackyak Labs about the lab coats you asked for.".into()],
+    );
+    let selected = leads.leads[0].id.clone();
+    let _ = leads.save(&config);
+    let waiting = |reason: &str, ago: &str, who: &str, phone: Option<&str>, id: &str| Waiting {
+        reason: reason.into(),
+        ago: ago.into(),
+        who: who.into(),
+        phone: phone.map(str::to_owned),
+        detail: None,
+        id: id.into(),
+    };
+    crate::eleva::preload(
+        "blackyak-labs",
+        Inbox {
+            waiting: vec![
+                waiting("Complaint", "3 days", "Mike", Some("+5491132000000"), "w1"),
+                waiting(
+                    "Asks for a person",
+                    "1 day",
+                    "Ada Lovelace",
+                    Some("+393331234567"),
+                    "w2",
+                ),
+                waiting("Waiting for an answer", "5 h", "Deportes Fito", None, "w3"),
+            ],
+            total: 24,
+            alerts: vec![Situation {
+                key: "pago_informado".into(),
+                title: "Payment reported — $185.000".into(),
+                when: None,
+                who: Some("Clínica Norte".into()),
+                phone: Some("5491155550002".into()),
+                excerpt: Some("Transfer receipt".into()),
+                working: false,
+                id: "s1".into(),
+            }],
+            agenda: vec![Situation {
+                key: "retiro_local".into(),
+                title: "Pick-up at the shop — 200 coats".into(),
+                when: Some("Fri 11:00".into()),
+                who: Some("Farmacia Sur".into()),
+                phone: Some("5491155550001".into()),
+                excerpt: None,
+                working: false,
+                id: "s2".into(),
+            }],
+            read_at: crate::util::now() - 120,
+            error: None,
+        },
+    );
+    app.page = Page::Projects;
+    crate::ui::leads::request_open(&project, leads_tab, Some(&selected));
 }
 
 pub fn call_sample(app: &mut App, incoming: bool, video: bool) {

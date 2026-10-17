@@ -3648,3 +3648,479 @@ msgstr "Guardado en Notas"
 #: src/ui/projects.rs
 msgid "Nothing was heard in it"
 msgstr "No se escuchó nada"
+
+#: src/ui/leads.rs
+msgid "Leads"
+msgstr "Leads"
+
+#: src/ui/leads.rs
+msgid "New"
+msgstr "Nuevo"
+
+#: src/ui/leads.rs
+msgid "Contacted"
+msgstr "Contactado"
+
+#: src/ui/leads.rs
+msgid "Quoted"
+msgstr "Cotizado"
+
+#: src/ui/leads.rs
+msgid "Customer"
+msgstr "Cliente"
+
+#: src/ui/leads.rs
+msgid "Lost"
+msgstr "Perdido"
+
+#: src/ui/leads.rs
+msgid "Price"
+msgstr "Precio"
+
+#: src/ui/leads.rs
+msgid "Chose someone else"
+msgstr "Eligió a otro"
+
+#: src/ui/leads.rs
+msgid "Later on"
+msgstr "Más adelante"
+
+#: src/ui/leads.rs
+msgid "Late"
+msgstr "Atrasados"
+
+#: src/ui/leads.rs
+msgid "For today"
+msgstr "Para hoy"
+
+#: src/ui/leads.rs
+msgid "Nothing planned"
+msgstr "Sin próxima acción"
+
+#: src/ui/leads.rs
+msgid "Coming up"
+msgstr "Próximos"
+
+#: src/ui/leads.rs
+msgid "Customers"
+msgstr "Clientes"
+
+#: src/ui/leads.rs
+msgid "Lost sales"
+msgstr "Perdidos"
+
+#: src/ui/leads.rs
+msgid "An ElevaLeads token starts with elmcp_"
+msgstr "Un token de ElevaLeads empieza con elmcp_"
+
+#: src/ui/leads.rs
+msgid "This token opens no brand"
+msgstr "Este token no abre ninguna marca"
+
+#: src/ui/leads.rs
+msgid "This token opens every brand of the account: make one limited to a single brand"
+msgstr "Este token abre todas las marcas de la cuenta: generá uno limitado a una sola marca"
+
+#: src/ui/leads.rs
+msgid "The brand's token is not in this computer's keyring: connect the brand again"
+msgstr "El token de la marca no está en el llavero de esta computadora: conectá la marca de nuevo"
+
+#: src/ui/leads.rs
+msgid "The ElevaLeads token is read-only"
+msgstr "El token de ElevaLeads es de solo lectura"
+
+#: src/ui/leads.rs
+msgid "ElevaLeads could not be reached: check the connection"
+msgstr "No se pudo llegar a ElevaLeads: revisá la conexión"
+
+#: src/ui/leads.rs
+msgid "Note"
+msgstr "Nota"
+
+#: src/ui/leads.rs
+msgid "Call"
+msgstr "Llamada"
+
+#: src/ui/leads.rs
+msgid "Follow-up"
+msgstr "Seguimiento"
+
+#: src/ui/leads.rs
+msgid "Chat summary"
+msgstr "Resumen del chat"
+
+#: src/ui/leads.rs
+msgid "Stage"
+msgstr "Etapa"
+
+#: src/ui/leads.rs
+msgid "Next action"
+msgstr "Próxima acción"
+
+#: src/ui/leads.rs
+msgid "today"
+msgstr "hoy"
+
+#: src/ui/leads.rs
+msgid "tomorrow"
+msgstr "mañana"
+
+#: src/ui/leads.rs
+msgid "{n} d late"
+msgstr "atrasado {n} d"
+
+#: src/ui/leads.rs
+msgid "Moved to {stage}"
+msgstr "Pasó a {stage}"
+
+#: src/ui/leads.rs
+msgid "Connected to {brand}"
+msgstr "Conectado a {brand}"
+
+#: src/ui/leads.rs
+msgid "The chat could not be summarized: {error}"
+msgstr "No se pudo resumir el chat: {error}"
+
+#: src/ui/leads.rs
+msgid "New lead"
+msgstr "Nuevo lead"
+
+#: src/ui/leads.rs
+msgid "From a chat"
+msgstr "Desde un chat"
+
+#: src/ui/leads.rs
+msgid "By number"
+msgstr "Por número"
+
+#: src/ui/leads.rs
+msgid "Connect ElevaLeads"
+msgstr "Conectar ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Read and write"
+msgstr "Lectura y edición"
+
+#: src/ui/leads.rs
+msgid "Read only"
+msgstr "Solo lectura"
+
+#: src/ui/leads.rs
+msgid "Change token"
+msgstr "Cambiar token"
+
+#: src/ui/leads.rs
+msgid "Open the inbox in ElevaLeads"
+msgstr "Abrir la bandeja en ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Disconnect"
+msgstr "Desconectar"
+
+#: src/ui/leads.rs
+msgid "Search leads"
+msgstr "Buscar leads"
+
+#: src/ui/leads.rs
+msgid "Connect this project to ElevaLeads"
+msgstr "Conectar este proyecto con ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Paste a token limited to one brand (ElevaLeads → Settings → Connect with AI). Read only shows the brand's inbox here; read and write also sends your notes, stages and next actions to the customer's file. It is kept in this computer's keyring."
+msgstr "Pegá un token limitado a una marca (ElevaLeads → Configuración → Conectar con IA). Con solo lectura ves acá la bandeja de la marca; con lectura y edición, además, tus notas, etapas y próximas acciones llegan a la ficha del cliente. Se guarda en el llavero de esta computadora."
+
+#: src/ui/leads.rs
+msgid "Now: {brand}"
+msgstr "Ahora: {brand}"
+
+#: src/ui/leads.rs
+msgid "In this project"
+msgstr "En este proyecto"
+
+#: src/ui/leads.rs
+msgid "One per line: a name and a number, for the people you are going to write to. Each starts as New, with “First message” for today."
+msgstr "Uno por línea: un nombre y un número, de la gente a la que le vas a escribir. Cada uno arranca como Nuevo, con «Primer mensaje» para hoy."
+
+#: src/ui/leads.rs
+msgid "{n} lines without a valid number"
+msgstr "{n} líneas sin un número válido"
+
+#: src/ui/leads.rs
+msgid "Add {n}"
+msgstr "Agregar {n}"
+
+#: src/ui/leads.rs
+msgid "First message"
+msgstr "Primer mensaje"
+
+#: src/ui/leads.rs
+msgid "No leads yet"
+msgstr "Todavía no hay leads"
+
+#: src/ui/leads.rs
+msgid "Add the people you are selling to, from a chat or by number, and follow each sale here: its stage, what comes next and what was said."
+msgstr "Agregá a la gente a la que le estás vendiendo, desde un chat o por número, y seguí cada venta acá: en qué etapa está, qué sigue y qué se habló."
+
+#: src/ui/leads.rs
+msgid "Add a lead"
+msgstr "Agregar un lead"
+
+#: src/ui/leads.rs
+msgid "Open sales with no next step: the ones going cold"
+msgstr "Ventas abiertas sin próximo paso: las que se están enfriando"
+
+#: src/ui/leads.rs
+msgid "No lead matches"
+msgstr "Ningún lead coincide"
+
+#: src/ui/leads.rs
+msgid "Try another stage or search."
+msgstr "Probá con otra etapa u otra búsqueda."
+
+#: src/ui/leads.rs
+msgid "Linked to ElevaLeads"
+msgstr "Vinculado a ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Put it off"
+msgstr "Posponer"
+
+#: src/ui/leads.rs
+msgid "Done: plan the next step"
+msgstr "Hecho: planear el próximo paso"
+
+#: src/ui/leads.rs
+msgid "Tomorrow"
+msgstr "Mañana"
+
+#: src/ui/leads.rs
+msgid "In 3 days"
+msgstr "En 3 días"
+
+#: src/ui/leads.rs
+msgid "Next week"
+msgstr "Próxima semana"
+
+#: src/ui/leads.rs
+msgid "Pick a lead"
+msgstr "Elegí un lead"
+
+#: src/ui/leads.rs
+msgid "Its stage, what comes next, and everything said and done with it."
+msgstr "Su etapa, qué sigue, y todo lo que se habló y se hizo."
+
+#: src/ui/leads.rs
+msgid "no chat yet"
+msgstr "todavía sin chat"
+
+#: src/ui/leads.rs
+msgid "Lead options"
+msgstr "Opciones del lead"
+
+#: src/ui/leads.rs
+msgid "Remove lead"
+msgstr "Quitar lead"
+
+#: src/ui/leads.rs
+msgid "Open chat"
+msgstr "Abrir chat"
+
+#: src/ui/leads.rs
+msgid "Why was it lost?"
+msgstr "¿Por qué se perdió?"
+
+#: src/ui/leads.rs
+msgid "Send the quote, call to close, follow up on the sample…"
+msgstr "Mandar la cotización, llamar para cerrar, preguntar por la muestra…"
+
+#: src/ui/leads.rs
+msgid "No date"
+msgstr "Sin fecha"
+
+#: src/ui/leads.rs
+msgid "Worth"
+msgstr "Monto"
+
+#: src/ui/leads.rs
+msgid "read only"
+msgstr "solo lectura"
+
+#: src/ui/leads.rs
+msgid "Linked to {name}"
+msgstr "Vinculado a {name}"
+
+#: src/ui/leads.rs
+msgid "there: {stage}"
+msgstr "allá: {stage}"
+
+#: src/ui/leads.rs
+msgid "{n} sending"
+msgstr "{n} enviándose"
+
+#: src/ui/leads.rs
+msgid "{n} not sent"
+msgstr "{n} sin enviar"
+
+#: src/ui/leads.rs
+msgid "The token is read-only: what you write stays here. Change it for one that can write and send it again."
+msgstr "El token es de solo lectura: lo que anotás queda acá. Cambialo por uno con edición y volvé a enviarlo."
+
+#: src/ui/leads.rs
+msgid "Send again"
+msgstr "Volver a enviar"
+
+#: src/ui/leads.rs
+msgid "Open in ElevaLeads"
+msgstr "Abrir en ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Looking for them in the brand…"
+msgstr "Buscándolo en la marca…"
+
+#: src/ui/leads.rs
+msgid "{brand} has no customer with this number yet. Create them in ElevaLeads, then look again."
+msgstr "{brand} todavía no tiene un cliente con este número. Crealo en ElevaLeads y buscalo de nuevo."
+
+#: src/ui/leads.rs
+msgid "Link this lead to the brand's customer with the same number: your notes, calls, stages and next actions go to their file in ElevaLeads."
+msgstr "Vinculá este lead con el cliente de la marca que tiene el mismo número: tus notas, llamadas, etapas y próximas acciones van a su ficha en ElevaLeads."
+
+#: src/ui/leads.rs
+msgid "Look again"
+msgstr "Buscar de nuevo"
+
+#: src/ui/leads.rs
+msgid "Link"
+msgstr "Vincular"
+
+#: src/ui/leads.rs
+msgid "This lead has no number to look for."
+msgstr "Este lead no tiene un número para buscar."
+
+#: src/ui/leads.rs
+msgid "Open ElevaLeads"
+msgstr "Abrir ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Saved messages"
+msgstr "Mensajes guardados"
+
+#: src/ui/leads.rs
+msgid "Click one to put it in the chat with the name filled in. It is never sent on its own: you send it. {name} is the first name."
+msgstr "Hacé clic en uno para ponerlo en el chat con el nombre ya puesto. Nunca se manda solo: lo mandás vos. {name} es el primer nombre."
+
+#: src/ui/leads.rs
+msgid "Put it in the chat"
+msgstr "Ponerlo en el chat"
+
+#: src/ui/leads.rs
+msgid "Hi {name}, I'm writing from…"
+msgstr "Hola {name}, te escribo de…"
+
+#: src/ui/leads.rs
+msgid "What was said on the call: what they want, prices, what you agreed…"
+msgstr "Qué se habló en la llamada: qué quiere, precios, qué acordaron…"
+
+#: src/ui/leads.rs
+msgid "What you did to move the sale on…"
+msgstr "Qué hiciste para avanzar la venta…"
+
+#: src/ui/leads.rs
+msgid "Anything worth remembering about this lead…"
+msgstr "Lo que valga la pena recordar de este lead…"
+
+#: src/ui/leads.rs
+msgid "Summarizing the chat…"
+msgstr "Resumiendo el chat…"
+
+#: src/ui/leads.rs
+msgid "Summarize the chat and note it"
+msgstr "Resumir el chat y anotarlo"
+
+#: src/ui/leads.rs
+msgid "Note it"
+msgstr "Anotar"
+
+#: src/ui/leads.rs
+msgid "Nothing noted yet."
+msgstr "Todavía no hay nada anotado."
+
+#: src/ui/leads.rs
+msgid "In ElevaLeads"
+msgstr "En ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Sending to ElevaLeads"
+msgstr "Enviándose a ElevaLeads"
+
+#: src/ui/leads.rs
+msgid "Sales"
+msgstr "Ventas"
+
+#: src/ui/leads.rs
+msgid "See leads"
+msgstr "Ver leads"
+
+#: src/ui/leads.rs
+msgid "WhatsApp {brand} (company)"
+msgstr "WhatsApp {brand} (empresa)"
+
+#: src/ui/leads.rs
+msgid "{n} waiting"
+msgstr "{n} esperando"
+
+#: src/ui/leads.rs
+msgid "Read again"
+msgstr "Leer de nuevo"
+
+#: src/ui/leads.rs
+msgid "read {when} ago"
+msgstr "leído hace {when}"
+
+#: src/ui/leads.rs
+msgid "Reading the brand's inbox…"
+msgstr "Leyendo la bandeja de la marca…"
+
+#: src/ui/leads.rs
+msgid "Nobody is waiting for a person."
+msgstr "Nadie está esperando a una persona."
+
+#: src/ui/leads.rs
+msgid "Waiting for a person"
+msgstr "Esperando a una persona"
+
+#: src/ui/leads.rs
+msgid "To attend"
+msgstr "Para atender"
+
+#: src/ui/leads.rs
+msgid "Agenda"
+msgstr "Agenda"
+
+#: src/ui/leads.rs
+msgid "Show less"
+msgstr "Ver menos"
+
+#: src/ui/leads.rs
+msgid "Show {n} more"
+msgstr "Ver {n} más"
+
+#: src/ui/leads.rs
+msgid "Situations"
+msgstr "Situaciones"
+
+#: src/ui/leads.rs
+msgid "your lead · {stage}"
+msgstr "tu lead · {stage}"
+
+#: src/ui/leads.rs
+msgid "Mark as attended in ElevaLeads (sends nothing to the customer)"
+msgstr "Marcar como atendido en ElevaLeads (no le manda nada al cliente)"
+
+#: src/ui/leads.rs
+msgid "See the lead"
+msgstr "Ver el lead"
+
+#: src/ui/leads.rs
+msgid "{when} ago"
+msgstr "hace {when}"

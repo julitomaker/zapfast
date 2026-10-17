@@ -62,6 +62,44 @@ podés escribir el nombre de cualquier otro.
 Con **Cada cuánto** elegís cada cuánto se revisan los proyectos con mensajes
 nuevos. **Analizar ahora** lo corre en el momento.
 
+## 4. Leads y ventas
+
+Cada proyecto tiene una pestaña **Leads** para seguir a la gente a la que le
+estás vendiendo.
+
+- **+ → Desde un chat** suma a alguien con quien ya hablás; **+ → Por número**
+  pega una lista (`Nombre, +54 9 11 …`, uno por línea) de gente a la que le vas
+  a escribir: arrancan como Nuevo, con «Primer mensaje» para hoy.
+- Cada lead tiene una **etapa** (Nuevo, Contactado, Cotizado, Cliente,
+  Perdido; Perdido pide el motivo), una **próxima acción** con día (Hoy,
+  Mañana, En 3 días, Próxima semana) y un **historial** de notas, llamadas y
+  seguimientos, escritos o dictados con el micrófono. **Resumir el chat y
+  anotarlo** le pide al motor de análisis un resumen del último mes del chat.
+- La lista se ordena por lo que hay que hacer: atrasados, para hoy, sin
+  próxima acción (los que se enfrían) y próximos. Clientes y perdidos quedan
+  plegados al final. ✓ marca la acción como hecha; el reloj la pospone.
+- **Mensajes guardados**: textos de primer contacto con `{name}`. Un clic los
+  pone en el chat con el nombre; nunca se mandan solos.
+- En el **Panel** del proyecto aparece la tarjeta **Ventas** (atrasados, para
+  hoy, cotizados, clientes).
+
+### Conectar con ElevaLeads
+
+**Leads → Conectar ElevaLeads** y pegá un token de ElevaLeads limitado a una
+marca (ElevaLeads → Configuración → Conectar con IA). Whats Pro dice a qué
+marca quedó conectado y si el token es de solo lectura o de lectura y edición.
+
+- En el **Panel** aparece **WhatsApp ‹marca› (empresa)**: quién espera a una
+  persona, las situaciones para atender y la agenda de la marca. Se lee cada
+  5 minutos. Cada ítem se abre en ElevaLeads y, con un token de edición, se
+  marca como atendido (no le manda nada al cliente).
+- En un lead, **Vincular** busca en la marca al cliente con el mismo número.
+  Desde ahí, con un token de edición, cada nota, llamada y resumen se suma a
+  su ficha, el cambio de etapa se refleja allá (Contactado = En conversación,
+  Cotizado = Interesado, Perdido = Dormido) y la próxima acción queda como
+  situación en la bandeja del equipo. Con solo lectura, todo queda guardado en
+  Whats Pro y se puede volver a enviar después.
+
 ## Privacidad
 
 - Con el motor desactivado, nada sale de tu Mac.
@@ -72,3 +110,8 @@ nuevos. **Analizar ahora** lo corre en el momento.
 - Las keys quedan en el llavero de macOS. Las herramientas instaladas quedan
   en `~/Library/Application Support/me.paolino.zapfast-julito/tools`, salvo
   Claude Code, que se instala en `~/.local/bin`.
+- Los leads quedan en `leads.json`, en la carpeta de configuración. Los tokens
+  de ElevaLeads quedan en el llavero de macOS, uno por marca. A ElevaLeads solo
+  va lo que anotás en un lead vinculado y los pedidos para leer la bandeja de
+  su marca; los mensajes del chat no se mandan, salvo el resumen que vos
+  pedís.
