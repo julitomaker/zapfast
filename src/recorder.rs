@@ -20,6 +20,38 @@ use std::{
 };
 
 const RATE: u32 = 16_000;
+const NOTHING_RECORDED: &str = "Nothing was recorded";
+
+/// Whether macOS already lets this app record the screen and the system's
+/// sound. Check it before a meeting, so the permission is not asked mid-call.
+#[cfg(target_os = "macos")]
+pub fn system_audio_allowed() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Asks macOS for Screen & System Audio Recording, once; it shows its own
+/// prompt or points to System Settings. Returns whether it is allowed now.
+#[cfg(target_os = "macos")]
+pub fn ask_system_audio() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn system_audio_allowed() -> bool {
+    false
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn ask_system_audio() -> bool {
+    false
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
 
 /// What a recording listens to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,7 +147,9 @@ impl Recording {
     ) -> Result<Self, String> {
         let folder = state_dir.join("recordings");
         std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
-        let stamp = jiff::Timestamp::now().as_second();
+        // Milliseconds: two recordings started in the same second (a retry
+        // after a refused permission) never share their tracks.
+        let stamp = jiff::Timestamp::now().as_millisecond();
         let stop = Arc::new(AtomicBool::new(false));
         let mut recording = Self {
             started: Instant::now(),
@@ -184,14 +218,33 @@ impl Recording {
         }
         let stamp = jiff::Timestamp::now()
             .to_zoned(jiff::tz::TimeZone::system())
-            .strftime("%Y-%m-%d %H.%M")
+            .strftime("%Y-%m-%d %H.%M.%S")
             .to_string();
-        let wav = self.folder.join(format!("Llamada {stamp}.wav"));
-        mix(&raws, &wav)?;
-        for raw in raws {
-            let _ = std::fs::remove_file(raw);
+        let mut wav = self.folder.join(format!("Llamada {stamp}.wav"));
+        let mut copy = 2;
+        while wav.exists() {
+            wav = self.folder.join(format!("Llamada {stamp} ({copy}).wav"));
+            copy += 1;
         }
-        Ok(wav)
+        match mix(&raws, &wav) {
+            Ok(()) => {
+                for raw in raws {
+                    let _ = std::fs::remove_file(raw);
+                }
+                Ok(wav)
+            }
+            Err(error) if error == NOTHING_RECORDED => {
+                for raw in raws {
+                    let _ = std::fs::remove_file(raw);
+                }
+                Err(error)
+            }
+            // The sound is still in the tracks: keep them so it is not lost.
+            Err(error) => Err(format!(
+                "{error}. The recorded tracks are kept in {}",
+                self.folder.display()
+            )),
+        }
     }
 }
 
@@ -214,7 +267,7 @@ fn mix(raws: &[PathBuf], wav: &Path) -> Result<(), String> {
     }
     let length = tracks.iter().map(Vec::len).max().unwrap_or(0);
     if length == 0 {
-        return Err("Nothing was recorded".into());
+        return Err(NOTHING_RECORDED.into());
     }
     let mut out = BufWriter::new(File::create(wav).map_err(|e| e.to_string())?);
     let data = (length * 2) as u32;
@@ -490,6 +543,12 @@ mod macos {
                 )
             };
             let config = unsafe { SCStreamConfiguration::new() };
+            // Sound capture came with macOS 13.
+            if !config.respondsToSelector(objc2::sel!(setCapturesAudio:))
+                || !config.respondsToSelector(objc2::sel!(setExcludesCurrentProcessAudio:))
+            {
+                return Err("Recording the computer's sound needs macOS 13 or later".into());
+            }
             unsafe {
                 config.setCapturesAudio(true);
                 config.setExcludesCurrentProcessAudio(true);

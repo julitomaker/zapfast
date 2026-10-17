@@ -21,8 +21,11 @@ const MODEL_URL: &str =
 /// A smaller download than this is an error page, not the model.
 const MODEL_MIN_BYTES: u64 = 400 * 1024 * 1024;
 const RATE: u32 = 16_000;
-/// Longest stretch transcribed from one file: whisper's cost grows with it.
-const LONGEST_SECONDS: usize = 60 * 60;
+/// Longest file read at all, as a guard against runaway inputs.
+const LONGEST_SECONDS: usize = 6 * 60 * 60;
+/// Whisper reads long sound in windows of this length, so memory stays flat
+/// and a long call is not cut off.
+const WINDOW_SECONDS: usize = 30 * 60;
 
 /// Where the model lives for this app's data folder.
 pub fn model_path(state_dir: &Path) -> PathBuf {
@@ -145,19 +148,94 @@ fn rodio_samples(path: &Path) -> Result<Vec<f32>, String> {
 
 /// The loaded model, kept between transcriptions: loading it takes seconds.
 static CONTEXT: Mutex<Option<(PathBuf, whisper_rs::WhisperContext)>> = Mutex::new(None);
+/// Set while quitting: a running transcription stops at its next check.
+static ABORT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Frees the loaded model. Call before the process exits: ggml's Metal
-/// device is torn down by an exit handler, which aborts while a context
-/// still holds it.
+/// Frees the loaded model, first asking a running transcription to stop so
+/// quitting does not wait for it. Call before the process exits: ggml's
+/// Metal device is torn down by an exit handler, which aborts while a
+/// context still holds it.
 pub fn unload() {
+    use std::sync::atomic::Ordering;
+    ABORT.store(true, Ordering::Relaxed);
     CONTEXT.lock().unwrap_or_else(|p| p.into_inner()).take();
+    ABORT.store(false, Ordering::Relaxed);
+}
+
+/// A stretch of speech and when it was said, in seconds from the start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Segment {
+    pub start: f32,
+    pub end: f32,
+    pub text: String,
 }
 
 /// Transcribes a media file, downloading the model on first use. Blocking:
 /// run it off the interface and the async runtime.
 pub fn transcribe(state_dir: &Path, media: &Path) -> Result<String, String> {
+    Ok(join(&segments(state_dir, media)?))
+}
+
+/// A media file's speech, segment by segment with its times.
+pub fn segments(state_dir: &Path, media: &Path) -> Result<Vec<Segment>, String> {
+    run(state_dir, &samples(media)?)
+}
+
+/// A recording's speech per channel, merged in time order: with a stereo
+/// call recording (one voice per channel) the channel says who spoke. Mono
+/// files come back as channel 0.
+pub fn segments_by_channel(
+    state_dir: &Path,
+    media: &Path,
+) -> Result<Vec<(usize, Segment)>, String> {
+    use rodio::Source;
+    let file = std::fs::File::open(media).map_err(|error| error.to_string())?;
+    let decoder = rodio::Decoder::try_from(file).map_err(|error| error.to_string())?;
+    let (channels, rate) = (
+        usize::from(decoder.channels().get()),
+        decoder.sample_rate().get(),
+    );
+    if channels < 2 {
+        return Ok(segments(state_dir, media)?
+            .into_iter()
+            .map(|s| (0, s))
+            .collect());
+    }
+    let interleaved: Vec<f32> = decoder.collect();
+    let mut all = Vec::new();
+    for channel in 0..channels.min(2) {
+        let voice: Vec<f32> = interleaved
+            .iter()
+            .skip(channel)
+            .step_by(channels)
+            .copied()
+            .collect();
+        let voice = resample(&voice, rate);
+        if voice.iter().all(|sample| sample.abs() < 1e-4) {
+            continue;
+        }
+        all.extend(run(state_dir, &voice)?.into_iter().map(|s| (channel, s)));
+    }
+    all.sort_by(|a, b| a.1.start.total_cmp(&b.1.start));
+    Ok(all)
+}
+
+/// Segments as one line of text.
+pub fn join(segments: &[Segment]) -> String {
+    segments
+        .iter()
+        .map(|segment| segment.text.trim())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Runs Whisper over 16 kHz mono samples, window by window.
+fn run(state_dir: &Path, audio: &[f32]) -> Result<Vec<Segment>, String> {
+    use std::sync::atomic::Ordering;
     let model = ensure_model(state_dir)?;
-    let audio = samples(media)?;
     let mut loaded = CONTEXT.lock().unwrap_or_else(|p| p.into_inner());
     if loaded.as_ref().is_none_or(|(path, _)| *path != model) {
         let context = whisper_rs::WhisperContext::new_with_params(
@@ -168,33 +246,47 @@ pub fn transcribe(state_dir: &Path, media: &Path) -> Result<String, String> {
         *loaded = Some((model, context));
     }
     let (_, context) = loaded.as_ref().expect("loaded above");
-    let mut state = context
-        .create_state()
-        .map_err(|error| format!("transcription: {error}"))?;
-    let mut params =
-        whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("auto"));
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
-    params.set_n_threads(threads as i32);
-    params.set_print_progress(false);
-    params.set_print_realtime(false);
-    params.set_print_special(false);
-    params.set_print_timestamps(false);
-    params.set_suppress_blank(true);
-    state
-        .full(params, &audio)
-        .map_err(|error| format!("transcription failed: {error}"))?;
-    let mut text = String::new();
-    for index in 0..state.full_n_segments() {
-        if let Some(segment) = state.get_segment(index)
-            && let Ok(piece) = segment.to_str_lossy()
-        {
-            text.push_str(piece.trim());
-            text.push(' ');
+    let mut found = Vec::new();
+    for (index, window) in audio.chunks(WINDOW_SECONDS * RATE as usize).enumerate() {
+        if ABORT.load(Ordering::Relaxed) {
+            return Err("transcription stopped".into());
+        }
+        let offset = (index * WINDOW_SECONDS) as f32;
+        let mut state = context
+            .create_state()
+            .map_err(|error| format!("transcription: {error}"))?;
+        let mut params =
+            whisper_rs::FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("auto"));
+        params.set_n_threads(threads as i32);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        params.set_suppress_blank(true);
+        params.set_abort_callback_safe(|| ABORT.load(Ordering::Relaxed));
+        state
+            .full(params, window)
+            .map_err(|error| format!("transcription failed: {error}"))?;
+        for segment in 0..state.full_n_segments() {
+            if let Some(segment) = state.get_segment(segment)
+                && let Ok(text) = segment.to_str_lossy()
+                && !text.trim().is_empty()
+            {
+                found.push(Segment {
+                    // Whisper counts in hundredths of a second.
+                    start: offset + segment.start_timestamp() as f32 / 100.0,
+                    end: offset + segment.end_timestamp() as f32 / 100.0,
+                    text: text.trim().to_owned(),
+                });
+            }
         }
     }
-    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    Ok(text)
+    if ABORT.load(Ordering::Relaxed) {
+        return Err("transcription stopped".into());
+    }
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -207,6 +299,20 @@ mod tests {
         assert_eq!(resample(&one_second, 48_000).len(), 16_000);
         assert_eq!(resample(&one_second[..16_000], 16_000).len(), 16_000);
         assert_eq!(mono(&[1.0, 0.0, 0.5, 0.5], 2), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn segments_join_into_one_line() {
+        let segment = |start: f32, text: &str| Segment {
+            start,
+            end: start + 1.0,
+            text: text.into(),
+        };
+        assert_eq!(
+            join(&[segment(0.0, " hola,  "), segment(1.0, "¿cómo va?")]),
+            "hola, ¿cómo va?"
+        );
+        assert_eq!(join(&[]), "");
     }
 
     #[test]
