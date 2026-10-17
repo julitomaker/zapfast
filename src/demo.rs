@@ -1953,6 +1953,102 @@ fn starred_sample(app: &mut App, menu: Option<&str>) {
     app.open_list_menu = menu.map(|id| (chat, id.to_owned()));
 }
 
+/// The Projects page with a sample project, its analysis, notes and history.
+fn projects_sample(app: &mut App, tab: &'static str, pending: bool) {
+    use crate::projects::{
+        Analysis, Finding, Journal, Member, Mode, NoteKind, ProjectMap, Ticks, Verdict,
+    };
+    app.page = crate::model::Page::Projects;
+    let config = app.dirs.config.clone();
+    let _ = std::fs::create_dir_all(&config);
+    let group = SAMPLES[1].id;
+    let person = SAMPLES[0].id;
+    let mut map = ProjectMap::default();
+    let id = map.add("JAS · Bordados");
+    map.add_source(&id, group, Mode::All);
+    map.add_source(&id, person, Mode::Smart);
+    let other = map.add("Premoldeados Capitán");
+    map.add_source(&other, SAMPLES[4].id, Mode::All);
+    if let Some(project) = map.project_mut(&id) {
+        project.context = "Taller de bordados. Papá maneja los pagos; Liz y Juan bordan. Los pedidos entran por el grupo.".into();
+        project.members = vec![
+            Member {
+                id: person.into(),
+                name: "Ada".into(),
+                role: "Clienta".into(),
+                about: "Pide cotizaciones formales por correo.".into(),
+            },
+            Member {
+                id: "5491100000000@s.whatsapp.net".into(),
+                name: "Liz".into(),
+                role: "Bordadora".into(),
+                ..Member::default()
+            },
+        ];
+    }
+    let _ = map.save(&config);
+    let now = crate::util::now();
+    let finding =
+        |kind: &str, n: usize, text: &str, who: Option<&str>, days: i64, due: Option<&str>| {
+            Finding {
+                id: format!("{kind}:{n}"),
+                text: text.into(),
+                who: who.map(Into::into),
+                chat: Some(group.into()),
+                message: Some(format!("m{n}")),
+                since: Some(now - days * 86_400 - 3_600),
+                due: due.map(Into::into),
+            }
+        };
+    let analysis = Analysis {
+        updated: now - 600,
+        summaries: [
+            ("today".to_owned(), "Se confirmó el pedido de 15 prendas con bordado delantero. Falta mandar la cotización formal y definir la fecha de retiro.".to_owned()),
+            ("week".to_owned(), "Semana de cotizaciones: tres pedidos nuevos, uno cerrado y pagos al día.".to_owned()),
+        ]
+        .into(),
+        todo: vec![
+            finding("todo", 1, "Armar y enviar por correo la cotización de Ada por 15 prendas: bordado delantero y espalda a $10.000 por prenda, polera básica $5.990 más IVA.", Some("Ada"), 1, Some("hoy")),
+            finding("todo", 2, "Pasar los horarios de Juan y Liz para pagar quincena y semana.", Some("Papá"), 0, None),
+        ],
+        follow_up: vec![finding("follow", 3, "Liz pidió confirmar si lo de la foto era lo que buscaba Ada y no hay respuesta.", Some("Liz"), 1, None)],
+        leaks: vec![finding("leak", 4, "Un cliente pidió cotización del bordado de cinta y nadie respondió.", Some("Cliente"), 4, None)],
+        needs: vec![finding("need", 5, "Comprar hilo blanco para el pedido grande.", None, 2, None)],
+        highlights: vec![finding("highlight", 6, "Liz cobra 20 por día y tiene 2 días de medio turno más 40 minutos extra.", Some("Papá"), 1, None)],
+        ..Analysis::default()
+    };
+    let _ = analysis.save(&config, &id);
+    let mut journal = Journal::default();
+    journal.add(
+        "Llamé a Ada: confirmó 15 prendas y quiere retirar el viernes.",
+        true,
+    );
+    journal.add_kind("Ada siempre pide factura A.", false, NoteKind::Memo);
+    let _ = journal.save(&config, &id);
+    let mut ticks = Ticks::default();
+    let closed = finding(
+        "todo",
+        9,
+        "Mandar muestra de bordado a Ada.",
+        Some("Ada"),
+        3,
+        None,
+    );
+    ticks.judge_with(
+        &closed,
+        Verdict::Done,
+        Some("Se la llevó Juan en mano.".into()),
+    );
+    ticks.judge(
+        &finding("need", 8, "Revisar la máquina 2.", None, 5, None),
+        Verdict::Bad,
+    );
+    let _ = ticks.save(&config, &id);
+    *crate::ui::projects::DEMO
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some((tab, pending));
+}
+
 /// Configures synthetic offline demo states and appearance for tests and screenshots.
 /// Audio fixtures vary voice-note and forwarding metadata independently without playback.
 pub fn apply_flags(app: &mut App, page: Option<&str>) {
@@ -1962,6 +2058,12 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
     for part in page.split(',').map(str::trim) {
         match part {
             "history-date" => history_date_sample(app),
+            "projects" => projects_sample(app, "panel", false),
+            "projects-pending" => projects_sample(app, "panel", true),
+            "projects-notes" => projects_sample(app, "notes", false),
+            "projects-history" => projects_sample(app, "history", false),
+            "projects-context" => projects_sample(app, "context", false),
+            "projects-sources" => projects_sample(app, "sources", false),
             "chat" | "" => {}
             "phone-menu" => phone_menu_sample(app),
             "short-chat" => short_chat_sample(app),

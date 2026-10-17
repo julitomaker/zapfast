@@ -172,6 +172,10 @@ impl Default for State {
 
 type Shared = Arc<Mutex<State>>;
 
+/// A demo screenshot's starting tab, and whether a finding is pending.
+#[cfg(any(test, feature = "demo"))]
+pub static DEMO: Mutex<Option<(&'static str, bool)>> = Mutex::new(None);
+
 fn back_id() -> egui::Id {
     egui::Id::new("projects-back")
 }
@@ -313,6 +317,18 @@ fn card_title(
     });
     ui.add_space(6.0);
     let _ = palette;
+}
+
+/// `add` in a column `width` wide, beside what a row already holds. Setting
+/// a row's own width would move its cursor back to the start and draw over
+/// what came before.
+fn column<R>(ui: &mut egui::Ui, width: f32, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let width = width.max(40.0);
+    ui.allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+        ui.set_max_width(width);
+        add(ui)
+    })
+    .inner
 }
 
 fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: Color32) {
@@ -748,6 +764,34 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.ctx().request_repaint();
     }
     refresh_map(app, &mut state);
+    #[cfg(any(test, feature = "demo"))]
+    if let Some((tab, pending)) = DEMO.lock().unwrap_or_else(|p| p.into_inner()).take()
+        && let Some(project) = state.map.projects.first().cloned()
+    {
+        state.selection = Some(Selection::Project(project.id.clone()));
+        state.picked = true;
+        state.tab = match tab {
+            "notes" => Tab::Journal,
+            "history" => Tab::History,
+            "context" => Tab::Context,
+            "messages" => Tab::Messages,
+            "sources" => Tab::Sources,
+            _ => Tab::Panel,
+        };
+        if pending
+            && let Some(finding) =
+                Analysis::load(&app.dirs.config, &project.id).and_then(|a| a.todo.first().cloned())
+        {
+            state.pending = Some(Pending {
+                finding,
+                verdict: Verdict::Done,
+                started: ui.ctx().input(|i| i.time),
+                note: String::new(),
+                writing: false,
+                undone: false,
+            });
+        }
+    }
     if state.adding {
         new_project(app, ui, &mut state);
         return;
@@ -1183,10 +1227,13 @@ fn pending_row(
     };
     Frame::new()
         .fill(color.gamma_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.35)))
         .corner_radius(CornerRadius::same(theme::RADIUS + 2))
-        .inner_margin(Margin::symmetric(10, 8))
+        .inner_margin(Margin::symmetric(12, 10))
+        .outer_margin(Margin::symmetric(0, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // What happened to it, and the way back.
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 theme::icon(
@@ -1200,15 +1247,9 @@ fn pending_row(
                 } else {
                     gettext(locale, "Dismissed")
                 };
-                theme::text(ui, label, theme::semibold(13.5), color);
-                ui.set_max_width((ui.available_width() - 120.0).max(80.0));
-                theme::text(
-                    ui,
-                    &pending.finding.text,
-                    theme::regular(13.0),
-                    palette.secondary,
-                );
+                theme::text(ui, label, theme::semibold(14.0), color);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
                     if pill_button(ui, &palette, gettext(locale, "Undo").as_ref(), false).clicked()
                     {
                         pending.undone = true;
@@ -1217,34 +1258,55 @@ fn pending_row(
                         theme::text(
                             ui,
                             gettext(locale, "closes in {n} s").replace("{n}", &left.to_string()),
-                            theme::regular(12.0),
-                            palette.dim,
+                            theme::regular(12.5),
+                            palette.secondary,
                         );
                     }
                 });
             });
+            ui.add_space(4.0);
+            wrapped(
+                ui,
+                &pending.finding.text,
+                theme::regular(13.5),
+                palette.secondary,
+            );
             if done {
-                ui.add_space(6.0);
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut pending.note)
-                            .hint_text(
-                                gettext(
-                                    locale,
-                                    "How was it solved? (optional, helps the analysis)",
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let width = ui.available_width() - 100.0;
+                    let field = column(ui, width, |ui| {
+                        Frame::new()
+                            .fill(palette.surface)
+                            .stroke(palette.glass_edge())
+                            .corner_radius(CornerRadius::same(theme::RADIUS))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut pending.note)
+                                        .hint_text(
+                                            gettext(
+                                                locale,
+                                                "How was it solved? (optional, helps the analysis)",
+                                            )
+                                            .as_ref(),
+                                        )
+                                        .font(theme::regular(13.5))
+                                        .frame(Frame::NONE)
+                                        .desired_width(f32::INFINITY),
                                 )
-                                .as_ref(),
-                            )
-                            .desired_width((ui.available_width() - 110.0).max(120.0)),
-                    );
+                            })
+                            .inner
+                    });
                     if field.has_focus() || !pending.note.trim().is_empty() {
                         pending.writing = true;
                     }
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if pending.writing
                         && (pill_button(ui, &palette, gettext(locale, "Save").as_ref(), true)
                             .clicked()
-                            || (field.lost_focus()
-                                && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                            || enter)
                     {
                         pending.writing = false;
                         pending.started = f64::NEG_INFINITY;
@@ -1434,13 +1496,15 @@ fn panel(
                     if ui.available_width() >= TWO_COLUMNS {
                         let width = ui.available_width();
                         let gap = 14.0;
-                        let left_width = (width - gap) * 0.58;
+                        // The row spaces its two columns too.
+                        let usable = width - gap - 2.0 * ui.spacing().item_spacing.x;
+                        let left_width = usable * 0.58;
                         ui.horizontal_top(|ui| {
                             ui.allocate_ui_with_layout(vec2(left_width, 0.0), Layout::top_down(Align::Min), |ui| {
                                 left(app, ui, &mut action, &mut pending)
                             });
                             ui.add_space(gap);
-                            ui.allocate_ui_with_layout(vec2(width - left_width - gap, 0.0), Layout::top_down(Align::Min), |ui| {
+                            ui.allocate_ui_with_layout(vec2(usable - left_width, 0.0), Layout::top_down(Align::Min), |ui| {
                                 note_card(app, ui, state, project);
                                 ui.add_space(12.0);
                                 right(app, ui, &mut action, &mut pending)
@@ -2237,11 +2301,15 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                         .ctx()
                                         .data(|d| d.get_temp::<String>(key))
                                         .unwrap_or_else(|| member.role.clone());
-                                    let field = ui.add(
-                                        egui::TextEdit::singleline(&mut role)
-                                            .hint_text(gettext(locale, "Role").as_ref())
-                                            .desired_width(200.0),
-                                    );
+                                    let field = field_frame(ui, &palette, |ui| {
+                                        ui.add(
+                                            egui::TextEdit::singleline(&mut role)
+                                                .hint_text(gettext(locale, "Role").as_ref())
+                                                .font(theme::regular(13.5))
+                                                .frame(Frame::NONE)
+                                                .desired_width(180.0),
+                                        )
+                                    });
                                     if field.lost_focus() {
                                         ui.ctx().data_mut(|d| d.remove_temp::<String>(key));
                                         if role != member.role {
@@ -2260,13 +2328,16 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                 .unwrap_or_else(|| member.about.clone());
                             ui.horizontal(|ui| {
                                 ui.add_space(40.0);
-                                let field = ui.add(
-                                    egui::TextEdit::multiline(&mut about)
-                                        .hint_text(gettext(locale, "Who they are: what they do, how to deal with them, what they care about…").as_ref())
-                                        .font(theme::regular(13.0))
-                                        .desired_rows(1)
-                                        .desired_width(ui.available_width()),
-                                );
+                                let field = field_frame(ui, &palette, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut about)
+                                            .hint_text(gettext(locale, "Who they are: what they do, how to deal with them, what they care about…").as_ref())
+                                            .font(theme::regular(13.0))
+                                            .frame(Frame::NONE)
+                                            .desired_rows(1)
+                                            .desired_width(f32::INFINITY),
+                                    )
+                                });
                                 if field.lost_focus() {
                                     ui.ctx().data_mut(|d| d.remove_temp::<String>(key));
                                     if about != member.about {
@@ -2399,14 +2470,16 @@ fn messages(
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     theme::icon(ui, Icon::MessageCircle, 15.0, palette.warning);
-                    ui.set_max_width(ui.available_width() - 30.0);
-                    theme::text(
-                        ui,
-                        gettext(locale, "Where it came from: {finding}")
-                            .replace("{finding}", &origin.text),
-                        theme::medium(13.0),
-                        palette.text,
-                    );
+                    let width = ui.available_width() - 34.0;
+                    column(ui, width, |ui| {
+                        theme::text(
+                            ui,
+                            gettext(locale, "Where it came from: {finding}")
+                                .replace("{finding}", &origin.text),
+                            theme::medium(13.0),
+                            palette.text,
+                        );
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if theme::icon_button(
                             ui,
@@ -2555,7 +2628,7 @@ fn messages(
                     let mark = highlight.as_ref().map_or(0, |h| {
                         if h.chat == message.chat && h.message == message.id {
                             2
-                        } else if h.chat == message.chat && (message.timestamp - h.at).abs() <= 1800
+                        } else if h.chat == message.chat && (message.timestamp - h.at).abs() <= 600
                         {
                             1
                         } else {
@@ -2704,10 +2777,33 @@ fn day_chip(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
             .corner_radius(CornerRadius::same(theme::RADIUS))
             .inner_margin(Margin::symmetric(10, 4))
             .show(ui, |ui| {
-                theme::text(ui, label, theme::medium(12.0), palette.secondary);
+                // Not truncated: a truncating label takes the whole width.
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(label)
+                            .font(theme::medium(12.0))
+                            .color(palette.secondary),
+                    )
+                    .selectable(false),
+                );
             });
     });
     ui.add_space(6.0);
+}
+
+/// A text field's box: the surface, a faint edge, rounded.
+fn field_frame<R>(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    Frame::new()
+        .fill(palette.surface)
+        .stroke(palette.glass_edge())
+        .corner_radius(CornerRadius::same(theme::RADIUS))
+        .inner_margin(Margin::symmetric(10, 6))
+        .show(ui, add)
+        .inner
 }
 
 enum RowClick {
@@ -2855,11 +2951,13 @@ fn feed_row(
                 .warning
                 .gamma_multiply(if mark == 2 { 0.20 } else { 0.08 }),
         );
-        ui.painter().rect_filled(
-            Rect::from_min_size(band.min, vec2(3.0, band.height())),
-            CornerRadius::same(2),
-            palette.warning,
-        );
+        if mark == 2 {
+            ui.painter().rect_filled(
+                Rect::from_min_size(band.min, vec2(3.0, band.height())),
+                CornerRadius::same(2),
+                palette.warning,
+            );
+        }
         if scroll {
             ui.scroll_to_rect(rect, Some(Align::Center));
         }
@@ -3503,8 +3601,10 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 10.0;
                                 theme::icon(ui, icon, 18.0, color);
-                                ui.set_max_width(ui.available_width() - 150.0);
-                                wrapped(ui, &line, theme::medium(14.0), palette.text);
+                                let width = ui.available_width();
+                                column(ui, width, |ui| {
+                                    wrapped(ui, &line, theme::medium(14.0), palette.text);
+                                });
                             });
                         });
                     card_frame(&palette).show(ui, |ui| {
