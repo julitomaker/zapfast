@@ -27,21 +27,39 @@ const MAX_MESSAGES: usize = 900;
 /// The longest a message is quoted.
 const MAX_CHARS: usize = 600;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Provider {
     #[default]
     Off,
+    /// Claude Code, signed in with a Claude subscription.
     ClaudeCode,
+    /// Codex CLI, signed in with a ChatGPT subscription.
+    CodexCli,
+    /// Gemini CLI, signed in with a Google account.
+    GeminiCli,
     Anthropic,
     OpenAi,
     OpenRouter,
 }
 
+/// A model worth suggesting, with why.
+pub struct Suggestion {
+    /// Empty for the tool's own default.
+    pub id: &'static str,
+    pub note: &'static str,
+}
+
+const fn suggest(id: &'static str, note: &'static str) -> Suggestion {
+    Suggestion { id, note }
+}
+
 impl Provider {
-    pub const EVERY: [Self; 5] = [
+    pub const EVERY: [Self; 7] = [
         Self::Off,
         Self::ClaudeCode,
+        Self::CodexCli,
+        Self::GeminiCli,
         Self::Anthropic,
         Self::OpenAi,
         Self::OpenRouter,
@@ -50,9 +68,11 @@ impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Self::Off => "Off",
-            Self::ClaudeCode => "Claude Code",
-            Self::Anthropic => "Anthropic",
-            Self::OpenAi => "OpenAI",
+            Self::ClaudeCode => "Claude",
+            Self::CodexCli => "ChatGPT · Codex",
+            Self::GeminiCli => "Gemini",
+            Self::Anthropic => "Anthropic API",
+            Self::OpenAi => "OpenAI API",
             Self::OpenRouter => "OpenRouter",
         }
     }
@@ -61,13 +81,75 @@ impl Provider {
         matches!(self, Self::Anthropic | Self::OpenAi | Self::OpenRouter)
     }
 
-    /// The model it starts with; any other can be typed.
-    pub fn default_model(self) -> &'static str {
+    /// The command-line tool it runs, for the providers that use a
+    /// subscription instead of a key.
+    pub fn binary(self) -> Option<&'static str> {
         match self {
-            Self::Anthropic => "claude-opus-5-5",
-            Self::OpenRouter => "anthropic/claude-opus-5.5",
-            _ => "",
+            Self::ClaudeCode => Some("claude"),
+            Self::CodexCli => Some("codex"),
+            Self::GeminiCli => Some("gemini"),
+            _ => None,
         }
+    }
+
+    /// How to install its tool with Homebrew.
+    pub fn install(self) -> Option<&'static str> {
+        match self {
+            Self::ClaudeCode => Some("brew install --cask claude-code"),
+            Self::CodexCli => Some("brew install codex"),
+            Self::GeminiCli => Some("brew install gemini-cli"),
+            _ => None,
+        }
+    }
+
+    /// The models to suggest, the recommended one first.
+    pub fn suggestions(self) -> &'static [Suggestion] {
+        const CLAUDE: &[Suggestion] = &[
+            suggest("opus", "Claude Opus: the most capable"),
+            suggest("sonnet", "Claude Sonnet: faster, uses less of your plan"),
+            suggest("haiku", "Claude Haiku: the lightest"),
+        ];
+        const CODEX: &[Suggestion] = &[suggest("", "Codex's own default model")];
+        const GEMINI: &[Suggestion] = &[
+            suggest("", "Gemini CLI's own default model"),
+            suggest("gemini-2.5-pro", "Gemini Pro: the most capable"),
+            suggest("gemini-2.5-flash", "Gemini Flash: faster, lighter"),
+        ];
+        const ANTHROPIC: &[Suggestion] = &[
+            suggest("claude-opus-5-5", "Claude Opus 5.5: the most capable"),
+            suggest("claude-sonnet-5-5", "Claude Sonnet 5.5: faster and cheaper"),
+            suggest("claude-haiku-5-5", "Claude Haiku 5.5: the cheapest"),
+        ];
+        const OPENAI: &[Suggestion] = &[suggest("gpt-5", "GPT-5")];
+        const OPENROUTER: &[Suggestion] = &[
+            suggest(
+                "anthropic/claude-opus-5.5",
+                "Claude Opus 5.5 through OpenRouter",
+            ),
+            suggest(
+                "anthropic/claude-sonnet-5.5",
+                "Claude Sonnet 5.5 through OpenRouter",
+            ),
+        ];
+        match self {
+            Self::Off => &[],
+            Self::ClaudeCode => CLAUDE,
+            Self::CodexCli => CODEX,
+            Self::GeminiCli => GEMINI,
+            Self::Anthropic => ANTHROPIC,
+            Self::OpenAi => OPENAI,
+            Self::OpenRouter => OPENROUTER,
+        }
+    }
+
+    /// The model it starts with.
+    pub fn default_model(self) -> &'static str {
+        self.suggestions().first().map_or("", |s| s.id)
+    }
+
+    /// Whether the provider can list every model it offers.
+    pub fn lists_models(self) -> bool {
+        self.needs_key()
     }
 }
 
@@ -570,7 +652,9 @@ fn complete(
     let model = settings.model();
     match settings.provider {
         Provider::Off => anyhow::bail!("the analysis is off"),
-        Provider::ClaudeCode => claude_code(system, user),
+        Provider::ClaudeCode | Provider::CodexCli | Provider::GeminiCli => {
+            cli(settings.provider, &model, system, user)
+        }
         Provider::Anthropic => {
             let key = key(Provider::Anthropic)
                 .ok_or_else(|| anyhow::anyhow!("Add your Anthropic API key"))?;
@@ -651,37 +735,79 @@ fn complete(
     }
 }
 
-/// Where Claude Code is installed, if it is.
-pub fn claude_code_path() -> Option<PathBuf> {
+/// Where `provider`'s command-line tool is installed, if it is. An app
+/// opened from the Finder gets no shell PATH, so the usual places are
+/// looked at too.
+pub fn cli_path(provider: Provider) -> Option<PathBuf> {
+    let name = provider.binary()?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| {
             std::env::split_paths(&path)
-                .map(|dir| dir.join("claude"))
+                .map(|dir| dir.join(name))
                 .collect()
         })
         .unwrap_or_default();
-    candidates.extend(["/opt/homebrew/bin/claude", "/usr/local/bin/claude"].map(PathBuf::from));
+    for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
+        candidates.push(Path::new(dir).join(name));
+    }
     if let Some(home) = home {
-        candidates.push(home.join(".claude/local/claude"));
-        candidates.push(home.join(".local/bin/claude"));
-        candidates.push(home.join(".npm-global/bin/claude"));
+        for dir in [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin"] {
+            candidates.push(home.join(dir).join(name));
+        }
     }
     candidates.into_iter().find(|path| path.is_file())
 }
 
-fn claude_code(system: &str, user: &str) -> anyhow::Result<String> {
+/// Runs a subscription's command-line tool once, with `user` on its input,
+/// and returns its answer.
+fn cli(provider: Provider, model: &str, system: &str, user: &str) -> anyhow::Result<String> {
     use std::io::Write;
-    let binary =
-        claude_code_path().ok_or_else(|| anyhow::anyhow!("Claude Code is not installed"))?;
-    let mut child = std::process::Command::new(binary)
-        .args([
-            "-p",
-            "--output-format",
-            "json",
-            "--append-system-prompt",
-            system,
-        ])
+    let binary = cli_path(provider)
+        .ok_or_else(|| anyhow::anyhow!("{} is not installed", provider.label()))?;
+    let work = std::env::temp_dir().join("whatspro-analysis");
+    std::fs::create_dir_all(&work)?;
+    let answer = work.join(format!("answer-{}.txt", std::process::id()));
+    let mut command = std::process::Command::new(&binary);
+    let mut input = user.to_owned();
+    match provider {
+        Provider::ClaudeCode => {
+            command.args([
+                "-p",
+                "--output-format",
+                "json",
+                "--append-system-prompt",
+                system,
+            ]);
+            if !model.is_empty() {
+                command.args(["--model", model]);
+            }
+        }
+        Provider::CodexCli => {
+            // No tools are needed: it only reads and answers.
+            command.args(["exec", "--skip-git-repo-check", "--sandbox", "read-only"]);
+            command.arg("--output-last-message").arg(&answer);
+            if !model.is_empty() {
+                command.args(["--model", model]);
+            }
+            command.arg("-");
+            input = format!("{system}\n\n{user}");
+        }
+        Provider::GeminiCli => {
+            command.args(["-p", system]);
+            if !model.is_empty() {
+                command.args(["--model", model]);
+            }
+        }
+        _ => anyhow::bail!("{} has no command-line tool", provider.label()),
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let mut child = command
+        .current_dir(&work)
+        .env(
+            "PATH",
+            format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{path}"),
+        )
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -689,14 +815,136 @@ fn claude_code(system: &str, user: &str) -> anyhow::Result<String> {
     child
         .stdin
         .take()
-        .ok_or_else(|| anyhow::anyhow!("Claude Code did not take the prompt"))?
-        .write_all(user.as_bytes())?;
+        .ok_or_else(|| anyhow::anyhow!("{} did not take the prompt", provider.label()))?
+        .write_all(input.as_bytes())?;
     let output = child.wait_with_output()?;
     if !output.status.success() {
-        anyhow::bail!("Claude Code stopped with {}", output.status);
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("");
+        anyhow::bail!("{} stopped ({}): {detail}", provider.label(), output.status);
     }
-    let reply: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    Ok(reply["result"].as_str().unwrap_or_default().to_owned())
+    let text = match provider {
+        Provider::ClaudeCode => {
+            let reply: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            reply["result"].as_str().unwrap_or_default().to_owned()
+        }
+        Provider::CodexCli => {
+            let text = std::fs::read_to_string(&answer).unwrap_or_default();
+            let _ = std::fs::remove_file(&answer);
+            text
+        }
+        _ => String::from_utf8_lossy(&output.stdout).into_owned(),
+    };
+    Ok(text)
+}
+
+// ------------------------------------------------------------- model lists
+
+type Listing = (Instant, Result<Vec<String>, String>);
+
+fn listings() -> &'static Mutex<HashMap<Provider, Listing>> {
+    static LISTINGS: OnceLock<Mutex<HashMap<Provider, Listing>>> = OnceLock::new();
+    LISTINGS.get_or_init(Default::default)
+}
+
+/// Every model `provider` offers, as last fetched. Asks for them in the
+/// background when they are missing or an hour old (or `refresh`), and
+/// repaints when they arrive. `None` while the first answer is on its way.
+pub fn models(
+    ctx: &egui::Context,
+    provider: Provider,
+    refresh: bool,
+) -> Option<Result<Vec<String>, String>> {
+    if !provider.lists_models() {
+        return Some(Ok(Vec::new()));
+    }
+    let mut held = listings().lock().unwrap_or_else(|p| p.into_inner());
+    let stale = held
+        .get(&provider)
+        .is_none_or(|(at, _)| refresh || at.elapsed() > Duration::from_secs(3600));
+    if stale {
+        // Marks it fetched now so a second frame does not ask again.
+        let previous = held.get(&provider).map(|(_, r)| r.clone());
+        held.insert(
+            provider,
+            (
+                Instant::now(),
+                previous.clone().unwrap_or(Err(String::new())),
+            ),
+        );
+        let ctx = ctx.clone();
+        let _ = std::thread::Builder::new()
+            .name("model-list".into())
+            .spawn(move || {
+                let result = fetch_models(provider).map_err(|e| e.to_string());
+                listings()
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .insert(provider, (Instant::now(), result));
+                ctx.request_repaint();
+            });
+        return previous.filter(|r| r.is_ok());
+    }
+    held.get(&provider)
+        .map(|(_, result)| result.clone())
+        .filter(|r| !matches!(r, Err(e) if e.is_empty()))
+}
+
+fn fetch_models(provider: Provider) -> anyhow::Result<Vec<String>> {
+    let client = http()?;
+    let request = match provider {
+        Provider::Anthropic => client
+            .get("https://api.anthropic.com/v1/models?limit=1000")
+            .header(
+                "x-api-key",
+                key(provider).ok_or_else(|| anyhow::anyhow!("Add your key first"))?,
+            )
+            .header("anthropic-version", "2023-06-01"),
+        Provider::OpenAi => client
+            .get("https://api.openai.com/v1/models")
+            .bearer_auth(key(provider).ok_or_else(|| anyhow::anyhow!("Add your key first"))?),
+        Provider::OpenRouter => client.get("https://openrouter.ai/api/v1/models"),
+        _ => return Ok(Vec::new()),
+    };
+    let body = request.send()?.bytes()?;
+    let reply: serde_json::Value = serde_json::from_slice(&body)?;
+    if let Some(error) = reply.get("error") {
+        anyhow::bail!(
+            "{}",
+            error["message"]
+                .as_str()
+                .unwrap_or("the models could not be listed")
+        );
+    }
+    let mut ids: Vec<String> = reply["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|model| model["id"].as_str().map(str::to_owned))
+        // OpenAI also lists embeddings, audio and image models.
+        .filter(|id| {
+            provider != Provider::OpenAi
+                || ((id.starts_with("gpt-") || id.starts_with('o'))
+                    && ![
+                        "audio",
+                        "realtime",
+                        "tts",
+                        "transcribe",
+                        "image",
+                        "embedding",
+                        "search",
+                    ]
+                    .iter()
+                    .any(|kind| id.contains(kind)))
+        })
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
 }
 
 #[cfg(test)]
@@ -758,5 +1006,7 @@ mod tests {
         assert_eq!(number(&serde_json::json!(3)), Some(3));
         assert_eq!(number(&serde_json::json!("[4]")), Some(4));
         assert_eq!(Provider::Anthropic.default_model(), "claude-opus-5-5");
+        assert_eq!(Provider::ClaudeCode.default_model(), "opus");
+        assert_eq!(Provider::CodexCli.default_model(), "");
     }
 }

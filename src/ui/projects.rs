@@ -84,6 +84,7 @@ struct State {
     draft: String,
     engine_draft: Option<EngineConfig>,
     key_draft: String,
+    model_search: String,
     /// In a narrow window, whether the project (or bucket) beside the list
     /// is on screen instead of the list.
     picked: bool,
@@ -110,6 +111,7 @@ impl Default for State {
             draft: String::new(),
             engine_draft: None,
             key_draft: String::new(),
+            model_search: String::new(),
             picked: false,
         }
     }
@@ -2275,8 +2277,8 @@ fn bucket(app: &mut App, ui: &mut egui::Ui, state: &mut State, bucket: Bucket) {
 
 // ------------------------------------------------------------------- engine
 
-/// Where the analysis is chosen: who reads the messages, with what key and
-/// model, and how often.
+/// Where the analysis is chosen: who reads the messages (a subscription's
+/// own tool, or an API with a key), with what model, and how often.
 fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
     let palette = app.palette;
     let locale = app.locale;
@@ -2297,6 +2299,7 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
     );
     let mut save = false;
     let mut save_key = false;
+    let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical()
         .id_salt("projects-engine")
         .auto_shrink([false, false])
@@ -2308,91 +2311,165 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                     ui.spacing_mut().item_spacing.y = 12.0;
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        card_title(ui, &palette, Icon::Settings, gettext(locale, "Engine").as_ref(), palette.text, |_| {});
-                        let options: Vec<(Provider, String)> = Provider::EVERY
-                            .into_iter()
-                            .map(|p| {
-                                let label = if p == Provider::Off {
-                                    gettext(locale, "Off").into_owned()
-                                } else {
-                                    p.label().to_owned()
-                                };
-                                (p, label)
-                            })
-                            .collect();
-                        ui.horizontal_wrapped(|ui| {
-                            if let Some(provider) = segmented(ui, &palette, &options, draft.provider) {
-                                draft.provider = provider;
-                                draft.model.clear();
-                                state.key_draft.clear();
-                            }
-                        });
+                        card_title(
+                            ui,
+                            &palette,
+                            Icon::Settings,
+                            gettext(locale, "Engine").as_ref(),
+                            palette.text,
+                            |_| {},
+                        );
+                        let mut pick = |ui: &mut egui::Ui, label: &str, providers: &[Provider]| {
+                            theme::text(ui, label, theme::regular(12.5), palette.secondary);
+                            let options: Vec<(Provider, String)> = providers
+                                .iter()
+                                .map(|p| {
+                                    let label = if *p == Provider::Off {
+                                        gettext(locale, "Off").into_owned()
+                                    } else {
+                                        p.label().to_owned()
+                                    };
+                                    (*p, label)
+                                })
+                                .collect();
+                            ui.horizontal_wrapped(|ui| {
+                                if let Some(provider) =
+                                    segmented(ui, &palette, &options, draft.provider)
+                                {
+                                    draft.provider = provider;
+                                    draft.model = provider.default_model().to_owned();
+                                    state.key_draft.clear();
+                                    state.model_search.clear();
+                                }
+                            });
+                        };
+                        pick(
+                            ui,
+                            gettext(locale, "With your subscription, no key").as_ref(),
+                            &[Provider::ClaudeCode, Provider::CodexCli, Provider::GeminiCli],
+                        );
+                        ui.add_space(4.0);
+                        pick(
+                            ui,
+                            gettext(locale, "With an API key, paid by use").as_ref(),
+                            &[Provider::Anthropic, Provider::OpenAi, Provider::OpenRouter],
+                        );
+                        ui.add_space(4.0);
+                        pick(ui, "", &[Provider::Off]);
                         ui.add_space(8.0);
-                        match draft.provider {
-                            Provider::Off => wrapped(
+                        if draft.provider == Provider::Off {
+                            wrapped(
                                 ui,
                                 gettext(locale, "The panels stay empty and nothing leaves this computer.").as_ref(),
                                 theme::regular(13.5),
                                 palette.secondary,
-                            ),
-                            Provider::ClaudeCode => {
-                                let found = engine::claude_code_path();
-                                wrapped(
+                            );
+                            return;
+                        }
+                        if let Some(binary) = draft.provider.binary() {
+                            match engine::cli_path(draft.provider) {
+                                Some(_) => wrapped(
                                     ui,
-                                    if found.is_some() {
-                                        gettext(locale, "Uses Claude Code on this computer with your Claude plan. No key needed.")
-                                    } else {
-                                        gettext(locale, "Claude Code is not installed on this computer. Install it, or choose an API.")
+                                    gettext(locale, "Installed. Sign in once in the Terminal with `{command}` using your subscription's account; Whats Pro then uses it on its own.")
+                                        .replace("{command}", binary)
+                                        .as_ref(),
+                                    theme::regular(13.0),
+                                    palette.secondary,
+                                ),
+                                None => {
+                                    wrapped(
+                                        ui,
+                                        gettext(locale, "Not installed on this computer. Install it in the Terminal, then sign in once with `{command}`:")
+                                            .replace("{command}", binary)
+                                            .as_ref(),
+                                        theme::regular(13.0),
+                                        palette.warning,
+                                    );
+                                    if let Some(install) = draft.provider.install() {
+                                        ui.horizontal(|ui| {
+                                            Frame::new()
+                                                .fill(palette.surface_active)
+                                                .corner_radius(CornerRadius::same(theme::RADIUS))
+                                                .inner_margin(Margin::symmetric(10, 6))
+                                                .show(ui, |ui| {
+                                                    theme::text(
+                                                        ui,
+                                                        install,
+                                                        egui::FontId::monospace(13.0),
+                                                        palette.text,
+                                                    );
+                                                });
+                                            if theme::icon_button(
+                                                ui,
+                                                Icon::Copy,
+                                                16.0,
+                                                palette.secondary,
+                                                palette.text,
+                                                &gettext(locale, "Copy"),
+                                            )
+                                            .clicked()
+                                            {
+                                                ui.ctx().copy_text(install.to_owned());
+                                            }
+                                        });
                                     }
-                                    .as_ref(),
+                                }
+                            }
+                        } else {
+                            let has = engine::has_key(draft.provider);
+                            ui.horizontal(|ui| {
+                                theme::text(
+                                    ui,
+                                    gettext(locale, "API key"),
                                     theme::regular(13.5),
-                                    if found.is_some() { palette.secondary } else { palette.warning },
+                                    palette.secondary,
                                 );
-                            }
-                            provider => {
-                                let has = engine::has_key(provider);
-                                ui.horizontal(|ui| {
-                                    theme::text(ui, gettext(locale, "API key"), theme::regular(13.5), palette.secondary);
-                                    let hint = if has {
-                                        gettext(locale, "Saved in the keychain")
-                                    } else {
-                                        gettext(locale, "Paste your key")
-                                    };
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut state.key_draft)
-                                            .password(true)
-                                            .hint_text(hint.as_ref())
-                                            .desired_width(300.0),
-                                    );
-                                    if !state.key_draft.trim().is_empty()
-                                        && pill_button(ui, &palette, gettext(locale, "Save key").as_ref(), true).clicked()
-                                    {
-                                        save_key = true;
-                                    }
-                                });
-                                ui.horizontal(|ui| {
-                                    theme::text(ui, gettext(locale, "Model"), theme::regular(13.5), palette.secondary);
-                                    let hint = if provider.default_model().is_empty() {
-                                        gettext(locale, "Model name").into_owned()
-                                    } else {
-                                        provider.default_model().to_owned()
-                                    };
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut draft.model)
-                                            .hint_text(hint)
-                                            .desired_width(300.0),
-                                    );
-                                });
-                            }
+                                let hint = if has {
+                                    gettext(locale, "Saved in the keychain")
+                                } else {
+                                    gettext(locale, "Paste your key")
+                                };
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.key_draft)
+                                        .password(true)
+                                        .hint_text(hint.as_ref())
+                                        .desired_width(300.0),
+                                );
+                                if !state.key_draft.trim().is_empty()
+                                    && pill_button(
+                                        ui,
+                                        &palette,
+                                        gettext(locale, "Save key").as_ref(),
+                                        true,
+                                    )
+                                    .clicked()
+                                {
+                                    save_key = true;
+                                }
+                            });
+                        }
+                        ui.add_space(6.0);
+                        if let Some(model) =
+                            model_picker(&ctx, ui, &palette, locale, draft.provider, &draft.model, &mut state.model_search)
+                        {
+                            draft.model = model;
                         }
                     });
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        card_title(ui, &palette, Icon::Clock, gettext(locale, "How often").as_ref(), palette.text, |_| {});
-                        let options: Vec<(u32, String)> = [(30, "30 min"), (60, "1 h"), (120, "2 h"), (360, "6 h")]
-                            .into_iter()
-                            .map(|(m, l)| (m, l.to_owned()))
-                            .collect();
+                        card_title(
+                            ui,
+                            &palette,
+                            Icon::Clock,
+                            gettext(locale, "How often").as_ref(),
+                            palette.text,
+                            |_| {},
+                        );
+                        let options: Vec<(u32, String)> =
+                            [(30, "30 min"), (60, "1 h"), (120, "2 h"), (360, "6 h")]
+                                .into_iter()
+                                .map(|(m, l)| (m, l.to_owned()))
+                                .collect();
                         if let Some(every) = segmented(ui, &palette, &options, draft.every) {
                             draft.every = every;
                         }
@@ -2405,7 +2482,14 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                     });
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        card_title(ui, &palette, Icon::Lock, gettext(locale, "Privacy").as_ref(), palette.text, |_| {});
+                        card_title(
+                            ui,
+                            &palette,
+                            Icon::Lock,
+                            gettext(locale, "Privacy").as_ref(),
+                            palette.text,
+                            |_| {},
+                        );
                         wrapped(
                             ui,
                             gettext(locale, "The analysis sends the last week of messages from your projects' sources to the provider you choose. Personal and ignored chats, and chats in no project, are never sent. Messages you mark as not belonging to a project are not sent for it.").as_ref(),
@@ -2416,12 +2500,20 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0;
                         if draft != saved
-                            && pill_button(ui, &palette, gettext(locale, "Save").as_ref(), true).clicked()
+                            && pill_button(ui, &palette, gettext(locale, "Save").as_ref(), true)
+                                .clicked()
                         {
                             save = true;
                         }
-                        if saved.provider != Provider::Off && status.running.is_none()
-                            && pill_button(ui, &palette, gettext(locale, "Analyze now").as_ref(), draft == saved).clicked()
+                        if saved.provider != Provider::Off
+                            && status.running.is_none()
+                            && pill_button(
+                                ui,
+                                &palette,
+                                gettext(locale, "Analyze now").as_ref(),
+                                draft == saved,
+                            )
+                            .clicked()
                         {
                             engine::run_now();
                         }
@@ -2435,7 +2527,8 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                         } else if let Some(at) = status.last_run {
                             theme::text(
                                 ui,
-                                gettext(locale, "Last run {when} ago").replace("{when}", &ago(locale, at)),
+                                gettext(locale, "Last run {when} ago")
+                                    .replace("{when}", &ago(locale, at)),
                                 theme::regular(13.0),
                                 palette.dim,
                             );
@@ -2451,6 +2544,8 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
             log::warn!("analysis: the key could not be saved: {error}");
         }
         state.key_draft.clear();
+        // The list of models needs the key.
+        let _ = engine::models(&ctx, draft.provider, true);
     }
     if save {
         if let Err(error) = draft.save(&app.dirs.config) {
@@ -2460,6 +2555,214 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
     } else {
         state.engine_draft = (draft != saved).then_some(draft);
     }
+}
+
+/// The model in use, as a button that opens a searchable list: the
+/// recommended models first, with why, then every model the provider
+/// offers. A name typed that is not listed can be used as it is.
+#[allow(clippy::too_many_arguments)]
+fn model_picker(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    provider: Provider,
+    current: &str,
+    search: &mut String,
+) -> Option<String> {
+    let suggestions = provider.suggestions();
+    let note = suggestions.iter().find(|s| s.id == current).map(|s| s.note);
+    let shown = if current.is_empty() {
+        gettext(locale, "Default model").into_owned()
+    } else {
+        current.to_owned()
+    };
+    let recommended = suggestions.first().is_some_and(|s| s.id == current);
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        theme::text(
+            ui,
+            gettext(locale, "Model"),
+            theme::regular(13.5),
+            palette.secondary,
+        );
+        let label = if recommended {
+            format!("{shown}  ·  {}", gettext(locale, "recommended"))
+        } else {
+            shown.clone()
+        };
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label.clone(), theme::medium(13.5), palette.text);
+        let width = (galley.size().x + 44.0).max(240.0);
+        let (rect, button) = ui.allocate_exact_size(vec2(width, 32.0), Sense::click());
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(theme::RADIUS + 2),
+            if button.hovered() {
+                palette.surface_hover
+            } else {
+                palette.surface
+            },
+        );
+        ui.painter().galley(
+            pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0),
+            galley,
+            palette.text,
+        );
+        let chevron = Rect::from_center_size(
+            pos2(rect.right() - 16.0, rect.center().y),
+            Vec2::splat(14.0),
+        );
+        theme::icon(
+            &mut ui.new_child(egui::UiBuilder::new().max_rect(chevron)),
+            Icon::ChevronDown,
+            14.0,
+            palette.secondary,
+        );
+        let button = button.on_hover_cursor(egui::CursorIcon::PointingHand);
+        egui::Popup::menu(&button)
+            .width(380.0)
+            .frame(widgets::menu_frame(palette))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_width(380.0);
+                widgets::search_field(
+                    ui,
+                    palette,
+                    egui::Id::new("model-search"),
+                    search,
+                    gettext(locale, "Search models").as_ref(),
+                    380.0,
+                );
+                ui.add_space(6.0);
+                let needle = search.trim().to_lowercase();
+                egui::ScrollArea::vertical()
+                    .max_height(340.0)
+                    .show(ui, |ui| {
+                        let row =
+                            |ui: &mut egui::Ui, id: &str, note: Option<&'static str>| -> bool {
+                                let label = if id.is_empty() {
+                                    gettext(locale, "Default model").into_owned()
+                                } else {
+                                    id.to_owned()
+                                };
+                                let height = if note.is_some() { 44.0 } else { 30.0 };
+                                let (rect, response) = ui.allocate_exact_size(
+                                    vec2(ui.available_width(), height),
+                                    Sense::click(),
+                                );
+                                if response.hovered() || id == current {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        CornerRadius::same(theme::RADIUS),
+                                        if id == current {
+                                            palette.surface_active
+                                        } else {
+                                            palette.surface_hover
+                                        },
+                                    );
+                                }
+                                let text = ui.painter().layout_no_wrap(
+                                    label,
+                                    theme::medium(13.5),
+                                    palette.text,
+                                );
+                                ui.painter().galley(
+                                    pos2(rect.left() + 10.0, rect.top() + 6.0),
+                                    text,
+                                    palette.text,
+                                );
+                                if let Some(note) = note {
+                                    let note = ui.painter().layout_no_wrap(
+                                        gettext(locale, note).into_owned(),
+                                        theme::regular(12.0),
+                                        palette.secondary,
+                                    );
+                                    ui.painter().galley(
+                                        pos2(rect.left() + 10.0, rect.top() + 24.0),
+                                        note,
+                                        palette.secondary,
+                                    );
+                                }
+                                response
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .clicked()
+                            };
+                        theme::text(
+                            ui,
+                            gettext(locale, "Recommended"),
+                            theme::medium(12.5),
+                            palette.accent,
+                        );
+                        for suggestion in suggestions.iter().filter(|s| {
+                            needle.is_empty()
+                                || s.id.contains(&needle)
+                                || s.note.to_lowercase().contains(&needle)
+                        }) {
+                            if row(ui, suggestion.id, Some(suggestion.note)) {
+                                chosen = Some(suggestion.id.to_owned());
+                            }
+                        }
+                        if provider.lists_models() {
+                            ui.add_space(6.0);
+                            theme::text(
+                                ui,
+                                gettext(locale, "Every model"),
+                                theme::medium(12.5),
+                                palette.accent,
+                            );
+                            match engine::models(ctx, provider, false) {
+                                None => {
+                                    theme::text(
+                                        ui,
+                                        gettext(locale, "Loading…"),
+                                        theme::regular(12.5),
+                                        palette.dim,
+                                    );
+                                }
+                                Some(Err(error)) => {
+                                    wrapped(ui, &error, theme::regular(12.5), palette.warning);
+                                }
+                                Some(Ok(list)) => {
+                                    for id in list
+                                        .iter()
+                                        .filter(|id| {
+                                            needle.is_empty() || id.to_lowercase().contains(&needle)
+                                        })
+                                        .filter(|id| {
+                                            !suggestions.iter().any(|s| s.id == id.as_str())
+                                        })
+                                        .take(300)
+                                    {
+                                        if row(ui, id, None) {
+                                            chosen = Some(id.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let typed = search.trim();
+                        if !typed.is_empty() && !suggestions.iter().any(|s| s.id == typed) {
+                            ui.add_space(6.0);
+                            let label = gettext(locale, "Use “{model}”").replace("{model}", typed);
+                            if widgets::menu_item(ui, palette, Some(Icon::Pencil), &label) {
+                                chosen = Some(typed.to_owned());
+                            }
+                        }
+                    });
+                if chosen.is_some() {
+                    ui.close();
+                }
+            });
+    });
+    if let Some(note) = note {
+        theme::text(ui, gettext(locale, note), theme::regular(12.0), palette.dim);
+    }
+    if chosen.is_some() {
+        search.clear();
+    }
+    chosen
 }
 
 // -------------------------------------------------------------- new project

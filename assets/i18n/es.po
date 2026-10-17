@@ -3175,3 +3175,99 @@ msgstr "Sin voz"
 
 msgid "No text"
 msgstr "Sin texto"
+
+#: src/ui/projects.rs
+msgid "With your subscription, no key"
+msgstr "Con tu suscripción, sin key"
+
+#: src/ui/projects.rs
+msgid "With an API key, paid by use"
+msgstr "Con API key, se paga por uso"
+
+#: src/ui/projects.rs
+msgid "Installed. Sign in once in the Terminal with `{command}` using your subscription's account; Whats Pro then uses it on its own."
+msgstr "Instalado. Iniciá sesión una vez en la Terminal con `{command}` usando la cuenta de tu suscripción; después Whats Pro lo usa solo."
+
+#: src/ui/projects.rs
+msgid "Not installed on this computer. Install it in the Terminal, then sign in once with `{command}`:"
+msgstr "No está instalado en esta Mac. Instalalo en la Terminal y después iniciá sesión una vez con `{command}`:"
+
+#: src/ui/projects.rs
+msgid "Copy"
+msgstr "Copiar"
+
+#: src/ui/projects.rs
+msgid "Default model"
+msgstr "Modelo por defecto"
+
+#: src/ui/projects.rs
+msgid "recommended"
+msgstr "recomendado"
+
+#: src/ui/projects.rs
+msgid "Search models"
+msgstr "Buscar modelos"
+
+#: src/ui/projects.rs
+msgid "Recommended"
+msgstr "Recomendados"
+
+#: src/ui/projects.rs
+msgid "Every model"
+msgstr "Todos los modelos"
+
+#: src/ui/projects.rs
+msgid "Use “{model}”"
+msgstr "Usar “{model}”"
+
+#: src/ui/projects.rs
+msgid "Claude Opus: the most capable"
+msgstr "Claude Opus: el más capaz"
+
+#: src/ui/projects.rs
+msgid "Claude Sonnet: faster, uses less of your plan"
+msgstr "Claude Sonnet: más rápido, gasta menos de tu plan"
+
+#: src/ui/projects.rs
+msgid "Claude Haiku: the lightest"
+msgstr "Claude Haiku: el más liviano"
+
+#: src/ui/projects.rs
+msgid "Codex's own default model"
+msgstr "El modelo que Codex usa por defecto"
+
+#: src/ui/projects.rs
+msgid "Gemini CLI's own default model"
+msgstr "El modelo que Gemini CLI usa por defecto"
+
+#: src/ui/projects.rs
+msgid "Gemini Pro: the most capable"
+msgstr "Gemini Pro: el más capaz"
+
+#: src/ui/projects.rs
+msgid "Gemini Flash: faster, lighter"
+msgstr "Gemini Flash: más rápido y liviano"
+
+#: src/ui/projects.rs
+msgid "Claude Opus 5.5: the most capable"
+msgstr "Claude Opus 5.5: el más capaz"
+
+#: src/ui/projects.rs
+msgid "Claude Sonnet 5.5: faster and cheaper"
+msgstr "Claude Sonnet 5.5: más rápido y barato"
+
+#: src/ui/projects.rs
+msgid "Claude Haiku 5.5: the cheapest"
+msgstr "Claude Haiku 5.5: el más barato"
+
+#: src/ui/projects.rs
+msgid "GPT-5"
+msgstr "GPT-5"
+
+#: src/ui/projects.rs
+msgid "Claude Opus 5.5 through OpenRouter"
+msgstr "Claude Opus 5.5 vía OpenRouter"
+
+#: src/ui/projects.rs
+msgid "Claude Sonnet 5.5 through OpenRouter"
+msgstr "Claude Sonnet 5.5 vía OpenRouter"
