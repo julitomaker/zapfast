@@ -465,6 +465,11 @@ pub enum Command {
     HangupCall,
     /// Mutes or unmutes the current call's microphone through the engine.
     SetCallMuted(bool),
+    /// Starts, stops or discards the recording of the call `generation`.
+    CallRecording {
+        generation: u64,
+        op: crate::calls::RecordingOp,
+    },
     /// Turns the current call's camera on or off.
     SetCallCamera(bool),
     /// Rebinds the current call's microphone; `None` is the system default.
@@ -1273,6 +1278,13 @@ pub enum Event {
     },
     /// The current call changed state. The UI renders this and nothing else.
     Call(Box<crate::calls::CallUpdate>),
+    /// A call's recording stopped, by the user or by the call's end, and its file is closed.
+    CallRecorded(Box<crate::call_tape::Report>),
+    /// The recording of the call `generation` could not start, stop or be discarded.
+    CallRecordingFailed {
+        generation: u64,
+        reason: String,
+    },
     /// The devices the call screen can offer.
     CallDevices(Box<crate::calls::DeviceList>),
     /// The account's call entries, newest first, for the Calls page.

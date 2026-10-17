@@ -719,6 +719,7 @@ mod tests {
             speaker: None,
             camera: None,
             group: None,
+            recording: None,
         }
     }
 

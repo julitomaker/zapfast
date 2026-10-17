@@ -21,6 +21,8 @@ use rodio::Source;
 use rodio::buffer::SamplesBuffer;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 
+use crate::call_tape::Tape;
+
 /// The engine's audio clock: 16 kHz mono.
 pub const RATE: u32 = 16_000;
 /// Samples in one engine frame: 60 ms at [`RATE`].
@@ -541,6 +543,15 @@ pub struct AudioInput {
 
 impl AudioInput {
     pub fn spawn(target: Option<String>) -> (Self, async_channel::Receiver<Vec<i16>>) {
+        Self::spawn_tapped(target, Tape::new(0))
+    }
+
+    /// Like [`spawn`](Self::spawn), with every frame the engine gets also handed to `tape`, which
+    /// may mix the recording notice into it first.
+    pub fn spawn_tapped(
+        target: Option<String>,
+        tape: Tape,
+    ) -> (Self, async_channel::Receiver<Vec<i16>>) {
         let (out, rx) = async_channel::bounded::<Vec<i16>>(4);
         // Unbounded so a device the user picks while the pump is busy is never dropped: a capacity
         // of one would silently discard the newer selection when two arrive before the pump reads
@@ -557,6 +568,7 @@ impl AudioInput {
             fell,
             target.clone(),
             Arc::clone(&opens),
+            tape,
         ));
         (
             Self {
@@ -587,6 +599,7 @@ async fn mic_pump(
     fell: async_channel::Sender<()>,
     initial: Option<String>,
     opens: Arc<AtomicUsize>,
+    tape: Tape,
 ) {
     let mut target = initial;
     loop {
@@ -620,7 +633,10 @@ async fn mic_pump(
             tokio::select! {
                 frame = reader.frames.recv() => {
                     match frame {
-                        Ok(frame) => {
+                        Ok(mut frame) => {
+                            // Before the engine gets it, so a notice the tape mixes in is what the
+                            // other side hears and what the recording keeps.
+                            tape.me(&mut frame);
                             if out.send(frame).await.is_err() {
                                 // The engine dropped its port: the call is over.
                                 return;
@@ -794,6 +810,15 @@ pub struct AudioOutput {
 
 impl AudioOutput {
     pub fn spawn(target: Option<String>) -> (Self, async_channel::Sender<Vec<i16>>) {
+        Self::spawn_tapped(target, Tape::new(0))
+    }
+
+    /// Like [`spawn`](Self::spawn), with every frame of the other side also handed to `tape`,
+    /// including the ones a stalled speaker never plays.
+    pub fn spawn_tapped(
+        target: Option<String>,
+        tape: Tape,
+    ) -> (Self, async_channel::Sender<Vec<i16>>) {
         let (tx, rx) = async_channel::bounded::<Vec<i16>>(SPEAKER_QUEUE);
         // Unbounded for the same reason the microphone's is: a newer device selection must not be
         // dropped because the previous one has not been read yet.
@@ -814,6 +839,7 @@ impl AudioOutput {
                 restarts: Arc::clone(&restarts),
                 relink: Arc::clone(&relink),
             },
+            tape,
         ));
         (
             Self {
@@ -888,6 +914,7 @@ async fn play_pump(
     fell: async_channel::Sender<()>,
     initial: Option<String>,
     health: SpeakerHealth,
+    tape: Tape,
 ) {
     let SpeakerHealth {
         opens,
@@ -931,6 +958,7 @@ async fn play_pump(
                 frame = rx.recv() => {
                     match frame {
                         Ok(frame) => {
+                            tape.them(&frame);
                             if writer.send(frame).await.is_err() {
                                 // The writer ended, either from a stall or from its device going away.
                                 break;
@@ -991,8 +1019,11 @@ async fn play_pump(
             // A stream that played frames was merely stalled, so it keeps the device the user
             // picked rather than being demoted to the system default over one bad moment. What is
             // queued is already older than the restart, and playing it late would only add delay,
-            // so it is dropped and the engine's channel refills at its own pace.
-            while rx.try_recv().is_ok() {}
+            // so it is dropped and the engine's channel refills at its own pace. The recording
+            // still keeps it: the other side said it, and the file has no lag to add.
+            while let Ok(frame) = rx.try_recv() {
+                tape.them(&frame);
+            }
             tokio::time::sleep(Duration::from_millis(100)).await;
             continue;
         }
@@ -1984,6 +2015,155 @@ mod tests {
         }
         drop(output);
         assert!(speaker.played_count() > before, "the call kept playing");
+    }
+
+    /// Runs both pumps of a call through `tape` for `steps` engine frames, taken 60 ms apart as
+    /// the engine takes them, with a frame of `them` sent to the speaker after each one. `before`
+    /// runs ahead of each step. Returns what the engine got from the microphone.
+    async fn tapped_call(
+        tape: &Tape,
+        steps: usize,
+        them: i16,
+        mut before: impl FnMut(usize, &AudioInput),
+    ) -> Vec<Vec<i16>> {
+        let (input, frames) = AudioInput::spawn_tapped(None, tape.clone());
+        let (output, speaker) = AudioOutput::spawn_tapped(None, tape.clone());
+        let mut got = Vec::new();
+        for step in 0..steps {
+            before(step, &input);
+            let frame = tokio::time::timeout(Duration::from_secs(5), frames.recv())
+                .await
+                .expect("the microphone keeps delivering")
+                .expect("the engine's channel stays open");
+            got.push(frame);
+            let _ = speaker.try_send(vec![them; FRAME_SAMPLES]);
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+        drop((input, output));
+        got
+    }
+
+    /// The longest run of silence between a side's first and last sound, in samples.
+    fn longest_gap(side: &[i16]) -> usize {
+        let (Some(first), Some(last)) = (
+            side.iter().position(|&s| s != 0),
+            side.iter().rposition(|&s| s != 0),
+        ) else {
+            return side.len();
+        };
+        side[first..=last]
+            .split(|&s| s != 0)
+            .map(<[i16]>::len)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// With the recording on, the notice is mixed into what the engine sends, so the other side
+    /// hears it, and the file keeps it on the left with the other side on the right.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_recorded_call_sends_the_notice_and_keeps_both_sides() {
+        let _alone = crate::call_tape::exclusive();
+        // A silent microphone, so anything the engine gets is the notice.
+        let (_devices, _speaker) = fake::install(vec![0.0; 8], 1, RATE, (48_000, 2));
+        let dir = tempfile::tempdir().unwrap();
+        let tape = Tape::new(7);
+        tape.start(&dir.path().join("call.wav"), true).unwrap();
+        let got = tapped_call(&tape, 15, 1_000, |_, _| {}).await;
+        let report = tape.stop().expect("it was recording");
+
+        let peak = got
+            .iter()
+            .flatten()
+            .map(|s| s.unsigned_abs())
+            .max()
+            .unwrap();
+        assert!(peak > 6_000, "the engine got the notice, peak {peak}");
+        assert!(f32::from(peak) <= 0.26 * f32::from(i16::MAX), "and softly");
+        assert!(report.notice_ms.is_some(), "the notice's place is noted");
+        let [left, right] = crate::call_tape::read_channels(&report.path);
+        assert!(
+            left.iter().any(|s| s.unsigned_abs() > 6_000),
+            "the file keeps the notice"
+        );
+        assert!(
+            left.iter().filter(|&&s| s != 0).count() <= crate::call_tones::recording_notice().len(),
+            "and nothing else from a silent microphone"
+        );
+        assert!(
+            right.iter().filter(|&&s| s == 1_000).count() > FRAME_SAMPLES * 10,
+            "the other side is on the right"
+        );
+    }
+
+    /// Muted, the recording keeps silence on the left while the engine is still fed, since the
+    /// engine does its own muting.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_muted_recording_is_silent_on_the_left_and_the_engine_still_gets_frames() {
+        let _alone = crate::call_tape::exclusive();
+        let samples: Vec<f32> = (0..960).map(|sample| sample as f32 / 1_920.0).collect();
+        let (_devices, _speaker) = fake::install(samples, 1, RATE, (48_000, 2));
+        let dir = tempfile::tempdir().unwrap();
+        let tape = Tape::new(8);
+        tape.set_muted(true);
+        tape.start(&dir.path().join("call.wav"), false).unwrap();
+        let got = tapped_call(&tape, 10, 1_000, |_, _| {}).await;
+        let report = tape.stop().expect("it was recording");
+
+        assert_eq!(got.len(), 10, "the engine kept getting frames");
+        assert!(
+            got.iter().flatten().any(|&s| s != 0),
+            "with the voice in them"
+        );
+        let [left, right] = crate::call_tape::read_channels(&report.path);
+        assert!(!left.is_empty());
+        assert!(left.iter().all(|&s| s == 0), "no voice is recorded");
+        assert!(right.contains(&1_000), "the other side still is");
+    }
+
+    /// Changing the microphone mid-recording leaves at most a short silence on the left, and the
+    /// two sides still end together and match the time the call took.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_microphone_change_keeps_the_recording_in_step() {
+        let _alone = crate::call_tape::exclusive();
+        let (_devices, _speaker) = fake::install(vec![0.5; 8], 1, RATE, (48_000, 2));
+        let dir = tempfile::tempdir().unwrap();
+        let tape = Tape::new(9);
+        let begun = Instant::now();
+        tape.start(&dir.path().join("call.wav"), false).unwrap();
+        let mut input_opens = None;
+        tapped_call(&tape, 30, 1_000, |step, input| {
+            if step == 12 {
+                input.bind(Some("Second microphone".to_owned()));
+            }
+            input_opens = Some(Arc::clone(&input.opens));
+        })
+        .await;
+        let report = tape.stop().expect("it was recording");
+        let took = begun.elapsed().as_secs_f64();
+
+        assert_eq!(
+            input_opens.unwrap().load(Ordering::Relaxed),
+            2,
+            "the microphone was opened again"
+        );
+        let [left, right] = crate::call_tape::read_channels(&report.path);
+        let half = RATE as usize / 2;
+        assert!(
+            longest_gap(&left) < half,
+            "the change left {} samples of silence",
+            longest_gap(&left)
+        );
+        assert!(longest_gap(&right) < half);
+        let end = |side: &[i16]| side.iter().rposition(|&s| s != 0).unwrap();
+        assert!(
+            end(&left).abs_diff(end(&right)) < half,
+            "both sides end together"
+        );
+        let length = left.len() as f64 / f64::from(RATE);
+        assert!(
+            (length - took).abs() < 0.5,
+            "{length:.2} s recorded in {took:.2} s"
+        );
     }
 
     /// Opens the machine's own devices and reads real frames from the microphone.

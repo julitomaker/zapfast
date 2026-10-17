@@ -13,6 +13,7 @@
 //! units decode back to `egui` images with the `openh264` decoder `crate::video` already uses.
 //! Frames cross to the UI through [`VideoTick`]; no decode work happens on the UI thread.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -20,6 +21,7 @@ use std::time::Instant;
 use anyhow::{Context, Result, anyhow};
 use egui::ColorImage;
 
+use crate::call_tape::{RecordingView, Report, Tape};
 use crate::model::CallDirection;
 use crate::video_rate::{Cadence, Change as RateChange, FrameClock, RateControl, RateShare};
 use whatsapp_rust::prelude::{Client, Jid};
@@ -187,6 +189,8 @@ pub struct CallUpdate {
     pub camera: Option<String>,
     /// Who else is on the call, for a group call; `None` for a one-to-one call.
     pub group: Option<GroupCall>,
+    /// The recording in progress, if this call is being recorded.
+    pub recording: Option<RecordingView>,
 }
 
 /// The people on a group call besides us, as the call's roster names them.
@@ -244,6 +248,7 @@ impl CallUpdate {
             speaker: None,
             camera: None,
             group: None,
+            recording: None,
         }
     }
 
@@ -511,6 +516,26 @@ fn require_video(requested: bool, pipeline: bool) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Mutes or unmutes the recording around `engine`, which mutes the call and says whether it is
+/// muted now. The recording is muted before the call is and unmuted only once the call says it
+/// is, the same order the engine gates its own frames in, so no voice the other side did not
+/// hear is recorded while the change is on its way.
+async fn muting(tape: &Tape, muted: bool, engine: impl std::future::Future<Output = bool>) {
+    if muted {
+        tape.set_muted(true);
+    }
+    let now = engine.await;
+    tape.set_muted(now);
+    if now != muted {
+        log::warn!("[CALL] mute state is {now} after asking for {muted}");
+    }
+    if now {
+        log::info!("[CALL] microphone muted");
+    } else {
+        log::info!("[CALL] microphone unmuted");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,6 +1495,21 @@ pub struct Call {
     group: Option<GroupRoster>,
     /// The task joining a call link, until it has joined: hanging up stops it.
     join_task: Option<tokio::task::AbortHandle>,
+    /// The recording tap both audio pumps feed, recording or not.
+    tape: Tape,
+    /// The recording the call's end stopped, until the worker hands it on.
+    recording: Option<Report>,
+}
+
+/// What the user asked of a call's recording.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordingOp {
+    /// Start writing to `path`, a `.wav`, with the notice the other side hears if `notice`.
+    Start { path: PathBuf, notice: bool },
+    /// Stop and keep what was recorded.
+    Stop,
+    /// Stop and delete what was recorded.
+    Discard,
 }
 
 /// What a group call's own signaling says about who is on it.
@@ -1668,8 +1708,9 @@ impl Call {
             // The camera, if one started, is released as the pipeline drops.
             return Err(Cancelled.into());
         }
-        let (mic, mic_rx) = AudioInput::spawn(microphone.clone());
-        let (output, output_tx) = AudioOutput::spawn(speaker.clone());
+        let tape = Tape::new(generation);
+        let (mic, mic_rx) = AudioInput::spawn_tapped(microphone.clone(), tape.clone());
+        let (output, output_tx) = AudioOutput::spawn_tapped(speaker.clone(), tape.clone());
 
         let voip = client.voip();
         let builder = voip.call(&peer).audio(mic_rx, output_tx);
@@ -1727,6 +1768,8 @@ impl Call {
                 lost_devices: Vec::new(),
                 group: None,
                 join_task: None,
+                tape,
+                recording: None,
             },
             frames,
         ))
@@ -1742,8 +1785,9 @@ impl Call {
             group.is_some(),
             group.as_ref().map_or(0, |roster| roster.participants.len())
         );
+        let generation = next_generation();
         Self {
-            generation: next_generation(),
+            generation,
             call_id,
             chat,
             direction: CallDirection::Incoming,
@@ -1768,6 +1812,8 @@ impl Call {
             began: crate::util::now(),
             group,
             join_task: None,
+            tape: Tape::new(generation),
+            recording: None,
         }
     }
 
@@ -1801,8 +1847,9 @@ impl Call {
         if cancel.load(Ordering::Relaxed) {
             return Err(Cancelled.into());
         }
-        let (mic, mic_rx) = AudioInput::spawn(None);
-        let (output, output_tx) = AudioOutput::spawn(None);
+        let tape = Tape::new(generation);
+        let (mic, mic_rx) = AudioInput::spawn_tapped(None, tape.clone());
+        let (output, output_tx) = AudioOutput::spawn_tapped(None, tape.clone());
         let endpoints = pipe
             .as_ref()
             .map(|(pipeline, _)| (pipeline.source(), pipeline.sink()));
@@ -1858,6 +1905,8 @@ impl Call {
                     ..GroupRoster::default()
                 }),
                 join_task: Some(task.abort_handle()),
+                tape,
+                recording: None,
             },
             frames,
         ))
@@ -1896,8 +1945,9 @@ impl Call {
     /// one on the worker and check what privacy recovery does with its update.
     #[cfg(test)]
     pub(crate) fn test_snapshot(chat: &str) -> Self {
+        let generation = next_generation();
         Self {
-            generation: next_generation(),
+            generation,
             call_id: "test-call".to_owned(),
             chat: chat.to_owned(),
             direction: CallDirection::Incoming,
@@ -1922,7 +1972,20 @@ impl Call {
             began: crate::util::now(),
             group: None,
             join_task: None,
+            tape: Tape::new(generation),
+            recording: None,
         }
+    }
+
+    /// [`test_snapshot`](Self::test_snapshot), answered and with media: a call that can be
+    /// recorded.
+    #[cfg(test)]
+    pub(crate) fn test_active(chat: &str) -> Self {
+        let mut call = Self::test_snapshot(chat);
+        call.phase = CallPhase::Active;
+        call.media_ready = true;
+        call.started = Some(Instant::now());
+        call
     }
 
     /// The WhatsApp call id, which is how signaling for this call is told from any other's.
@@ -1971,6 +2034,7 @@ impl Call {
             speaker: self.speaker_device.clone(),
             camera: self.camera.clone(),
             group: self.group.as_ref().map(GroupRoster::view),
+            recording: self.tape.view(),
         }
     }
 
@@ -2125,8 +2189,8 @@ impl Call {
             }
         }
         require_video(self.video, pipe.is_some())?;
-        let (mic, mic_rx) = AudioInput::spawn(microphone.clone());
-        let (output, output_tx) = AudioOutput::spawn(speaker.clone());
+        let (mic, mic_rx) = AudioInput::spawn_tapped(microphone.clone(), self.tape.clone());
+        let (output, output_tx) = AudioOutput::spawn_tapped(speaker.clone(), self.tape.clone());
 
         let voip = client.voip();
         // From here the library owns the answer: if it fails, its own guard ends the call with the
@@ -2259,7 +2323,47 @@ impl Call {
         }
         self.handle = None;
         self.incoming = None;
+        // After the pumps, so the recording ends with the last of the call's audio. Stopping a
+        // tape that is not recording gives nothing, so a second cleanup keeps the first report.
+        if let Some(report) = self.tape.stop() {
+            self.recording = Some(report);
+        }
         log::info!("[CALL] cleanup complete call_id={}", self.call_id);
+    }
+
+    /// Starts, stops or discards the call's recording. A stop gives back what was recorded.
+    pub fn record(&mut self, op: RecordingOp) -> Result<(CallUpdate, Option<Report>), String> {
+        let report = match op {
+            RecordingOp::Start { path, notice } => {
+                if self.phase != CallPhase::Active {
+                    return Err("The call is not connected yet".to_owned());
+                }
+                self.tape.start(&path, notice)?;
+                log::info!("[CALL] recording started call_id={}", self.call_id);
+                None
+            }
+            RecordingOp::Stop => {
+                let report = self.tape.stop();
+                log::info!(
+                    "[CALL] recording stopped call_id={} kept={}",
+                    self.call_id,
+                    report.is_some()
+                );
+                report
+            }
+            RecordingOp::Discard => {
+                self.tape.discard();
+                log::info!("[CALL] recording discarded call_id={}", self.call_id);
+                None
+            }
+        };
+        Ok((self.update(), report))
+    }
+
+    /// The recording the call's end stopped, once: the worker hands it on as the call finishes.
+    /// A call that ended without a cleanup, such as one declined, has its recording stopped here.
+    pub fn take_recording(&mut self) -> Option<Report> {
+        self.recording.take().or_else(|| self.tape.stop())
     }
 
     /// Applies one signaling stanza, when it belongs to this call.
@@ -2755,22 +2859,19 @@ impl Call {
     /// stays fed and the peer never re-negotiates the transport.
     pub async fn set_muted(&mut self, muted: bool) -> Option<CallUpdate> {
         let handle = self.handle.clone()?;
-        match handle.set_muted(muted).await {
-            Ok(()) => {}
-            Err(error) if muted => log::warn!(
-                "[CALL] the peer was not told about the mute; the microphone is muted locally: {error}"
-            ),
-            Err(error) => log::warn!("[CALL] unmute failed, the microphone stays muted: {error}"),
-        }
-        let now = handle.is_muted();
-        if now != muted {
-            log::warn!("[CALL] mute state is {now} after asking for {muted}");
-        }
-        if now {
-            log::info!("[CALL] microphone muted");
-        } else {
-            log::info!("[CALL] microphone unmuted");
-        }
+        muting(&self.tape, muted, async {
+            match handle.set_muted(muted).await {
+                Ok(()) => {}
+                Err(error) if muted => log::warn!(
+                    "[CALL] the peer was not told about the mute; the microphone is muted locally: {error}"
+                ),
+                Err(error) => {
+                    log::warn!("[CALL] unmute failed, the microphone stays muted: {error}")
+                }
+            }
+            handle.is_muted()
+        })
+        .await;
         Some(self.update())
     }
 
@@ -3497,6 +3598,7 @@ mod tests {
             speaker: None,
             camera: None,
             group: None,
+            recording: None,
         }
     }
 
@@ -4164,6 +4266,8 @@ mod tests {
             began: crate::util::now(),
             group: None,
             join_task: None,
+            tape: Tape::new(1),
+            recording: None,
         }
     }
 
@@ -4684,6 +4788,143 @@ mod tests {
         assert_eq!(update.phase, CallPhase::Failed);
         assert_eq!(update.outcome, Some(CallOutcome::ConnectionLost));
         assert!(call.started.is_none(), "the call never came up");
+    }
+
+    /// An outgoing call that is up.
+    fn active() -> Call {
+        let mut call = dialing();
+        call.media(&CallEvent::RelayAllocated);
+        call.signaling(&accept()).expect("the peer answered");
+        assert_eq!(call.phase(), CallPhase::Active);
+        call
+    }
+
+    /// However a recorded call ends, its cleanup closes the file and keeps the report for the
+    /// worker, once.
+    #[tokio::test]
+    async fn every_way_a_recorded_call_ends_keeps_its_recording() {
+        let _alone = crate::call_tape::exclusive();
+        let dir = tempfile::tempdir().unwrap();
+        for end in 0..4 {
+            let mut call = active();
+            let path = dir.path().join(format!("call-{end}.wav"));
+            let (update, report) = call
+                .record(RecordingOp::Start {
+                    path: path.clone(),
+                    notice: false,
+                })
+                .expect("a call that is up can be recorded");
+            assert!(update.recording.is_some(), "the screen is told");
+            assert!(report.is_none());
+            let update = match end {
+                0 => call.signaling(&terminate(None)),
+                1 => call.media(&CallEvent::Closed(
+                    whatsapp_rust::voip_control::MediaCloseReason::RelayDisconnected,
+                )),
+                2 => call.fail("the test ended it".to_owned()),
+                _ => Some(call.hangup(None).await),
+            }
+            .expect("the call ended");
+            assert!(!update.phase.is_live(), "{end}");
+            assert_eq!(
+                update.recording, None,
+                "{end}: nothing is recording any more"
+            );
+            let report = call.recording.clone().expect("the cleanup kept the report");
+            assert_eq!((report.generation, &report.path), (1, &path));
+            assert!(path.exists(), "{end}: the file is closed as a .wav");
+            call.cleanup();
+            assert_eq!(
+                call.take_recording(),
+                Some(report),
+                "a second cleanup keeps the first report"
+            );
+            assert_eq!(call.take_recording(), None, "it is handed on once");
+        }
+    }
+
+    /// A recording starts only once the call is up, and a stop with nothing recording is harmless.
+    #[test]
+    fn a_recording_waits_for_the_call_to_be_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let start = RecordingOp::Start {
+            path: dir.path().join("call.wav"),
+            notice: true,
+        };
+        let mut call = dialing();
+        assert!(call.record(start.clone()).is_err(), "dialing");
+        call.signaling(&accept()).expect("the peer answered");
+        assert_eq!(call.phase(), CallPhase::Connecting);
+        assert!(call.record(start).is_err(), "answered, with no media yet");
+        assert!(call.update().recording.is_none());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+        let (_, report) = call.record(RecordingOp::Stop).expect("a stop is harmless");
+        assert!(report.is_none());
+    }
+
+    /// A recording the user stops is handed back at once, so the call's end has nothing more to
+    /// hand on; a discarded one leaves no file.
+    #[test]
+    fn a_stopped_recording_is_handed_back_and_a_discarded_one_is_gone() {
+        let _alone = crate::call_tape::exclusive();
+        let dir = tempfile::tempdir().unwrap();
+        let mut call = active();
+        let kept = dir.path().join("kept.wav");
+        call.record(RecordingOp::Start {
+            path: kept.clone(),
+            notice: false,
+        })
+        .unwrap();
+        let (update, report) = call.record(RecordingOp::Stop).unwrap();
+        assert!(update.recording.is_none());
+        assert_eq!(report.expect("the stop gives the recording").path, kept);
+        assert!(kept.exists());
+
+        let gone = dir.path().join("gone.wav");
+        call.record(RecordingOp::Start {
+            path: gone.clone(),
+            notice: false,
+        })
+        .expect("a call can be recorded again");
+        let (_, report) = call.record(RecordingOp::Discard).unwrap();
+        assert!(report.is_none());
+        call.cleanup();
+        assert_eq!(call.take_recording(), None);
+        assert_eq!(
+            std::fs::read_dir(dir.path()).unwrap().count(),
+            1,
+            "only the kept recording is left"
+        );
+    }
+
+    /// The recording is muted before the call is and unmuted only once the call is, so nothing
+    /// the other side did not hear is kept while a mute is on its way.
+    #[tokio::test]
+    async fn the_recording_is_muted_first_and_unmuted_last() {
+        let tape = Tape::new(1);
+        muting(&tape, true, async {
+            assert!(tape.is_muted(), "muted before the call is asked");
+            true
+        })
+        .await;
+        assert!(tape.is_muted());
+        muting(&tape, false, async {
+            assert!(
+                tape.is_muted(),
+                "still muted while the unmute is on its way"
+            );
+            false
+        })
+        .await;
+        assert!(!tape.is_muted());
+        // An unmute the call refused keeps the recording muted with it.
+        tape.set_muted(true);
+        muting(&tape, false, async { true }).await;
+        assert!(tape.is_muted());
+        // A mute the call could not apply leaves our voice going out, so it is recorded.
+        tape.set_muted(false);
+        muting(&tape, true, async { false }).await;
+        assert!(!tape.is_muted());
     }
 }
 

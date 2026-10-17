@@ -3149,6 +3149,8 @@ impl App {
                 self.me_about = about;
             }
             Event::Call(update) => self.handle_call_update(*update),
+            // Kept by the call library once the app side of recording lands.
+            Event::CallRecorded(_) | Event::CallRecordingFailed { .. } => {}
             Event::CallDevices(devices) => self.call_devices = *devices,
             Event::CallVideo {
                 local,

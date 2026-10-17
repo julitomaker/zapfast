@@ -4250,6 +4250,7 @@ pub fn call_sample(app: &mut App, incoming: bool, video: bool) {
         speaker: None,
         camera: None,
         group: None,
+        recording: None,
     });
     app.call_account = Some(app.account().id.clone());
     if video && !incoming {

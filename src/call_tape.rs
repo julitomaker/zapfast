@@ -231,6 +231,11 @@ impl Tape {
         self.0.muted.store(muted, Ordering::Release);
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_muted(&self) -> bool {
+        self.0.muted.load(Ordering::Acquire)
+    }
+
     /// Starts writing the call to `path`, a `.wav`, with the notice first if `notice`.
     pub fn start(&self, path: &Path, notice: bool) -> Result<(), String> {
         let mut current = lock(&LIVE);
@@ -752,11 +757,31 @@ impl Writer {
 }
 
 /// Serializes the tests, here and elsewhere, that start a recording: only one may be live in
-/// the process.
+/// the process. A test holds it for its whole length, across its awaits too: each test has a
+/// runtime of its own, so nothing else on that runtime waits for it.
 #[cfg(test)]
-pub(crate) fn exclusive() -> MutexGuard<'static, ()> {
+pub(crate) fn exclusive() -> Exclusive {
     static ALONE: Mutex<()> = Mutex::new(());
-    lock(&ALONE)
+    Exclusive {
+        _alone: lock(&ALONE),
+    }
+}
+
+/// What [`exclusive`] hands a test, until it ends.
+#[cfg(test)]
+pub(crate) struct Exclusive {
+    _alone: MutexGuard<'static, ()>,
+}
+
+/// The left and the right channel of a WAV this module wrote, for tests elsewhere.
+#[cfg(test)]
+pub(crate) fn read_channels(path: &Path) -> [Vec<i16>; 2] {
+    let wav = std::fs::read(path).unwrap();
+    let mut sides = [Vec::new(), Vec::new()];
+    for (at, pair) in wav[HEADER as usize..].as_chunks::<2>().0.iter().enumerate() {
+        sides[at % 2].push(i16::from_le_bytes(*pair));
+    }
+    sides
 }
 
 #[cfg(test)]

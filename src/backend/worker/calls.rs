@@ -170,9 +170,17 @@ impl Worker {
                 .call
                 .as_ref()
                 .is_some_and(|runtime| runtime.call.generation() == update.generation)
-            && let Some(runtime) = self.call.take()
+            && let Some(mut runtime) = self.call.take()
         {
             self.file_finished_call(&runtime.call, &update);
+            self.emit_recording(&mut runtime.call);
+        }
+    }
+
+    /// Hands on the recording a finished call stopped, if it was being recorded.
+    fn emit_recording(&mut self, call: &mut Call) {
+        if let Some(report) = call.take_recording() {
+            self.emit(Event::CallRecorded(Box::new(report)));
         }
     }
 
@@ -429,6 +437,28 @@ impl Worker {
         };
         if let Some(update) = update {
             self.emit_call(update);
+        }
+    }
+
+    /// Starts, stops or discards the recording of the call `generation`. A request for a call that
+    /// is no longer the current one is answered with a failure, so the window that asked is never
+    /// left waiting on it.
+    pub(super) fn call_recording(&mut self, generation: u64, op: calls::RecordingOp) {
+        let outcome = match self.call.as_mut() {
+            Some(runtime) if runtime.call.generation() == generation => runtime.call.record(op),
+            _ => Err("The call is over".to_owned()),
+        };
+        match outcome {
+            Ok((update, report)) => {
+                self.emit_call(update);
+                if let Some(report) = report {
+                    self.emit(Event::CallRecorded(Box::new(report)));
+                }
+            }
+            Err(reason) => {
+                log::warn!("[CALL] recording request refused: {reason}");
+                self.emit(Event::CallRecordingFailed { generation, reason });
+            }
         }
     }
 
@@ -715,6 +745,7 @@ impl Worker {
             // The window lets the call go as it lets any other finished one.
             self.emit(Event::Call(Box::new(update.clone())));
             self.file_finished_call(&runtime.call, &update);
+            self.emit_recording(&mut runtime.call);
         }
     }
 
@@ -1125,6 +1156,77 @@ fn rings_in(chat: &str, group: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A recorded call that loses its line, or is ended by quitting, hands its recording on as
+    /// it goes; a request for a call that is not the current one is answered with a failure.
+    #[tokio::test]
+    async fn a_recorded_call_hands_on_its_recording_however_it_ends() {
+        const PEER: &str = "15550001111@s.whatsapp.net";
+        let _alone = crate::call_tape::exclusive();
+        let dir = tempfile::tempdir().unwrap();
+        let (mut worker, events, _, _) = super::super::receipt_tests::worker();
+        worker.archive.ensure_chat(PEER, "Ada").unwrap();
+        let recorded = |events: &[Event]| {
+            events.iter().find_map(|event| match event {
+                Event::CallRecorded(report) => Some(report.as_ref().clone()),
+                _ => None,
+            })
+        };
+
+        let call = Call::test_active(PEER);
+        let generation = call.generation();
+        worker.call = Some(CallRuntime::new(call, None));
+        let path = dir.path().join("lost.wav");
+        worker.call_recording(
+            generation,
+            calls::RecordingOp::Start {
+                path: path.clone(),
+                notice: false,
+            },
+        );
+        worker.call_recording(u64::MAX, calls::RecordingOp::Stop);
+        worker.call_runtime(CallRuntimeEvent::Media(CallEvent::Closed(
+            whatsapp_rust::voip_control::MediaCloseReason::RelayDisconnected,
+        )));
+        let seen: Vec<Event> = events.try_iter().collect();
+        assert!(
+            seen.iter()
+                .any(|event| matches!(event, Event::Call(update) if update.recording.is_some())),
+            "the screen is told the call is being recorded"
+        );
+        assert!(seen.iter().any(|event| matches!(
+            event,
+            Event::CallRecordingFailed { generation, .. } if *generation == u64::MAX
+        )));
+        assert!(
+            seen.iter().any(|event| matches!(
+                event,
+                Event::Call(update) if update.outcome == Some(calls::CallOutcome::ConnectionLost)
+            )),
+            "the line was lost"
+        );
+        let report = recorded(&seen).expect("the lost call handed on its recording");
+        assert_eq!((report.generation, &report.path), (generation, &path));
+        assert!(path.exists());
+        assert!(worker.call.is_none(), "the call is let go");
+
+        let call = Call::test_active(PEER);
+        let generation = call.generation();
+        worker.call = Some(CallRuntime::new(call, None));
+        let path = dir.path().join("quit.wav");
+        worker.call_recording(
+            generation,
+            calls::RecordingOp::Start {
+                path: path.clone(),
+                notice: false,
+            },
+        );
+        worker.shutdown_call().await;
+        let seen: Vec<Event> = events.try_iter().collect();
+        let report = recorded(&seen).expect("quitting handed on the recording");
+        assert_eq!((report.generation, &report.path), (generation, &path));
+        assert!(path.exists());
+    }
 
     /// A group call reaches the window under the app's own ids, without our own roster entry, and
     /// is filed in its group, under the member who rang, once it is over.
