@@ -2300,6 +2300,7 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
     let mut save = false;
     let mut save_key = false;
     let ctx = ui.ctx().clone();
+    let config_dir = app.dirs.config.clone();
     egui::ScrollArea::vertical()
         .id_salt("projects-engine")
         .auto_shrink([false, false])
@@ -2366,55 +2367,8 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                             );
                             return;
                         }
-                        if let Some(binary) = draft.provider.binary() {
-                            match engine::cli_path(draft.provider) {
-                                Some(_) => wrapped(
-                                    ui,
-                                    gettext(locale, "Installed. Sign in once in the Terminal with `{command}` using your subscription's account; Whats Pro then uses it on its own.")
-                                        .replace("{command}", binary)
-                                        .as_ref(),
-                                    theme::regular(13.0),
-                                    palette.secondary,
-                                ),
-                                None => {
-                                    wrapped(
-                                        ui,
-                                        gettext(locale, "Not installed on this computer. Install it in the Terminal, then sign in once with `{command}`:")
-                                            .replace("{command}", binary)
-                                            .as_ref(),
-                                        theme::regular(13.0),
-                                        palette.warning,
-                                    );
-                                    if let Some(install) = draft.provider.install() {
-                                        ui.horizontal(|ui| {
-                                            Frame::new()
-                                                .fill(palette.surface_active)
-                                                .corner_radius(CornerRadius::same(theme::RADIUS))
-                                                .inner_margin(Margin::symmetric(10, 6))
-                                                .show(ui, |ui| {
-                                                    theme::text(
-                                                        ui,
-                                                        install,
-                                                        egui::FontId::monospace(13.0),
-                                                        palette.text,
-                                                    );
-                                                });
-                                            if theme::icon_button(
-                                                ui,
-                                                Icon::Copy,
-                                                16.0,
-                                                palette.secondary,
-                                                palette.text,
-                                                &gettext(locale, "Copy"),
-                                            )
-                                            .clicked()
-                                            {
-                                                ui.ctx().copy_text(install.to_owned());
-                                            }
-                                        });
-                                    }
-                                }
-                            }
+                        if let Some(tool) = draft.provider.tool() {
+                            tool_setup(&ctx, ui, &palette, locale, tool);
                         } else {
                             let has = engine::has_key(draft.provider);
                             ui.horizontal(|ui| {
@@ -2448,12 +2402,17 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                                 }
                             });
                         }
+                        if let Some(url) = key_page(draft.provider) {
+                            ui.hyperlink_to(gettext(locale, "Get a key"), url);
+                        }
                         ui.add_space(6.0);
                         if let Some(model) =
                             model_picker(&ctx, ui, &palette, locale, draft.provider, &draft.model, &mut state.model_search)
                         {
                             draft.model = model;
                         }
+                        ui.add_space(6.0);
+                        connection_test(&ctx, ui, &palette, locale, &config_dir, &draft);
                     });
                     card_frame(&palette).show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -2554,6 +2513,196 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
         state.engine_draft = None;
     } else {
         state.engine_draft = (draft != saved).then_some(draft);
+    }
+}
+
+/// Where each API's keys are made.
+fn key_page(provider: Provider) -> Option<&'static str> {
+    match provider {
+        Provider::Anthropic => Some("https://console.anthropic.com/settings/keys"),
+        Provider::OpenAi => Some("https://platform.openai.com/api-keys"),
+        Provider::OpenRouter => Some("https://openrouter.ai/keys"),
+        _ => None,
+    }
+}
+
+/// A numbered step: its number, title and line, and whatever `right` draws.
+fn step(
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    number: usize,
+    done: bool,
+    title: &str,
+    detail: &str,
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        let (dot, _) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
+        ui.painter().circle_filled(
+            dot.center(),
+            13.0,
+            if done {
+                palette.accent
+            } else {
+                palette.surface_active
+            },
+        );
+        if done {
+            theme::icon(
+                &mut ui.new_child(egui::UiBuilder::new().max_rect(dot.shrink(5.0))),
+                Icon::Check,
+                16.0,
+                palette.on_accent,
+            );
+        } else {
+            let galley = ui.painter().layout_no_wrap(
+                number.to_string(),
+                theme::semibold(13.0),
+                palette.text,
+            );
+            ui.painter()
+                .galley(dot.center() - galley.size() / 2.0, galley, palette.text);
+        }
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.set_max_width((ui.available_width() - 190.0).max(160.0));
+            theme::text(ui, title, theme::medium(14.0), palette.text);
+            if !detail.is_empty() {
+                wrapped(ui, detail, theme::regular(12.5), palette.secondary);
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), right);
+    });
+    ui.add_space(6.0);
+}
+
+/// Setting up a subscription's tool from here: install it, sign in once,
+/// and the connection test below confirms it.
+fn tool_setup(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    tool: crate::ai_tools::Tool,
+) {
+    use crate::ai_tools;
+    let installed = ai_tools::installed(tool);
+    let job = ai_tools::job(tool);
+    let running = job.as_ref().is_some_and(|job| job.running);
+    let install_detail = if installed {
+        gettext(locale, "Installed on this Mac.").into_owned()
+    } else if running {
+        gettext(locale, "Installing… this takes a minute or two.").into_owned()
+    } else {
+        gettext(
+            locale,
+            "Downloads it from its maker. No administrator password needed.",
+        )
+        .into_owned()
+    };
+    step(
+        ui,
+        palette,
+        1,
+        installed,
+        gettext(locale, "Install").as_ref(),
+        &install_detail,
+        |ui| {
+            if running {
+                ui.add(egui::Spinner::new().size(18.0).color(palette.accent));
+            } else if !installed
+                && pill_button(ui, palette, gettext(locale, "Install").as_ref(), true).clicked()
+            {
+                ai_tools::install(ctx, tool);
+            }
+        },
+    );
+    if let Some(job) = &job {
+        if running && !job.log.is_empty() {
+            let tail: Vec<&str> = job.log.lines().rev().take(2).collect();
+            let tail: Vec<&str> = tail.into_iter().rev().collect();
+            theme::text(
+                ui,
+                tail.join("  ·  "),
+                egui::FontId::monospace(11.5),
+                palette.dim,
+            );
+        }
+        if let Some(Err(error)) = &job.result {
+            wrapped(ui, error, theme::regular(12.5), palette.danger);
+        }
+    }
+    let sign_in_error = egui::Id::new(("sign-in-error", tool.binary()));
+    step(
+        ui,
+        palette,
+        2,
+        false,
+        &gettext(locale, "Sign in with your {account} account").replace("{account}", tool.account()),
+        gettext(locale, "Opens the Terminal on its sign-in. Follow it in the browser, then close the window. Only once.").as_ref(),
+        |ui| {
+            if installed
+                && pill_button(ui, palette, gettext(locale, "Sign in").as_ref(), false).clicked()
+            {
+                let result = ai_tools::sign_in(tool).err();
+                ui.ctx().data_mut(|data| data.insert_temp(sign_in_error, result));
+            }
+        },
+    );
+    if let Some(Some(error)) = ui
+        .ctx()
+        .data(|data| data.get_temp::<Option<String>>(sign_in_error))
+    {
+        wrapped(ui, &error, theme::regular(12.5), palette.danger);
+    }
+}
+
+/// Asks the chosen engine for one word and says whether it answered.
+fn connection_test(
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    palette: &theme::Palette,
+    locale: crate::i18n::Locale,
+    config: &std::path::Path,
+    draft: &EngineConfig,
+) {
+    let result = engine::tested(draft.provider);
+    let testing = matches!(result, Some(Err(ref e)) if e.is_empty());
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 10.0;
+        if testing {
+            ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
+            theme::text(
+                ui,
+                gettext(locale, "Testing…"),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+        } else if pill_button(
+            ui,
+            palette,
+            gettext(locale, "Test the connection").as_ref(),
+            false,
+        )
+        .clicked()
+        {
+            engine::test(ctx, config, draft);
+        }
+        if let Some(Ok(_)) = &result {
+            theme::icon(ui, Icon::CircleCheck, 16.0, palette.accent);
+            theme::text(
+                ui,
+                gettext(locale, "Connected"),
+                theme::medium(13.0),
+                palette.accent,
+            );
+        }
+    });
+    if let Some(Err(error)) = &result
+        && !error.is_empty()
+    {
+        wrapped(ui, error, theme::regular(12.5), palette.danger);
     }
 }
 

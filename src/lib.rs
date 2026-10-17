@@ -1,6 +1,7 @@
 //! Whats Pro internals exposed for diagnostics and tests.
 
 pub mod account;
+pub mod ai_tools;
 pub mod animation;
 pub mod announcer;
 pub mod app;

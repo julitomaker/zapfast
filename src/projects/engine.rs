@@ -12,7 +12,7 @@
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -92,12 +92,12 @@ impl Provider {
         }
     }
 
-    /// How to install its tool with Homebrew.
-    pub fn install(self) -> Option<&'static str> {
+    /// The command-line tool a subscription works through.
+    pub fn tool(self) -> Option<crate::ai_tools::Tool> {
         match self {
-            Self::ClaudeCode => Some("brew install --cask claude-code"),
-            Self::CodexCli => Some("brew install codex"),
-            Self::GeminiCli => Some("brew install gemini-cli"),
+            Self::ClaudeCode => Some(crate::ai_tools::Tool::Claude),
+            Self::CodexCli => Some(crate::ai_tools::Tool::Codex),
+            Self::GeminiCli => Some(crate::ai_tools::Tool::Gemini),
             _ => None,
         }
     }
@@ -205,38 +205,11 @@ impl EngineConfig {
 
 // ------------------------------------------------------------------ keys
 
-const KEY_SERVICE: &str = "com.julitomaker.whatspro.ai";
-
-fn key_store() -> anyhow::Result<Arc<dyn keyring_core::api::CredentialStoreApi>> {
-    #[cfg(target_os = "linux")]
-    let store = zbus_secret_service_keyring_store::Store::new();
-    #[cfg(target_os = "macos")]
-    let store = apple_native_keyring_store::keychain::Store::new();
-    #[cfg(windows)]
-    let store = windows_native_keyring_store::Store::new();
-    Ok(store.map_err(|error| anyhow::anyhow!("{error}"))?
-        as Arc<dyn keyring_core::api::CredentialStoreApi>)
-}
-
-fn key_entry(provider: Provider) -> anyhow::Result<keyring_core::Entry> {
-    key_store()?
-        .build(KEY_SERVICE, &format!("{provider:?}"), None)
-        .map_err(|error| anyhow::anyhow!("{error}"))
-}
+// Keys live in `crate::keys`, shared with media, under the provider's name.
 
 /// Keeps `key` for `provider` in the OS keyring (an empty key removes it).
 pub fn set_key(provider: Provider, key: &str) -> anyhow::Result<()> {
-    let entry = key_entry(provider)?;
-    if key.trim().is_empty() {
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
-            Err(error) => Err(anyhow::anyhow!("{error}")),
-        }
-    } else {
-        entry
-            .set_password(key.trim())
-            .map_err(|error| anyhow::anyhow!("{error}"))
-    }
+    crate::keys::set(&format!("{provider:?}"), key)
 }
 
 pub fn has_key(provider: Provider) -> bool {
@@ -244,7 +217,7 @@ pub fn has_key(provider: Provider) -> bool {
 }
 
 fn key(provider: Provider) -> Option<String> {
-    key_entry(provider).ok()?.get_password().ok()
+    crate::keys::get(&format!("{provider:?}"))
 }
 
 // ---------------------------------------------------------------- status
@@ -735,28 +708,9 @@ fn complete(
     }
 }
 
-/// Where `provider`'s command-line tool is installed, if it is. An app
-/// opened from the Finder gets no shell PATH, so the usual places are
-/// looked at too.
+/// Where `provider`'s command-line tool is installed, if it is.
 pub fn cli_path(provider: Provider) -> Option<PathBuf> {
-    let name = provider.binary()?;
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(name))
-                .collect()
-        })
-        .unwrap_or_default();
-    for dir in ["/opt/homebrew/bin", "/usr/local/bin"] {
-        candidates.push(Path::new(dir).join(name));
-    }
-    if let Some(home) = home {
-        for dir in [".local/bin", ".claude/local", ".npm-global/bin", ".bun/bin"] {
-            candidates.push(home.join(dir).join(name));
-        }
-    }
-    candidates.into_iter().find(|path| path.is_file())
+    crate::ai_tools::find(provider.binary()?)
 }
 
 /// Runs a subscription's command-line tool once, with `user` on its input,
@@ -801,13 +755,9 @@ fn cli(provider: Provider, model: &str, system: &str, user: &str) -> anyhow::Res
         }
         _ => anyhow::bail!("{} has no command-line tool", provider.label()),
     }
-    let path = std::env::var("PATH").unwrap_or_default();
     let mut child = command
         .current_dir(&work)
-        .env(
-            "PATH",
-            format!("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:{path}"),
-        )
+        .env("PATH", crate::ai_tools::path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -840,6 +790,60 @@ fn cli(provider: Provider, model: &str, system: &str, user: &str) -> anyhow::Res
         _ => String::from_utf8_lossy(&output.stdout).into_owned(),
     };
     Ok(text)
+}
+
+// ---------------------------------------------------------- connection test
+
+fn tests() -> &'static Mutex<HashMap<Provider, Result<String, String>>> {
+    static TESTS: OnceLock<Mutex<HashMap<Provider, Result<String, String>>>> = OnceLock::new();
+    TESTS.get_or_init(Default::default)
+}
+
+/// How the last connection test of `provider` went; `Err("")` while one
+/// runs.
+pub fn tested(provider: Provider) -> Option<Result<String, String>> {
+    tests()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(&provider)
+        .cloned()
+}
+
+/// Asks `settings`' provider for a one-word answer, on a thread of its own,
+/// to show whether it is installed, signed in and reachable.
+pub fn test(ctx: &egui::Context, config: &Path, settings: &EngineConfig) {
+    let provider = settings.provider;
+    if matches!(tested(provider), Some(Err(ref e)) if e.is_empty()) {
+        return;
+    }
+    tests()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(provider, Err(String::new()));
+    let (ctx, config, settings) = (ctx.clone(), config.to_owned(), settings.clone());
+    let _ = std::thread::Builder::new()
+        .name("engine-test".into())
+        .spawn(move || {
+            let result = complete(
+                &config,
+                &settings,
+                "Answer with the single word OK.",
+                "Say OK.",
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|answer| {
+                if answer.trim().is_empty() {
+                    Err("It answered nothing. Sign in and try again.".to_owned())
+                } else {
+                    Ok(answer.trim().chars().take(40).collect())
+                }
+            });
+            tests()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .insert(provider, result);
+            ctx.request_repaint();
+        });
 }
 
 // ------------------------------------------------------------- model lists

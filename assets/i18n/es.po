@@ -3306,3 +3306,47 @@ msgstr "instalado"
 
 msgid "not installed on this computer"
 msgstr "no está instalado en esta computadora"
+
+#: src/ui/projects.rs
+msgid "Get a key"
+msgstr "Conseguir una key"
+
+#: src/ui/projects.rs
+msgid "Installed on this Mac."
+msgstr "Instalado en esta Mac."
+
+#: src/ui/projects.rs
+msgid "Installing… this takes a minute or two."
+msgstr "Instalando… tarda uno o dos minutos."
+
+#: src/ui/projects.rs
+msgid "Downloads it from its maker. No administrator password needed."
+msgstr "Lo baja de su fabricante. No pide contraseña de administrador."
+
+#: src/ui/projects.rs
+msgid "Install"
+msgstr "Instalar"
+
+#: src/ui/projects.rs
+msgid "Sign in with your {account} account"
+msgstr "Iniciar sesión con tu cuenta de {account}"
+
+#: src/ui/projects.rs
+msgid "Opens the Terminal on its sign-in. Follow it in the browser, then close the window. Only once."
+msgstr "Abre la Terminal en su inicio de sesión. Seguilo en el navegador y después cerrá la ventana. Es una sola vez."
+
+#: src/ui/projects.rs
+msgid "Sign in"
+msgstr "Iniciar sesión"
+
+#: src/ui/projects.rs
+msgid "Testing…"
+msgstr "Probando…"
+
+#: src/ui/projects.rs
+msgid "Test the connection"
+msgstr "Probar conexión"
+
+#: src/ui/projects.rs
+msgid "Connected"
+msgstr "Conectado"
