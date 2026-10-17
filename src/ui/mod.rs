@@ -26,6 +26,7 @@ pub mod projects;
 pub mod rail;
 pub mod sales;
 pub mod settings;
+pub mod take;
 pub mod update;
 pub mod widgets;
 

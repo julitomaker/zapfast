@@ -2534,6 +2534,10 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
             "leads-panel" => leads_sample(app, false, false, false),
             "leads-sale" => leads_sample(app, true, true, false),
             "leads-call" => leads_sample(app, true, false, true),
+            "leads-review" => {
+                leads_sample(app, true, false, true);
+                crate::ui::leads::demo_review("Ada Lovelace", 252);
+            }
             "es" => app.locale = crate::i18n::Locale::Spanish,
             "settings" => app.page = Page::Settings,
             choice if choice.starts_with("settings-search=") => {

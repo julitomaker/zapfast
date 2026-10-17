@@ -56,6 +56,8 @@ struct State {
     composer: String,
     kind: Kind,
     recorder: Option<crate::audio::Recorder>,
+    /// A voice note just recorded, waiting to be transcribed or discarded.
+    take: Option<super::take::Take>,
     spoken: Arc<Mutex<Option<Result<String, String>>>>,
     transcribing: bool,
     /// The next action being edited, and for which lead.
@@ -94,9 +96,10 @@ struct State {
 /// project on screen, so a call can always be ended. The thread that reads
 /// a call saves it to the lead itself.
 struct CallJob {
-    /// The lead it is for, and its name.
+    /// The lead it is for, its name and its project.
     lead: String,
     name: String,
+    project: String,
     phase: CallPhase,
     stop: Option<std::sync::mpsc::Sender<()>>,
     /// The lead a call was just noted for: the page says so.
@@ -113,6 +116,8 @@ enum CallPhase {
     Starting,
     /// Since when, and whether only the microphone is heard.
     Recording(Instant, bool),
+    /// Ended, waiting for the user to keep it or throw it away.
+    Review(super::take::Take),
     Transcribing,
     Summarizing,
     Failed(String),
@@ -127,6 +132,7 @@ impl CallPhase {
 static CALL: Mutex<CallJob> = Mutex::new(CallJob {
     lead: String::new(),
     name: String::new(),
+    project: String::new(),
     phase: CallPhase::Idle,
     stop: None,
     noted: None,
@@ -151,6 +157,7 @@ impl Default for State {
             composer: String::new(),
             kind: Kind::Note,
             recorder: None,
+            take: None,
             spoken: Arc::default(),
             transcribing: false,
             next_text: String::new(),
@@ -2044,10 +2051,10 @@ fn history(
         let calling = job().phase.busy();
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if !calling {
+            if !calling && state.take.is_none() {
                 record_button(app, ui, state);
             }
-            if state.recorder.is_none() && !state.transcribing {
+            if state.recorder.is_none() && !state.transcribing && state.take.is_none() {
                 call_controls(app, ui, state, lead, wide);
             }
             let summarizing = state.summarizing.as_deref() == Some(lead.id.as_str());
@@ -2085,6 +2092,7 @@ fn history(
                 }
             });
         });
+        voice_take(app, ui, state);
         call_lines(app, ui, lead);
         suggestion_row(app, ui, state, lead, changes);
         #[cfg(any(test, feature = "demo"))]
@@ -2199,24 +2207,19 @@ fn record_button(app: &App, ui: &mut egui::Ui, state: &mut State) {
         if button(ui, &palette, gettext(locale, "Stop").as_ref(), true).clicked()
             && let Some(recorder) = state.recorder.take()
         {
+            let seconds = recorder.elapsed().as_secs();
             match recorder.finish() {
+                // Kept aside until the user says what to do with it.
                 Ok(samples) => {
-                    state.transcribing = true;
-                    let wav = crate::projects::wav(&samples, 48_000);
-                    let engines = app.settings.media_engines.clone();
-                    let slot = state.spoken.clone();
-                    let ctx = ui.ctx().clone();
-                    let state_dir = app.dirs.state.clone();
-                    std::thread::spawn(move || {
-                        let file = std::env::temp_dir()
-                            .join(format!("whatspro-lead-{}.wav", std::process::id()));
-                        let result = std::fs::write(&file, wav)
-                            .map_err(|e| e.to_string())
-                            .and_then(|()| crate::media_ai::speech(&engines, &state_dir, &file));
-                        let _ = std::fs::remove_file(&file);
-                        *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
-                        ctx.request_repaint();
-                    });
+                    let file = std::env::temp_dir().join(format!(
+                        "whatspro-lead-{}-{}.wav",
+                        std::process::id(),
+                        jiff::Timestamp::now().as_millisecond()
+                    ));
+                    match std::fs::write(&file, crate::projects::wav(&samples, 48_000)) {
+                        Ok(()) => state.take = Some(super::take::Take::new(file, seconds)),
+                        Err(error) => log::warn!("leads: a voice note could not be kept: {error}"),
+                    }
                 }
                 Err(error) => log::warn!("leads: recording failed: {error}"),
             }
@@ -2485,6 +2488,7 @@ fn claim(lead: &Lead, phase: CallPhase) -> bool {
     }
     held.lead = lead.id.clone();
     held.name = lead.name.clone();
+    held.project = lead.project.clone();
     held.phase = phase;
     held.stop = None;
     true
@@ -2502,7 +2506,6 @@ fn record_call(app: &App, ctx: &egui::Context, lead: &Lead) {
     let (stop, stopped) = std::sync::mpsc::channel::<()>();
     job().stop = Some(stop);
     let reader = reader(app, ctx);
-    let (id, project, name) = (lead.id.clone(), lead.project.clone(), lead.name.clone());
     std::thread::spawn(move || {
         let both = cfg!(target_os = "macos").then(|| Recording::start(&reader.state, Source::Both));
         let (recording, mic_only) = match both {
@@ -2531,17 +2534,78 @@ fn record_call(app: &App, ctx: &egui::Context, lead: &Lead) {
                 return set_phase(&reader.ctx, CallPhase::Failed(error));
             }
         };
-        let call = CallFile {
-            path,
-            origin: crate::call_library::Origin::Recorded,
-            seconds,
-            heading: leads::call_heading(seconds),
-            lead: id,
-            project,
-            name,
-        };
-        read_call(reader, call);
+        // Nothing is kept or read until the user says so.
+        set_phase(
+            &reader.ctx,
+            CallPhase::Review(super::take::Take::new(path, seconds)),
+        );
     });
+}
+
+/// Keeps a reviewed call: into the library and the lead's history, then
+/// read, on a thread of its own.
+fn keep_call(app: &App, ctx: &egui::Context, lead: &Lead, take: super::take::Take) {
+    set_phase(ctx, CallPhase::Transcribing);
+    let reader = reader(app, ctx);
+    let call = CallFile {
+        path: take.path,
+        origin: crate::call_library::Origin::Recorded,
+        seconds: take.seconds,
+        heading: leads::call_heading(take.seconds),
+        lead: lead.id.clone(),
+        project: lead.project.clone(),
+        name: lead.name.clone(),
+    };
+    std::thread::spawn(move || read_call(reader, call));
+}
+
+/// Keeps a reviewed call whose lead was removed meanwhile, as its
+/// project's, for Notes.
+fn keep_orphan(app: &App, ctx: &egui::Context, take: super::take::Take) {
+    let (project, name) = {
+        let held = job();
+        (held.project.clone(), held.name.clone())
+    };
+    let title = gettext(app.locale, "Call with {name}").replace("{name}", &name);
+    let phase = match crate::call_library::Library::keep(
+        &app.dirs.state,
+        &take.path,
+        crate::call_library::Origin::Recorded,
+        take.seconds,
+        &title,
+        Some(&project),
+        None,
+    ) {
+        Ok(_) => CallPhase::Idle,
+        Err(error) => CallPhase::Failed(translated(app.locale, error)),
+    };
+    set_phase(ctx, phase);
+}
+
+/// The voice note just recorded: transcribed into the box, or discarded.
+fn voice_take(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
+    let Some(mut take) = state.take.take() else {
+        return;
+    };
+    let locale = app.locale;
+    ui.add_space(8.0);
+    match super::take::card(app, ui, &mut take, &gettext(locale, "Transcribe")) {
+        Some(super::take::Choice::Keep) => {
+            state.transcribing = true;
+            let engines = app.settings.media_engines.clone();
+            let slot = state.spoken.clone();
+            let ctx = ui.ctx().clone();
+            let state_dir = app.dirs.state.clone();
+            std::thread::spawn(move || {
+                let result = crate::media_ai::speech(&engines, &state_dir, &take.path);
+                take.discard();
+                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+                ctx.request_repaint();
+            });
+        }
+        Some(super::take::Choice::Discard) => take.discard(),
+        None => state.take = Some(take),
+    }
 }
 
 /// Picks a recorded call (an audio or video file) and reads it into the
@@ -2837,6 +2901,7 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, lead: &Lead, wide:
         }
         CallPhase::Starting => working(ui, gettext(locale, "Starting the recording…")),
         CallPhase::Picking => working(ui, gettext(locale, "Choosing a file…")),
+        CallPhase::Review(_) => {}
         CallPhase::Transcribing => working(ui, gettext(locale, "Transcribing the call…")),
         CallPhase::Summarizing => working(ui, gettext(locale, "Summarizing the call…")),
         CallPhase::Idle | CallPhase::Failed(_) => {
@@ -2890,7 +2955,7 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, lead: &Lead, wide:
 /// Under the history box: a call with another lead (so it can be ended
 /// from here), the reminder to tell the other person, a note when only the
 /// microphone is heard, and what went wrong, each on lines of their own.
-fn call_lines(app: &App, ui: &mut egui::Ui, lead: &Lead) {
+fn call_lines(app: &mut App, ui: &mut egui::Ui, lead: &Lead) {
     let palette = app.palette;
     let locale = app.locale;
     let (phase, mine, name) = {
@@ -2898,6 +2963,46 @@ fn call_lines(app: &App, ui: &mut egui::Ui, lead: &Lead) {
         (held.phase.clone(), held.lead == lead.id, held.name.clone())
     };
     match phase {
+        // Kept or discarded from any lead, saved to its own.
+        CallPhase::Review(mut take) => {
+            ui.add_space(8.0);
+            if !mine {
+                theme::text(
+                    ui,
+                    gettext(locale, "Call with {name}").replace("{name}", &name),
+                    theme::medium(12.5),
+                    palette.secondary,
+                );
+                ui.add_space(4.0);
+            }
+            let keep = gettext(locale, "Save and transcribe");
+            let choice = super::take::card(app, ui, &mut take, &keep);
+            match choice {
+                Some(super::take::Choice::Keep) => {
+                    let owner = if mine {
+                        Some(lead.clone())
+                    } else {
+                        let id = job().lead.clone();
+                        Store::open(&app.dirs.config).get(&id).cloned()
+                    };
+                    match owner {
+                        Some(owner) => keep_call(app, ui.ctx(), &owner, take),
+                        // Its lead went: the call is kept as the project's.
+                        None => keep_orphan(app, ui.ctx(), take),
+                    }
+                }
+                Some(super::take::Choice::Discard) => {
+                    take.discard();
+                    set_phase(ui.ctx(), CallPhase::Idle);
+                }
+                None => {
+                    let mut held = job();
+                    if let CallPhase::Review(kept) = &mut held.phase {
+                        kept.confirming = take.confirming;
+                    }
+                }
+            }
+        }
         phase if phase.busy() && !mine => {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -3589,6 +3694,21 @@ static DEMO_VIEW: Mutex<bool> = Mutex::new(false);
 pub fn demo_call(lead: &str, text: &str, due: Option<String>) {
     job().suggestion = Some((lead.to_owned(), text.to_owned(), due));
     *DEMO_VIEW.lock().unwrap_or_else(|p| p.into_inner()) = true;
+}
+
+/// Shows, for the demo, a call with the lead `demo_call` named just ended
+/// and waiting to be kept or discarded, instead of what it suggested.
+#[cfg(any(test, feature = "demo"))]
+pub fn demo_review(name: &str, seconds: u64) {
+    let mut held = job();
+    if let Some((lead, ..)) = held.suggestion.take() {
+        held.lead = lead;
+        held.name = name.to_owned();
+        held.phase = CallPhase::Review(super::take::Take::new(
+            std::env::temp_dir().join("whatspro-demo-call.wav"),
+            seconds,
+        ));
+    }
 }
 
 #[cfg(test)]

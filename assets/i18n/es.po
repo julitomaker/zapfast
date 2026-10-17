@@ -4376,3 +4376,27 @@ msgstr "Solo se está grabando tu micrófono. Para grabar también a la otra per
 #: src/ui/leads.rs
 msgid "Only your microphone is being recorded: put the call on speaker so the other side is heard too."
 msgstr "Solo se está grabando tu micrófono: poné la llamada en altavoz para que también se escuche a la otra persona."
+
+#: src/ui/take.rs
+msgid "Recording · {time}"
+msgstr "Grabación · {time}"
+
+#: src/ui/take.rs
+msgid "Listen"
+msgstr "Escuchar"
+
+#: src/ui/take.rs
+msgid "Discard"
+msgstr "Descartar"
+
+#: src/ui/take.rs
+msgid "Discard this recording?"
+msgstr "¿Descartar esta grabación?"
+
+#: src/ui/take.rs
+msgid "Yes, discard"
+msgstr "Sí, descartar"
+
+#: src/ui/leads.rs
+msgid "Save and transcribe"
+msgstr "Guardar y transcribir"
