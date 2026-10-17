@@ -107,6 +107,28 @@ struct State {
     note_kind: crate::projects::NoteKind,
     notes_filter: Option<crate::projects::NoteKind>,
     history_filter: Option<Verdict>,
+    /// A call being recorded, or a recording or file being read.
+    call: Arc<Mutex<CallJob>>,
+}
+
+/// Recording a call or reading an audio file into the project's notes. It
+/// runs on a thread of its own: starting waits for macOS to allow the
+/// computer's sound, and reading takes a while.
+#[derive(Default)]
+struct CallJob {
+    phase: CallPhase,
+    stop: Option<std::sync::mpsc::Sender<()>>,
+}
+
+#[derive(Clone, Default)]
+enum CallPhase {
+    #[default]
+    Idle,
+    Starting,
+    Recording(Instant),
+    Reading,
+    Saved(Instant),
+    Failed(String),
 }
 
 /// How long a ticked or dismissed finding can be undone.
@@ -166,6 +188,7 @@ impl Default for State {
             note_kind: crate::projects::NoteKind::Log,
             notes_filter: None,
             history_filter: None,
+            call: Arc::default(),
         }
     }
 }
@@ -1856,6 +1879,231 @@ fn history(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
 
 // ------------------------------------------------------------ notes, context
 
+fn set_phase(job: &Arc<Mutex<CallJob>>, ctx: &egui::Context, phase: CallPhase) {
+    job.lock().unwrap_or_else(|p| p.into_inner()).phase = phase;
+    ctx.request_repaint();
+}
+
+/// Reads `path` with the chosen media engine and keeps it, under `title`,
+/// as a spoken note; the panel is then read again.
+fn read_into_notes(
+    reader: (
+        crate::media_ai::MediaEngines,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ),
+    project: &str,
+    path: &std::path::Path,
+    title: &str,
+    job: &Arc<Mutex<CallJob>>,
+    ctx: &egui::Context,
+) {
+    let (engines, state_dir, config) = reader;
+    set_phase(job, ctx, CallPhase::Reading);
+    match crate::media_ai::speech(&engines, &state_dir, path) {
+        Ok(text) if !text.trim().is_empty() => {
+            let mut journal = Journal::load(&config, project);
+            journal.add_kind(
+                &format!("{title}\n{}", text.trim()),
+                true,
+                crate::projects::NoteKind::Log,
+            );
+            match journal.save(&config, project) {
+                Ok(()) => {
+                    engine::refresh(project);
+                    set_phase(job, ctx, CallPhase::Saved(Instant::now()));
+                }
+                Err(error) => set_phase(job, ctx, CallPhase::Failed(error.to_string())),
+            }
+        }
+        Ok(_) => set_phase(
+            job,
+            ctx,
+            CallPhase::Failed(
+                crate::i18n::gettext(crate::i18n::detect(), "Nothing was heard in it").into_owned(),
+            ),
+        ),
+        Err(error) => set_phase(job, ctx, CallPhase::Failed(error)),
+    }
+}
+
+/// Records a call (the microphone and the computer's sound) until it is
+/// ended, then reads it into the notes.
+fn record_call(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context) {
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    {
+        let mut held = job.lock().unwrap_or_else(|p| p.into_inner());
+        held.phase = CallPhase::Starting;
+        held.stop = Some(stop);
+    }
+    let reader = (
+        app.settings.media_engines.clone(),
+        app.dirs.state.clone(),
+        app.dirs.config.clone(),
+    );
+    let project = project.to_owned();
+    std::thread::spawn(move || {
+        let recording =
+            match crate::recorder::Recording::start(&reader.1, crate::recorder::Source::Both) {
+                Ok(recording) => recording,
+                Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+            };
+        set_phase(&job, &ctx, CallPhase::Recording(Instant::now()));
+        let _ = stopped.recv();
+        let seconds = recording.elapsed().as_secs();
+        let path = match recording.stop() {
+            Ok(path) => path,
+            Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
+        };
+        let title = format!("Llamada ({}:{:02}):", seconds / 60, seconds % 60);
+        read_into_notes(reader, &project, &path, &title, &job, &ctx);
+    });
+}
+
+/// Picks an audio or video file and reads it into the notes.
+fn add_file(app: &App, project: &str, job: Arc<Mutex<CallJob>>, ctx: egui::Context, label: String) {
+    let reader = (
+        app.settings.media_engines.clone(),
+        app.dirs.state.clone(),
+        app.dirs.config.clone(),
+    );
+    let project = project.to_owned();
+    std::thread::spawn(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                &label,
+                &[
+                    "ogg", "opus", "mp3", "m4a", "aac", "wav", "mp4", "mov", "webm",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        read_into_notes(
+            reader,
+            &project,
+            &path,
+            &format!("Audio: {name}"),
+            &job,
+            &ctx,
+        );
+    });
+}
+
+/// The call and file buttons, and what they are doing.
+fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let phase = state
+        .call
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .phase
+        .clone();
+    match phase {
+        CallPhase::Recording(started) => {
+            let seconds = started.elapsed().as_secs();
+            let dot = ui.cursor().left_center() + vec2(6.0, 0.0);
+            ui.painter().circle_filled(dot, 5.0, palette.danger);
+            ui.add_space(14.0);
+            theme::text(
+                ui,
+                gettext(locale, "Call {time}")
+                    .replace("{time}", &format!("{}:{:02}", seconds / 60, seconds % 60)),
+                theme::medium(13.5),
+                palette.text,
+            );
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+            if pill_button(ui, &palette, gettext(locale, "End call").as_ref(), true).clicked()
+                && let Some(stop) = state
+                    .call
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .stop
+                    .take()
+            {
+                let _ = stop.send(());
+            }
+        }
+        CallPhase::Starting => {
+            ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
+            theme::text(
+                ui,
+                gettext(locale, "Asking macOS for permission…"),
+                theme::regular(12.5),
+                palette.secondary,
+            );
+        }
+        CallPhase::Reading => {
+            ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
+            theme::text(
+                ui,
+                gettext(locale, "Reading the audio…"),
+                theme::regular(12.5),
+                palette.secondary,
+            );
+        }
+        phase => {
+            if theme::icon_button(
+                ui,
+                Icon::Phone,
+                17.0,
+                palette.secondary,
+                palette.text,
+                &gettext(
+                    locale,
+                    "Record a call (your microphone and the computer's sound)",
+                ),
+            )
+            .clicked()
+            {
+                record_call(app, &project.id, state.call.clone(), ui.ctx().clone());
+            }
+            if theme::icon_button(
+                ui,
+                Icon::Paperclip,
+                17.0,
+                palette.secondary,
+                palette.text,
+                &gettext(locale, "Add an audio or video file"),
+            )
+            .clicked()
+            {
+                add_file(
+                    app,
+                    &project.id,
+                    state.call.clone(),
+                    ui.ctx().clone(),
+                    gettext(locale, "Audio or video").into_owned(),
+                );
+            }
+            match phase {
+                CallPhase::Saved(at) if at.elapsed().as_secs() < 8 => {
+                    theme::icon(ui, Icon::CircleCheck, 14.0, palette.accent);
+                    theme::text(
+                        ui,
+                        gettext(locale, "Saved in Notes"),
+                        theme::regular(12.5),
+                        palette.accent,
+                    );
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs(1));
+                }
+                CallPhase::Failed(error) => {
+                    theme::text(ui, error, theme::regular(12.5), palette.danger);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Writing or saying what happened: a call, what was solved, what was
 /// agreed. The note joins the project's journal and the panel is read
 /// again with it.
@@ -1980,6 +2228,9 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
             .clicked()
             {
                 state.recorder = Some(crate::audio::Recorder::start(crate::backend::Waker::default()));
+            }
+            if state.recorder.is_none() && !state.transcribing {
+                call_controls(app, ui, state, project);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if !state.note.trim().is_empty()
@@ -2765,29 +3016,31 @@ fn selection_bar(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &
 }
 
 fn day_chip(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
+    // Painted rather than laid out: a column with a minimum width would
+    // stretch a frame across it.
     ui.add_space(10.0);
-    ui.vertical_centered(|ui| {
-        Frame::new()
-            .fill(if palette.vibrant() {
-                palette.glass()
-            } else {
-                palette.surface
-            })
-            .stroke(palette.glass_edge())
-            .corner_radius(CornerRadius::same(theme::RADIUS))
-            .inner_margin(Margin::symmetric(10, 4))
-            .show(ui, |ui| {
-                // Not truncated: a truncating label takes the whole width.
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(label)
-                            .font(theme::medium(12.0))
-                            .color(palette.secondary),
-                    )
-                    .selectable(false),
-                );
-            });
-    });
+    let galley =
+        ui.painter()
+            .layout_no_wrap(label.to_owned(), theme::medium(12.0), palette.secondary);
+    let size = galley.size() + vec2(20.0, 8.0);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), size.y), Sense::hover());
+    let chip = Rect::from_center_size(row.center(), size);
+    ui.painter().rect(
+        chip,
+        CornerRadius::same(theme::RADIUS),
+        if palette.vibrant() {
+            palette.glass()
+        } else {
+            palette.surface
+        },
+        palette.glass_edge(),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().galley(
+        chip.center() - galley.size() / 2.0,
+        galley,
+        palette.secondary,
+    );
     ui.add_space(6.0);
 }
 

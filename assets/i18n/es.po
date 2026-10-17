@@ -3612,3 +3612,39 @@ msgstr "Apuntes"
 #: src/ui/projects.rs
 msgid "Who they are: what they do, how to deal with them, what they care about…"
 msgstr "Quién es: qué hace, cómo tratarlo, qué le importa…"
+
+#: src/ui/projects.rs
+msgid "Call {time}"
+msgstr "Llamada {time}"
+
+#: src/ui/projects.rs
+msgid "End call"
+msgstr "Terminar llamada"
+
+#: src/ui/projects.rs
+msgid "Asking macOS for permission…"
+msgstr "Pidiendo permiso a macOS…"
+
+#: src/ui/projects.rs
+msgid "Reading the audio…"
+msgstr "Leyendo el audio…"
+
+#: src/ui/projects.rs
+msgid "Record a call (your microphone and the computer's sound)"
+msgstr "Grabar una llamada (tu micrófono y el sonido de la compu)"
+
+#: src/ui/projects.rs
+msgid "Add an audio or video file"
+msgstr "Sumar un archivo de audio o video"
+
+#: src/ui/projects.rs
+msgid "Audio or video"
+msgstr "Audio o video"
+
+#: src/ui/projects.rs
+msgid "Saved in Notes"
+msgstr "Guardado en Notas"
+
+#: src/ui/projects.rs
+msgid "Nothing was heard in it"
+msgstr "No se escuchó nada"
