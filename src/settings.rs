@@ -564,6 +564,10 @@ pub struct Settings {
     pub media_engines: crate::media_ai::MediaEngines,
     /// Whether the first-run choice of those engines was shown.
     pub media_setup_done: bool,
+    /// Whether a recording starts with a short tone the other side hears.
+    pub call_record_notice: bool,
+    /// Whether the sheet saying how call recording works was agreed to.
+    pub call_record_intro_done: bool,
 }
 
 impl Default for Settings {
@@ -623,6 +627,8 @@ impl Default for Settings {
             window_maximized: false,
             media_engines: crate::media_ai::MediaEngines::default(),
             media_setup_done: false,
+            call_record_notice: true,
+            call_record_intro_done: false,
         }
     }
 }

@@ -19,8 +19,8 @@ use std::time::{Duration, Instant};
 use super::{App, CALL_FAREWELL, notification_sound};
 use crate::backend::{Backend, Command};
 use crate::call_tones::Tone;
-use crate::calls::{CallPhase, CallUpdate};
-use crate::model::{AccountId, Action, CallDirection, Chat, ChatId};
+use crate::calls::{CallPhase, CallUpdate, RecordingOp};
+use crate::model::{AccountId, Action, CallDirection, Chat, ChatId, PendingRecord};
 use crate::settings::NotificationSound;
 
 /// One person on a group call, as the call screen draws them.
@@ -40,6 +40,10 @@ pub struct CallPerson {
 /// first use on macOS asks permission) and the peer's devices, so this is
 /// generous; it is only there so a lost answer never leaves the screen stuck.
 const PLACING_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long a recording asked of the worker holds the record button before
+/// it may be asked again: the worker answers at once unless it is gone.
+const RECORDING_ANSWER: Duration = Duration::from_secs(10);
 
 impl App {
     /// Whether a call is up or ringing, on any account.
@@ -333,8 +337,15 @@ impl App {
             .retain(|member, _| sending.contains(&member.as_str()));
         self.call_member_textures
             .retain(|member, _| sending.contains(&member.as_str()));
+        let failed_before = self
+            .call
+            .as_ref()
+            .filter(|current| current.generation == update.generation)
+            .and_then(|current| current.recording.as_ref())
+            .and_then(|recording| recording.failed.clone());
         self.call = Some(update);
         self.call_account = Some(account);
+        self.follow_recording(failed_before);
         if finished {
             if !was_live && self.call_surface_until.is_none() {
                 // Nothing was drawn for this call, so there is nothing to
@@ -424,6 +435,9 @@ impl App {
             return;
         };
         self.call_dismissed = Some(call.generation);
+        // A call hung up before it was up is never recorded.
+        self.call_record_armed = None;
+        self.call_record_intro = None;
         if self.call_notified == Some(call.generation) {
             self.call_notified = None;
             if let Some(account) = self.call_account.clone() {
@@ -564,6 +578,7 @@ impl App {
             self.set_call_fullscreen(ctx, false);
         }
         self.sync_call_tone();
+        self.announce_recorded_calls();
         if let Some(until) = self.call_surface_until {
             // The farewell goes on time even with nothing else to draw.
             ctx.request_repaint_after(until.saturating_duration_since(now));
@@ -628,9 +643,338 @@ impl App {
                     self.set_call_fullscreen(ctx, fullscreen);
                 }
             }
+            Action::ToggleCallRecording => self.toggle_call_recording(),
+            Action::AnswerAndRecord => {
+                if self.settings.call_record_intro_done {
+                    self.answer_and_record();
+                } else {
+                    self.call_record_intro = Some(PendingRecord::AnswerAndRecord);
+                }
+            }
+            Action::ConfirmCallRecording { notice } => {
+                self.settings.call_record_notice = notice;
+                self.settings.call_record_intro_done = true;
+                self.mark_settings_dirty();
+                match self.call_record_intro.take() {
+                    Some(PendingRecord::Toggle) => self.toggle_call_recording(),
+                    Some(PendingRecord::AnswerAndRecord) => self.answer_and_record(),
+                    None => {}
+                }
+            }
+            Action::CancelCallRecordingIntro => self.call_record_intro = None,
+            Action::DiscardCallRecording => self.discard_call_recording(),
+            Action::DraftRecordingNotice => self.draft_recording_notice(ctx),
+            Action::OpenRecordedCall(id) => self.recorded_call_open = Some(id),
+            Action::CloseRecordedCall => self.recorded_call_open = None,
+            Action::TranscribeRecordedCall(id) => crate::call_capture::save_and_read(self, &id),
+            Action::MoveRecordedCall { id, project } => {
+                crate::call_capture::move_to(self, &id, project);
+            }
+            Action::DeleteRecordedCall(id) => {
+                crate::call_capture::delete(self, &id);
+                if self.recorded_call_open.as_deref() == Some(id.as_str()) {
+                    self.recorded_call_open = None;
+                }
+            }
             other => return Some(other),
         }
         None
+    }
+
+    /// The record button: stops a recording in progress, disarms an armed
+    /// one, shows the first-time sheet, or starts (or arms, while the call is
+    /// not up yet) a recording.
+    fn toggle_call_recording(&mut self) {
+        let Some(call) = self.call.clone().filter(|call| call.phase.is_live()) else {
+            return;
+        };
+        let generation = call.generation;
+        if call.recording.is_some() {
+            self.send_call_command(Command::CallRecording {
+                generation,
+                op: RecordingOp::Stop,
+            });
+        } else if self.call_record_armed == Some(generation) {
+            self.call_record_armed = None;
+        } else if self.call_record_requested.is_some_and(|(requested, at)| {
+            requested == generation && at.elapsed() < RECORDING_ANSWER
+        }) {
+            // Already asked for; the worker's answer is on its way.
+        } else if !self.settings.call_record_intro_done {
+            self.call_record_intro = Some(PendingRecord::Toggle);
+        } else if call.phase == CallPhase::Active {
+            self.start_recording();
+        } else {
+            self.call_record_armed = Some(generation);
+        }
+    }
+
+    /// Answers the ringing call armed to record from its first moment.
+    fn answer_and_record(&mut self) {
+        let Some(call) = self
+            .call
+            .as_ref()
+            .filter(|call| call.phase == CallPhase::Incoming)
+        else {
+            return;
+        };
+        // Commands run in order: the arm is in place before the call is up.
+        self.call_record_armed = Some(call.generation);
+        self.send_call_command(Command::AnswerCall);
+    }
+
+    /// Asks the call's worker to record the call that is up, with its context
+    /// written beside the file first.
+    fn start_recording(&mut self) {
+        let Some(call) = self.call.clone() else {
+            return;
+        };
+        self.call_record_armed = None;
+        let prepared = crate::call_capture::prepare(self)
+            .and_then(|(path, meta)| meta.write(&path).map(|()| path));
+        let path = match prepared {
+            Ok(path) => path,
+            Err(reason) => {
+                self.toast_error(
+                    crate::i18n::gettext(self.locale, "Could not start recording: {reason}")
+                        .replace(
+                            "{reason}",
+                            &crate::call_capture::reason(self.locale, &reason),
+                        ),
+                );
+                return;
+            }
+        };
+        self.call_record_roster = call
+            .group
+            .iter()
+            .flat_map(|group| &group.participants)
+            .filter(|person| person.joined)
+            .map(|person| person.id.clone())
+            .collect();
+        self.send_call_command(Command::CallRecording {
+            generation: call.generation,
+            op: RecordingOp::Start {
+                path: path.clone(),
+                notice: self.settings.call_record_notice,
+            },
+        });
+        self.call_record_requested = Some((call.generation, Instant::now()));
+        self.call_record_file = Some((call.generation, path));
+        self.call_record_discarded = None;
+    }
+
+    /// Keeps the recording in step with each update of the call, window or
+    /// not: an armed call starts recording once it is up, and an arm goes
+    /// with a call that ended first.
+    fn follow_recording(&mut self, failed_before: Option<String>) {
+        let Some(call) = self.call.clone() else {
+            return;
+        };
+        let generation = call.generation;
+        if self
+            .call_record_armed
+            .is_some_and(|armed| armed != generation)
+        {
+            self.call_record_armed = None;
+        }
+        if !call.phase.is_live() {
+            self.call_record_armed = None;
+            self.call_record_intro = None;
+            if self
+                .call_record_requested
+                .is_some_and(|(requested, _)| requested == generation)
+            {
+                self.call_record_requested = None;
+            }
+            return;
+        }
+        if call.phase == CallPhase::Active && self.call_record_armed == Some(generation) {
+            self.start_recording();
+        }
+        let Some(recording) = &call.recording else {
+            return;
+        };
+        if self
+            .call_record_requested
+            .is_some_and(|(requested, _)| requested == generation)
+        {
+            self.call_record_requested = None;
+        }
+        if let Some(reason) = &recording.failed
+            && failed_before.as_ref() != Some(reason)
+        {
+            self.toast_error(
+                crate::i18n::gettext(
+                    self.locale,
+                    "The recording stopped: {reason}. What was recorded so far is kept.",
+                )
+                .replace("{reason}", reason),
+            );
+        }
+        // Who joined a group call while it was recorded.
+        let joined: Vec<String> = call
+            .group
+            .iter()
+            .flat_map(|group| &group.participants)
+            .filter(|person| person.joined && !self.call_record_roster.contains(&person.id))
+            .map(|person| person.id.clone())
+            .collect();
+        if joined.is_empty() {
+            return;
+        }
+        self.call_record_roster.extend(joined.iter().cloned());
+        let names: Vec<String> = self
+            .call_people()
+            .into_iter()
+            .filter(|person| joined.contains(&person.id))
+            .map(|person| person.name)
+            .collect();
+        if let Some((_, path)) = self
+            .call_record_file
+            .as_ref()
+            .filter(|(recorded, _)| *recorded == generation)
+        {
+            crate::call_capture::add_participants(path, names);
+        }
+    }
+
+    /// Stops the recording in progress and deletes it with its context.
+    fn discard_call_recording(&mut self) {
+        let Some(generation) = self
+            .call
+            .as_ref()
+            .filter(|call| call.phase.is_live())
+            .map(|call| call.generation)
+        else {
+            return;
+        };
+        self.send_call_command(Command::CallRecording {
+            generation,
+            op: RecordingOp::Discard,
+        });
+        self.call_record_requested = None;
+        // A call that ends before the worker reads this hands the recording
+        // on anyway; it is deleted then.
+        self.call_record_discarded = Some(generation);
+        if let Some((_, path)) = self
+            .call_record_file
+            .take_if(|(recorded, _)| *recorded == generation)
+        {
+            crate::call_capture::forget(&path);
+        }
+    }
+
+    /// Puts a note that the call is being recorded in its chat's composer, as
+    /// a draft: it is never sent on its own. Only for the account on screen,
+    /// whose composer it is.
+    fn draft_recording_notice(&mut self, ctx: &egui::Context) {
+        let Some(call) = self.call.clone() else {
+            return;
+        };
+        if self.call_account.as_ref() != Some(&self.account().id) || call.chat.is_empty() {
+            self.toast(crate::i18n::gettext(
+                self.locale,
+                "Open the call's chat to send the notice",
+            ));
+            return;
+        }
+        let text = crate::i18n::gettext(
+            self.locale,
+            "Just so you know, I'm recording this call to keep notes of what we agree on. \
+             If you'd rather I didn't, tell me and I'll stop.",
+        )
+        .into_owned();
+        self.call_surface_hidden = true;
+        self.apply(Action::OpenChat(call.chat.clone()), ctx);
+        self.apply(
+            Action::PrefillComposer {
+                chat: call.chat,
+                text,
+            },
+            ctx,
+        );
+    }
+
+    /// A recording the worker handed on: kept in the call library for review.
+    pub(super) fn call_recorded(&mut self, report: crate::call_tape::Report) {
+        let generation = report.generation;
+        if self
+            .call_record_requested
+            .is_some_and(|(requested, _)| requested == generation)
+        {
+            self.call_record_requested = None;
+        }
+        if self
+            .call_record_file
+            .take_if(|(recorded, _)| *recorded == generation)
+            .is_some()
+        {
+            self.call_record_roster.clear();
+        }
+        if self
+            .call_record_discarded
+            .take_if(|discarded| *discarded == generation)
+            .is_some()
+        {
+            let _ = std::fs::remove_file(&report.path);
+            crate::call_capture::forget(&report.path);
+            return;
+        }
+        crate::call_capture::kept(self, report);
+    }
+
+    /// The worker could not do what was asked of a recording. Only the call it
+    /// was asked for is touched: a late answer about an earlier call leaves the
+    /// current one alone.
+    pub(super) fn call_recording_failed(&mut self, generation: u64, reason: &str) {
+        if self
+            .call_record_requested
+            .is_some_and(|(requested, _)| requested == generation)
+        {
+            self.call_record_requested = None;
+        }
+        let Some((_, path)) = self
+            .call_record_file
+            .take_if(|(recorded, _)| *recorded == generation)
+        else {
+            log::info!("[CALL] a recording request for an earlier call failed: {reason}");
+            return;
+        };
+        crate::call_capture::forget(&path);
+        self.call_record_roster.clear();
+        self.toast_error(
+            crate::i18n::gettext(self.locale, "Could not record the call: {reason}").replace(
+                "{reason}",
+                &crate::call_capture::reason(self.locale, reason),
+            ),
+        );
+    }
+
+    /// Says what happened to recorded calls being read, and what the launch
+    /// rescued.
+    fn announce_recorded_calls(&mut self) {
+        let locale = self.locale;
+        for finished in crate::call_capture::drain_finished() {
+            match finished.outcome {
+                Ok(_) => self.toast_with(
+                    crate::i18n::gettext(locale, "Summary ready: {title}")
+                        .replace("{title}", &finished.title),
+                    crate::i18n::gettext(locale, "View").into_owned(),
+                    Action::OpenRecordedCall(finished.id),
+                ),
+                Err(reason) => self.toast_error(
+                    crate::i18n::gettext(locale, "Could not read the call: {reason}")
+                        .replace("{reason}", &reason),
+                ),
+            }
+        }
+        if let Some(recovery) = crate::call_capture::drain_recovery()
+            && let Some((message, action)) = crate::call_capture::recovery_toast(locale, &recovery)
+        {
+            let label = crate::i18n::gettext(locale, "Review").into_owned();
+            self.toast_with(message, label, action);
+        }
     }
 
     /// Whether the account being removed or unlinked has the call: its
@@ -1276,5 +1620,343 @@ mod tests {
         app.chats[0].muted_until = Some(crate::util::now() + 3600);
         app.handle_call_update(update(1, CallPhase::Incoming));
         assert_eq!(app.call_tone(), None, "a muted chat does not ring");
+    }
+
+    /// A call update that says it is being recorded.
+    fn recorded(generation: u64) -> CallUpdate {
+        let mut update = update(generation, CallPhase::Active);
+        update.recording = Some(crate::call_tape::RecordingView {
+            since: Instant::now(),
+            notice: crate::call_tape::NoticeState::Pending,
+            failed: None,
+        });
+        update
+    }
+
+    /// The recordings asked of the worker: generation, file and notice.
+    fn starts(commands: Vec<Command>) -> Vec<(u64, std::path::PathBuf, bool)> {
+        commands
+            .into_iter()
+            .filter_map(|command| match command {
+                Command::CallRecording {
+                    generation,
+                    op: RecordingOp::Start { path, notice },
+                } => Some((generation, path, notice)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Hands the window an event from the call's account.
+    fn deliver(app: &mut App, event: crate::backend::Event) {
+        app.apply_backend_event(event, true);
+    }
+
+    fn intro_done(app: &mut App) {
+        app.settings.call_record_intro_done = true;
+    }
+
+    #[test]
+    fn an_armed_call_starts_recording_once_when_it_is_up() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        app.handle_call_update(update(4, CallPhase::Incoming));
+        sent(&mut commands);
+        app.apply(Action::AnswerAndRecord, &ctx);
+        let sent_now = sent(&mut commands);
+        assert!(
+            matches!(sent_now.as_slice(), [Command::AnswerCall]),
+            "{sent_now:?}"
+        );
+        assert_eq!(app.call_record_armed, Some(4));
+        app.handle_call_update(update(4, CallPhase::Accepted));
+        assert!(
+            starts(sent(&mut commands)).is_empty(),
+            "not before it is up"
+        );
+        app.handle_call_update(update(4, CallPhase::Active));
+        let started = starts(sent(&mut commands));
+        let [(4, path, true)] = started.as_slice() else {
+            panic!("one start with the notice, got {started:?}");
+        };
+        assert!(
+            path.starts_with(crate::call_capture::dir(&app.dirs.state)),
+            "{path:?}"
+        );
+        let meta = crate::call_capture::Meta::read(path).expect("its context comes first");
+        assert_eq!(meta.title, "Call with Ada");
+        assert_eq!(meta.chat.as_deref(), Some(ADA));
+        assert_eq!(meta.direction.as_deref(), Some("incoming"));
+        assert!(!meta.private);
+        // The next updates while the worker sets it up start nothing more.
+        app.handle_call_update(update(4, CallPhase::Active));
+        assert!(starts(sent(&mut commands)).is_empty());
+        app.handle_call_update(recorded(4));
+        assert_eq!(app.call_record_requested, None, "the recording showed up");
+        assert!(starts(sent(&mut commands)).is_empty());
+        // The button now stops it.
+        app.apply(Action::ToggleCallRecording, &ctx);
+        assert!(matches!(
+            sent(&mut commands).as_slice(),
+            [Command::CallRecording {
+                generation: 4,
+                op: RecordingOp::Stop
+            }]
+        ));
+    }
+
+    #[test]
+    fn hanging_up_before_the_call_is_up_drops_the_arm() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        let (generation, _) = press_call(&mut app, &mut commands, false);
+        app.handle_call_update(outgoing(generation, CallPhase::Ringing));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        assert_eq!(
+            app.call_record_armed,
+            Some(generation),
+            "armed while it rings"
+        );
+        app.apply(Action::HangupCall, &ctx);
+        assert_eq!(app.call_record_armed, None);
+        sent(&mut commands);
+        // An arm also goes with a call that ends on the other side.
+        let (generation, _) = press_call(&mut app, &mut commands, false);
+        app.handle_call_update(outgoing(generation, CallPhase::Ringing));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        let mut over = outgoing(generation, CallPhase::Failed);
+        over.outcome = Some(CallOutcome::Declined);
+        app.handle_call_update(over);
+        assert_eq!(app.call_record_armed, None);
+        // Pressing again while armed disarms.
+        let (generation, _) = press_call(&mut app, &mut commands, false);
+        app.handle_call_update(outgoing(generation, CallPhase::Ringing));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        app.apply(Action::ToggleCallRecording, &ctx);
+        assert_eq!(app.call_record_armed, None);
+    }
+
+    #[test]
+    fn a_late_failure_for_an_earlier_call_leaves_the_current_one_alone() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        app.handle_call_update(update(2, CallPhase::Active));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        let started = starts(sent(&mut commands));
+        let [(2, path, _)] = started.as_slice() else {
+            panic!("{started:?}");
+        };
+        let context = crate::call_capture::sidecar(path);
+        deliver(
+            &mut app,
+            crate::backend::Event::CallRecordingFailed {
+                generation: 1,
+                reason: "The call is over".into(),
+            },
+        );
+        assert_eq!(app.call_record_requested.map(|(g, _)| g), Some(2));
+        assert!(context.exists(), "the current recording's context stays");
+        assert!(app.toasts.is_empty(), "{:?}", app.toasts);
+        // Its own failure is said, and its context goes.
+        deliver(
+            &mut app,
+            crate::backend::Event::CallRecordingFailed {
+                generation: 2,
+                reason: crate::call_tape::BUSY.into(),
+            },
+        );
+        assert_eq!(app.call_record_requested, None);
+        assert!(!context.exists());
+        assert_eq!(
+            app.toasts.last().map(|toast| toast.message.as_str()),
+            Some("Could not record the call: Another call is already being recorded")
+        );
+    }
+
+    #[test]
+    fn the_first_recording_asks_once_and_then_never_again() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        app.handle_call_update(update(1, CallPhase::Active));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        assert_eq!(app.call_record_intro, Some(PendingRecord::Toggle));
+        assert!(
+            starts(sent(&mut commands)).is_empty(),
+            "not before agreeing"
+        );
+        app.apply(Action::ConfirmCallRecording { notice: false }, &ctx);
+        assert_eq!(app.call_record_intro, None);
+        assert!(app.settings.call_record_intro_done);
+        assert!(!app.settings.call_record_notice);
+        let started = starts(sent(&mut commands));
+        assert!(matches!(started.as_slice(), [(1, _, false)]), "{started:?}");
+        app.handle_call_update(recorded(1));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        app.handle_call_update(update(1, CallPhase::Active));
+        sent(&mut commands);
+        // The next one starts at once.
+        app.apply(Action::ToggleCallRecording, &ctx);
+        assert_eq!(app.call_record_intro, None);
+        assert_eq!(starts(sent(&mut commands)).len(), 1);
+        // Closing the sheet records nothing.
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = self::app(directory.path());
+        app.handle_call_update(update(1, CallPhase::Incoming));
+        sent(&mut commands);
+        app.apply(Action::AnswerAndRecord, &ctx);
+        assert_eq!(app.call_record_intro, Some(PendingRecord::AnswerAndRecord));
+        assert!(sent(&mut commands).is_empty(), "the call still rings");
+        app.apply(Action::CancelCallRecordingIntro, &ctx);
+        assert_eq!(app.call_record_intro, None);
+        assert!(!app.settings.call_record_intro_done);
+    }
+
+    #[test]
+    fn a_locked_chats_recording_is_titled_without_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        app.chats[0].locked = true;
+        app.settings.set_chat_lock_code(Some("test-code"));
+        // Even with its folder open: the files outlive the folder.
+        app.apply(Action::UnlockLockedFolder("test-code".into()), &ctx);
+        app.handle_call_update(update(1, CallPhase::Active));
+        assert_eq!(app.call_name(), "Ada");
+        app.apply(Action::ToggleCallRecording, &ctx);
+        let started = starts(sent(&mut commands));
+        let [(1, path, _)] = started.as_slice() else {
+            panic!("{started:?}");
+        };
+        let meta = crate::call_capture::Meta::read(path).unwrap();
+        assert_eq!(meta.title, "Call in a locked chat");
+        assert!(meta.private);
+        assert_eq!(meta.chat.as_deref(), Some(ADA), "kept for matching");
+        let written = std::fs::read_to_string(crate::call_capture::sidecar(path)).unwrap();
+        assert!(!written.contains("Ada\""), "{written}");
+    }
+
+    #[test]
+    fn a_stopped_recording_is_kept_for_review() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        app.handle_call_update(update(3, CallPhase::Active));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        let started = starts(sent(&mut commands));
+        let [(3, path, _)] = started.as_slice() else {
+            panic!("{started:?}");
+        };
+        std::fs::write(path, b"RIFF").unwrap();
+        deliver(
+            &mut app,
+            crate::backend::Event::CallRecorded(Box::new(crate::call_tape::Report {
+                generation: 3,
+                path: path.clone(),
+                seconds: 75,
+                levels: [0.2, 0.1],
+                notice_ms: Some(0),
+                error: None,
+            })),
+        );
+        assert!(!path.exists() && !crate::call_capture::sidecar(path).exists());
+        let library = crate::call_library::Library::load(&app.dirs.state);
+        let [call] = library.calls.as_slice() else {
+            panic!("{library:?}");
+        };
+        assert_eq!(call.title, "Call with Ada");
+        assert_eq!(call.chat.as_deref(), Some(ADA));
+        assert_eq!(call.seconds, 75);
+        assert_eq!(call.notice_ms, Some(0));
+        assert!(call.stereo && call.pending_review && !call.pending_read);
+        assert!(
+            crate::call_capture::job(&call.id).is_none(),
+            "nothing reads it before the review"
+        );
+        let toast = app.toasts.last().unwrap();
+        assert_eq!(
+            toast.message,
+            "Call recorded (1:15). Find it in Calls > Recorded."
+        );
+        assert_eq!(
+            toast.action,
+            Some((
+                "Review".to_owned(),
+                Action::OpenRecordedCall(call.id.clone())
+            ))
+        );
+        assert_eq!(toast.lifetime(), crate::model::ACTION_TOAST_LIFETIME);
+    }
+
+    #[test]
+    fn a_discarded_recording_is_deleted_even_if_the_call_ends_first() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        intro_done(&mut app);
+        app.handle_call_update(update(5, CallPhase::Active));
+        app.apply(Action::ToggleCallRecording, &ctx);
+        let started = starts(sent(&mut commands));
+        let [(5, path, _)] = started.as_slice() else {
+            panic!("{started:?}");
+        };
+        app.handle_call_update(recorded(5));
+        app.apply(Action::DiscardCallRecording, &ctx);
+        assert!(matches!(
+            sent(&mut commands).as_slice(),
+            [Command::CallRecording {
+                generation: 5,
+                op: RecordingOp::Discard
+            }]
+        ));
+        assert!(!crate::call_capture::sidecar(path).exists());
+        std::fs::write(path, b"RIFF").unwrap();
+        deliver(
+            &mut app,
+            crate::backend::Event::CallRecorded(Box::new(crate::call_tape::Report {
+                generation: 5,
+                path: path.clone(),
+                seconds: 3,
+                levels: [0.0; 2],
+                notice_ms: None,
+                error: None,
+            })),
+        );
+        assert!(!path.exists());
+        assert!(
+            crate::call_library::Library::load(&app.dirs.state)
+                .calls
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_recording_notice_is_only_ever_a_draft() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut app, mut commands) = app(directory.path());
+        let ctx = egui::Context::default();
+        app.handle_call_update(update(1, CallPhase::Active));
+        app.apply(Action::DraftRecordingNotice, &ctx);
+        assert_eq!(app.open_chat.as_deref(), Some(ADA));
+        assert!(
+            app.composer.starts_with("Just so you know"),
+            "{}",
+            app.composer
+        );
+        assert!(app.call_surface_hidden, "the chat shows beside the call");
+        assert!(
+            !sent(&mut commands)
+                .iter()
+                .any(|command| matches!(command, Command::SendText { .. })),
+            "nothing is sent"
+        );
     }
 }

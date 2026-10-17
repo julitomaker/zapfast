@@ -1953,7 +1953,7 @@ impl CallReader {
 }
 
 /// The project's context, for reading its calls.
-fn call_context(config: &std::path::Path, project: &str) -> String {
+pub(crate) fn call_context(config: &std::path::Path, project: &str) -> String {
     let map = ProjectMap::load(config);
     let Some(project) = map.project(project) else {
         return String::new();
@@ -1995,14 +1995,26 @@ fn analyze_call(reader: &CallReader, project: &str, id: &str) {
         id,
         &call_context(&reader.config, project),
     );
-    let Some(call) = crate::call_library::Library::load(&reader.state)
-        .get(id)
-        .cloned()
-    else {
-        return;
-    };
+    if let Some(call) = crate::call_library::Library::load(&reader.state).get(id) {
+        note_call(reader, project, call, &analysis);
+    }
+}
+
+/// How much of a transcript a note keeps when there is no summary: the
+/// journal goes to the dashboard's engine, and a whole call does not belong
+/// there.
+const NOTE_EXCERPT: usize = 400;
+
+/// Notes a read call in the project's journal, so its panel picks up the
+/// commitments: its summary, or that it has none, with a short excerpt.
+pub(crate) fn note_call(
+    reader: &CallReader,
+    project: &str,
+    call: &crate::call_library::Call,
+    analysis: &Result<crate::call_library::CallAnalysis, String>,
+) {
     let mut note = format!("{}:", call.title);
-    match &analysis {
+    match analysis {
         Ok(analysis) => {
             note.push(' ');
             note.push_str(&analysis.summary);
@@ -2012,17 +2024,22 @@ fn analyze_call(reader: &CallReader, project: &str, id: &str) {
                     .as_deref()
                     .map(|d| format!(" (para {d})"))
                     .unwrap_or_default();
-                note.push_str(&format!("\nCompromiso: {} — {}{due}", c.who, c.what));
+                note.push_str(&format!("\nCompromiso: {}: {}{due}", c.who, c.what));
             }
             for task in &analysis.tasks {
                 note.push_str(&format!("\nTarea: {task}"));
             }
         }
-        // Without an analysis engine the transcript itself is the note.
-        Err(_) => {
+        Err(reason) => {
+            note.push_str(&format!(" transcripta, sin resumen ({reason})"));
             if let Some(transcript) = call.transcript() {
+                let text = transcript.text.trim();
+                let excerpt: String = text.chars().take(NOTE_EXCERPT).collect();
                 note.push('\n');
-                note.push_str(&transcript.text);
+                note.push_str(&excerpt);
+                if excerpt.len() < text.len() {
+                    note.push('…');
+                }
             }
         }
     }

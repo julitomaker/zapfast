@@ -35,8 +35,6 @@ const VIDEO_SCRIM: Color32 = Color32::from_black_alpha(150);
 /// Draws the call surface over the window, when a call wants the screen.
 /// A call the reader stepped away from is drawn by [`strip`] instead.
 pub fn show(app: &mut App, ctx: &egui::Context) {
-    // A recording of a call stops when the call does.
-    crate::call_capture::follow(app);
     let Some(call) = app.call.clone() else {
         return;
     };
@@ -576,17 +574,16 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
             app.call_devices_open = !open;
         }
 
-        // Recording: the microphone and the computer's sound, kept in the
-        // call's project once it ends.
-        let recording = crate::call_capture::recording(call.generation);
-        let (tip, fill, tint) = match recording {
-            Some(started) => {
-                let seconds = started.elapsed().as_secs();
+        // Recording both voices, kept in the call library once it stops. The
+        // worker owns the recording; the button only asks.
+        let (tip, fill, tint) = match &call.recording {
+            Some(recording) => {
+                let seconds = recording.since.elapsed().as_secs();
                 ui.ctx()
                     .request_repaint_after(std::time::Duration::from_millis(500));
                 (
                     gettext(locale, "Recording {time}: click to stop and keep it")
-                        .replace("{time}", &format!("{}:{:02}", seconds / 60, seconds % 60)),
+                        .replace("{time}", &crate::util::call_duration(seconds)),
                     palette.danger,
                     Color32::WHITE,
                 )
@@ -597,21 +594,8 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
                 palette.text,
             ),
         };
-        if control(
-            ui,
-            Icon::Record,
-            fill,
-            tint,
-            &tip,
-            call.phase.is_connected(),
-        )
-        .clicked()
-        {
-            if recording.is_some() {
-                crate::call_capture::stop();
-            } else {
-                crate::call_capture::start(app, ui.ctx());
-            }
+        if control(ui, Icon::Record, fill, tint, &tip, live).clicked() {
+            app.actions.push(Action::ToggleCallRecording);
         }
 
         let tip = gettext(locale, "Hang up");

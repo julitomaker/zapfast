@@ -2196,6 +2196,33 @@ pub struct Toast {
     pub message: String,
     pub kind: ToastKind,
     pub created: Instant,
+    /// A button beside the message: its label and what it does.
+    pub action: Option<(String, Action)>,
+}
+
+impl Toast {
+    /// How long an info toast stays: longer when it offers a button, so
+    /// there is time to reach it.
+    pub fn lifetime(&self) -> std::time::Duration {
+        if self.action.is_some() {
+            ACTION_TOAST_LIFETIME
+        } else {
+            crate::app::INFO_TOAST_LIFETIME
+        }
+    }
+}
+
+/// How long an info toast with a button stays.
+pub const ACTION_TOAST_LIFETIME: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// What waits behind the first-time recording sheet: the button that opened
+/// it, carried out once the person agrees.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingRecord {
+    /// The call screen's record button.
+    Toggle,
+    /// "Answer and record" on a ringing call.
+    AnswerAndRecord,
 }
 
 /// A scroll request for the open chat's message list, from the keyboard.
@@ -2273,6 +2300,35 @@ pub enum Action {
     /// Takes the call surface full screen, or leaves full screen again. The window moves; the call
     /// does not.
     ToggleCallFullscreen,
+    /// Starts recording the call, or arms it to start once the call is up;
+    /// stops a recording in progress, or disarms it.
+    ToggleCallRecording,
+    /// Answers the ringing call and records it from the start.
+    AnswerAndRecord,
+    /// Agrees to the first-time recording sheet, with the notice or not, and
+    /// carries out what opened it.
+    ConfirmCallRecording {
+        notice: bool,
+    },
+    /// Closes the first-time recording sheet without recording.
+    CancelCallRecordingIntro,
+    /// Stops the recording in progress and deletes it.
+    DiscardCallRecording,
+    /// Puts a note saying the call is being recorded in the call's chat, as
+    /// a draft the person sends or not.
+    DraftRecordingNotice,
+    /// Opens a recorded call's sheet, by its id in the call library.
+    OpenRecordedCall(String),
+    CloseRecordedCall,
+    /// "Save and transcribe": keeps a recorded call and reads it.
+    TranscribeRecordedCall(String),
+    /// Moves a recorded call to another project, or out of every project.
+    MoveRecordedCall {
+        id: String,
+        project: Option<String>,
+    },
+    /// Deletes a recorded call: its audio, transcripts and summary.
+    DeleteRecordedCall(String),
     /// Creates and opens a chat for a contact without one.
     StartChat {
         id: ChatId,

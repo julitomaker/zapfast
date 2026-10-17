@@ -633,12 +633,12 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let palette = app.palette;
-    let lifetime = crate::app::INFO_TOAST_LIFETIME.as_secs_f32();
-    // Errors carry buttons, so the area must take clicks while one is shown.
-    let has_error = app
+    // Errors and toasts with an action carry buttons, so the area must take
+    // clicks while one is shown.
+    let has_buttons = app
         .toasts
         .iter()
-        .any(|toast| toast.kind == ToastKind::Error);
+        .any(|toast| toast.kind == ToastKind::Error || toast.action.is_some());
     let mut actions = Vec::new();
     // Stay clear of the composer: an error waiting to be dismissed must not
     // cover the send button.
@@ -650,7 +650,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
     egui::Area::new(egui::Id::new("toasts"))
         .anchor(Align2::RIGHT_BOTTOM, vec2(-20.0, -bottom))
         .order(egui::Order::Tooltip)
-        .interactable(has_error)
+        .interactable(has_buttons)
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
             for (index, toast) in app.toasts.iter().enumerate() {
@@ -660,6 +660,7 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                 let alpha = if error {
                     1.0
                 } else {
+                    let lifetime = toast.lifetime().as_secs_f32();
                     let age = toast.created.elapsed().as_secs_f32();
                     if age < 0.15 {
                         age / 0.15
@@ -685,7 +686,11 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                             palette.text,
                             (ctx.content_rect().width() - 150.0).clamp(80.0, 360.0),
                         );
-                        let buttons = if error { 2.0 * 26.0 + 12.0 } else { 0.0 };
+                        let buttons = match &toast.action {
+                            Some((label, _)) => theme::soft_button_width(ui, label, false) + 12.0,
+                            None if error => 2.0 * 26.0 + 12.0,
+                            None => 0.0,
+                        };
                         let text = widgets::line(
                             ui,
                             &toast.message,
@@ -710,7 +715,21 @@ fn toasts(app: &mut App, ctx: &egui::Context) {
                             ui.ctx().data_mut(|data| {
                                 data.insert_temp(toast_close_id(index).with("text"), rect);
                             });
-                            if error {
+                            if let Some((label, action)) = &toast.action {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if theme::soft_button(ui, &palette, None, label, false)
+                                            .clicked()
+                                        {
+                                            // Dismissed first: what the action
+                                            // toasts must not move the index.
+                                            actions.push(Action::DismissToast(index));
+                                            actions.push(action.clone());
+                                        }
+                                    },
+                                );
+                            } else if error {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {

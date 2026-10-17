@@ -751,6 +751,22 @@ pub struct App {
     /// When the call on screen was placed here, while the worker has not
     /// said anything about it yet.
     call_placed: Option<Instant>,
+    /// The call (by generation) to record as soon as it is up.
+    pub call_record_armed: Option<u64>,
+    /// The first-time recording sheet, and the button that opened it.
+    pub call_record_intro: Option<crate::model::PendingRecord>,
+    /// A recording asked of the worker that has not shown up yet, and when.
+    pub call_record_requested: Option<(u64, Instant)>,
+    /// The file the call (by generation) is being recorded to, until the
+    /// worker hands it on or says it failed.
+    call_record_file: Option<(u64, std::path::PathBuf)>,
+    /// The group members already noted as on the recorded call.
+    call_record_roster: Vec<String>,
+    /// The call (by generation) whose recording was discarded, so one the
+    /// call's end hands on anyway is deleted rather than kept.
+    call_record_discarded: Option<u64>,
+    /// The recorded call whose sheet is open, by its id in the call library.
+    pub recorded_call_open: Option<String>,
     /// The newest camera preview and peer picture of a video call.
     pub call_local_frame: Option<std::sync::Arc<egui::ColorImage>>,
     pub call_remote_frame: Option<std::sync::Arc<egui::ColorImage>>,
@@ -1203,7 +1219,18 @@ impl App {
             app.start_with_system = Some(crate::autostart::enabled());
         }
         let _ = app.roster.save_to(&app.files, &app.dirs.accounts_file());
+        // What a quit or a crash left of a recorded call.
+        crate::call_capture::recover(
+            crate::ui::projects::CallReader::of(&app),
+            app.locale,
+            waker.clone(),
+        );
         Ok(app)
+    }
+
+    /// The window's repaint handle, for work on other threads.
+    pub(crate) fn waker(&self) -> Waker {
+        self.waker.clone()
     }
 
     /// Single-instance guard used by later launches.
@@ -1469,6 +1496,13 @@ impl App {
             call_dismissed: None,
             call_cancel: None,
             call_placed: None,
+            call_record_armed: None,
+            call_record_intro: None,
+            call_record_requested: None,
+            call_record_file: None,
+            call_record_roster: Vec::new(),
+            call_record_discarded: None,
+            recorded_call_open: None,
             call_local_frame: None,
             call_remote_frame: None,
             call_local_texture: None,
@@ -3149,8 +3183,10 @@ impl App {
                 self.me_about = about;
             }
             Event::Call(update) => self.handle_call_update(*update),
-            // Kept by the call library once the app side of recording lands.
-            Event::CallRecorded(_) | Event::CallRecordingFailed { .. } => {}
+            Event::CallRecorded(report) => self.call_recorded(*report),
+            Event::CallRecordingFailed { generation, reason } => {
+                self.call_recording_failed(generation, &reason);
+            }
             Event::CallDevices(devices) => self.call_devices = *devices,
             Event::CallVideo {
                 local,
@@ -5694,7 +5730,7 @@ impl App {
         }
         self.typing.retain(|_, typers| !typers.is_empty());
         self.toasts.retain(|toast| {
-            toast.kind == ToastKind::Error || toast.created.elapsed() < INFO_TOAST_LIFETIME
+            toast.kind == ToastKind::Error || toast.created.elapsed() < toast.lifetime()
         });
         if crate::updates::ENABLED
             && self.settings.check_for_updates
@@ -6165,7 +6201,18 @@ impl App {
             | Action::SetCallCameraDevice(_)
             | Action::LeaveCallSurface
             | Action::ReturnToCall
-            | Action::ToggleCallFullscreen => {}
+            | Action::ToggleCallFullscreen
+            | Action::ToggleCallRecording
+            | Action::AnswerAndRecord
+            | Action::ConfirmCallRecording { .. }
+            | Action::CancelCallRecordingIntro
+            | Action::DiscardCallRecording
+            | Action::DraftRecordingNotice
+            | Action::OpenRecordedCall(_)
+            | Action::CloseRecordedCall
+            | Action::TranscribeRecordedCall(_)
+            | Action::MoveRecordedCall { .. }
+            | Action::DeleteRecordedCall(_) => {}
             Action::PickCall { chat, message } => {
                 self.new_call = false;
                 self.picked_call = Some((chat.clone(), message.clone()));
@@ -8445,7 +8492,27 @@ impl App {
             message,
             kind: ToastKind::Info,
             created: Instant::now(),
+            action: None,
         });
+        self.trim_info_toasts();
+    }
+
+    /// An info toast with a button beside it, `label`, that does `action`.
+    pub fn toast_with(&mut self, message: impl Into<String>, label: String, action: Action) {
+        let message = message.into();
+        let said = self.toast_said(&message);
+        self.announcer.say(crate::announcer::Category::Toast, said);
+        self.toasts.push(Toast {
+            message,
+            kind: ToastKind::Info,
+            created: Instant::now(),
+            action: Some((label, action)),
+        });
+        self.trim_info_toasts();
+    }
+
+    /// Keeps the newest few info toasts.
+    fn trim_info_toasts(&mut self) {
         while self
             .toasts
             .iter()
@@ -8490,6 +8557,7 @@ impl App {
             message,
             kind: ToastKind::Error,
             created: Instant::now(),
+            action: None,
         });
     }
 
@@ -9486,6 +9554,8 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        // No new read starts; one cut short is read on the next launch.
+        crate::call_capture::quitting();
         crate::transcribe::unload();
         self.call_tones.set(None);
         self.save_state();
