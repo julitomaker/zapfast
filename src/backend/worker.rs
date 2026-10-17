@@ -767,7 +767,7 @@ pub async fn run(
         first_names_recovered,
         first_names_recovering: false,
         downloads: HashSet::new(),
-        transcribe_after_download: HashSet::new(),
+        transcribe_after_download: HashMap::new(),
         transcribing: HashSet::new(),
         read_sync: ReadSync::default(),
         favorite_chats: Default::default(),
@@ -1214,7 +1214,7 @@ struct Worker {
     /// Active attachment downloads by chat, message id, and carousel card.
     downloads: HashSet<(ChatId, String, Option<usize>)>,
     /// Messages to transcribe once their attachment has downloaded.
-    transcribe_after_download: HashSet<(ChatId, String)>,
+    transcribe_after_download: HashMap<(ChatId, String), crate::media_ai::MediaEngines>,
     /// Transcriptions running, so a message is read once at a time.
     transcribing: HashSet<(ChatId, String)>,
     /// Serial forward in flight. The next send waits for the running one.
@@ -1528,7 +1528,7 @@ impl Worker {
 
     /// Starts reading a message's speech or a picture's text, after
     /// downloading its attachment when it is not here yet.
-    fn transcribe(&mut self, chat: ChatId, id: String) {
+    fn transcribe(&mut self, chat: ChatId, id: String, engines: crate::media_ai::MediaEngines) {
         let key = (chat.clone(), id.clone());
         if self.transcribing.contains(&key) {
             return;
@@ -1546,7 +1546,7 @@ impl Worker {
         };
         let path = media.path.clone().filter(|path| path.exists());
         let Some(path) = path else {
-            self.transcribe_after_download.insert(key);
+            self.transcribe_after_download.insert(key, engines);
             self.download_media(chat, id, None, false);
             return;
         };
@@ -1555,15 +1555,22 @@ impl Worker {
         let kind = kind.to_owned();
         tokio::task::spawn_blocking(move || {
             let state = crate::paths::AppDirs::discover().state;
-            let result = if kind == "image" {
-                crate::ocr::read_text(&path)
+            let (result, model) = if kind == "image" {
+                (
+                    crate::media_ai::image(&engines, &path),
+                    engines.image_name(),
+                )
             } else {
-                crate::transcribe::transcribe(&state, &path)
+                (
+                    crate::media_ai::speech(&engines, &state, &path),
+                    engines.speech_name(),
+                )
             };
             let _ = commands.send(Command::Transcribed {
                 chat,
                 id,
                 kind,
+                model,
                 result,
             });
         });
@@ -1574,17 +1581,16 @@ impl Worker {
         chat: ChatId,
         id: String,
         kind: String,
+        model: String,
         result: Result<String, String>,
     ) {
         self.transcribing.remove(&(chat.clone(), id.clone()));
         match result {
             Ok(text) => {
-                let model = if kind == "image" {
-                    "vision"
-                } else {
-                    crate::transcribe::MODEL_FILE
-                };
-                if let Err(error) = self.archive.put_transcript(&chat, &id, &kind, &text, model) {
+                if let Err(error) = self
+                    .archive
+                    .put_transcript(&chat, &id, &kind, &text, &model)
+                {
                     log::warn!("could not store a transcript: {error}");
                 }
                 let mut transcripts = std::collections::HashMap::new();
@@ -7550,13 +7556,14 @@ impl Worker {
                 id,
                 result,
             } => self.downloaded(chat, id, card, result),
-            Command::Transcribe { chat, id } => self.transcribe(chat, id),
+            Command::Transcribe { chat, id, engines } => self.transcribe(chat, id, engines),
             Command::Transcribed {
                 chat,
                 id,
                 kind,
+                model,
                 result,
-            } => self.transcribed(chat, id, kind, result),
+            } => self.transcribed(chat, id, kind, model, result),
             Command::DownloadMotion { chat, message } => self.download_motion(chat, message),
             Command::MotionDownloaded { chat, id, result } => {
                 if let Ok(path) = &result
@@ -8879,12 +8886,12 @@ impl Worker {
         }
         self.downloads.remove(&(chat.clone(), id.clone(), card));
         if card.is_none()
-            && self
+            && let Some(engines) = self
                 .transcribe_after_download
                 .remove(&(chat.clone(), id.clone()))
         {
             match &result {
-                Ok(_) => self.transcribe(chat.clone(), id.clone()),
+                Ok(_) => self.transcribe(chat.clone(), id.clone(), engines),
                 Err(error) => self.emit(Event::TranscriptFailed {
                     chat: chat.clone(),
                     id: id.clone(),
@@ -16693,7 +16700,7 @@ mod receipt_tests {
             first_names_recovered: true,
             first_names_recovering: false,
             downloads: HashSet::new(),
-            transcribe_after_download: HashSet::new(),
+            transcribe_after_download: HashMap::new(),
             transcribing: HashSet::new(),
             read_sync: ReadSync::default(),
             favorite_chats: Default::default(),

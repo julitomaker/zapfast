@@ -82,7 +82,7 @@ getrandom = "0.4"
 zeroize = "1"
 rand = "0.10"
 # The updater's HTTP client, with the proxy setting.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "socks"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "socks", "json", "multipart"] }
 qrcode = { version = "0.14", default-features = false }
 # Downloads profile pictures. The protocol library already includes this crate
 # and TLS stack.
@@ -93,6 +93,8 @@ jiff = "0.2"
 tiny_http = "0.12"
 form_urlencoded = "1"
 subtle = "2"
+# Temporary files handed to AI command-line tools (src/media_ai.rs).
+tempfile = "3"
 # Local speech-to-text (src/transcribe.rs): whisper.cpp, built from source.
 whisper-rs = "0.16"
 # Treats joined emoji as one grapheme. Already included through egui.

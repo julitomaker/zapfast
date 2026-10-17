@@ -560,6 +560,8 @@ pub struct Settings {
     pub window_y: Option<f32>,
     /// Whether the window was maximized when it last closed.
     pub window_maximized: bool,
+    /// Who transcribes speech and reads pictures (src/media_ai.rs).
+    pub media_engines: crate::media_ai::MediaEngines,
 }
 
 impl Default for Settings {
@@ -617,6 +619,7 @@ impl Default for Settings {
             window_x: None,
             window_y: None,
             window_maximized: false,
+            media_engines: crate::media_ai::MediaEngines::default(),
         }
     }
 }

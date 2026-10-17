@@ -820,12 +820,14 @@ pub enum Command {
     Transcribe {
         chat: ChatId,
         id: String,
+        engines: crate::media_ai::MediaEngines,
     },
     /// Internal transcription result.
     Transcribed {
         chat: ChatId,
         id: String,
         kind: String,
+        model: String,
         result: Result<String, String>,
     },
     /// Internal attachment-download result.

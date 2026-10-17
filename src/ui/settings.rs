@@ -984,19 +984,50 @@ fn sections(app: &App) -> Vec<Section> {
             }
         });
     }
-    let model_ready = crate::transcribe::model_ready(&app.dirs.state);
-    reading.row(
-        translated(locale, "Speech model"),
-        if model_ready {
-            translated(locale, "Whisper large-v3-turbo is installed.")
-        } else {
-            translated(
-                locale,
-                "Whisper large-v3-turbo (about 550 MB) downloads the first time something is transcribed.",
+    let engines = app.settings.media_engines.clone();
+    for speech in [true, false] {
+        let (title, description) = if speech {
+            (
+                translated(locale, "Engine for voice and videos"),
+                if engines.speech == crate::media_ai::SpeechEngine::Local {
+                    if crate::transcribe::model_ready(&app.dirs.state) {
+                        translated(
+                            locale,
+                            "Whisper large-v3-turbo on this computer: free and private. It is installed.",
+                        )
+                    } else {
+                        translated(
+                            locale,
+                            "Whisper large-v3-turbo on this computer: free and private. It downloads (about 550 MB) the first time.",
+                        )
+                    }
+                } else {
+                    translated(
+                        locale,
+                        "The audio of the chosen chats is sent to this provider to be transcribed.",
+                    )
+                },
             )
-        },
-        |_ui, _app| {},
-    );
+        } else {
+            (
+                translated(locale, "Engine for pictures"),
+                if engines.image == crate::media_ai::ImageEngine::Local {
+                    translated(
+                        locale,
+                        "macOS reads the text on this computer, for free. An AI engine also describes what the picture shows.",
+                    )
+                } else {
+                    translated(
+                        locale,
+                        "The pictures of the chosen chats are sent to this engine, which describes them and reads their text.",
+                    )
+                },
+            )
+        };
+        reading.row(title, description, move |ui, app| {
+            engine_controls(ui, app, speech)
+        });
+    }
 
     let mut about_section = Section::new(translated(locale, "About"));
     about_section.block(
@@ -2217,6 +2248,143 @@ fn theme_option(ui: &mut egui::Ui, palette: &theme::Palette, text: &str, selecte
         )
     });
     response.clicked()
+}
+
+/// The engine picker for speech (`speech`) or pictures, with its model, its
+/// API key and, for a command-line tool, whether it is installed.
+fn engine_controls(ui: &mut egui::Ui, app: &mut App, speech: bool) {
+    use crate::media_ai::{ImageEngine, SpeechEngine};
+    let palette = app.palette;
+    let locale = app.locale;
+    let engines = app.settings.media_engines.clone();
+    let (label, key, default_model, cli): (&str, Option<&str>, &str, Option<&str>) = if speech {
+        let engine = engines.speech;
+        (
+            engine.label(),
+            engine.key_account(),
+            engine.default_model(),
+            (engine == SpeechEngine::GeminiCli).then_some("gemini"),
+        )
+    } else {
+        let engine = engines.image;
+        (
+            engine.label(),
+            engine.key_account(),
+            engine.default_model(),
+            match engine {
+                ImageEngine::ClaudeCode => Some("claude"),
+                ImageEngine::CodexCli => Some("codex"),
+                ImageEngine::GeminiCli => Some("gemini"),
+                _ => None,
+            },
+        )
+    };
+    ui.vertical(|ui| {
+        let mut changed = false;
+        let response = egui::ComboBox::from_id_salt(if speech {
+            "speech_engine"
+        } else {
+            "image_engine"
+        })
+        .selected_text(crate::i18n::gettext(locale, label))
+        .width(240.0_f32.min(ui.available_width()))
+        .show_ui(ui, |ui| {
+            if speech {
+                for engine in SpeechEngine::EVERY {
+                    let shown = crate::i18n::gettext(locale, engine.label());
+                    if theme_option(ui, &palette, &shown, engine == engines.speech) {
+                        app.settings.media_engines.speech = engine;
+                        app.settings.media_engines.speech_model.clear();
+                        changed = true;
+                    }
+                }
+            } else {
+                for engine in ImageEngine::EVERY {
+                    let shown = crate::i18n::gettext(locale, engine.label());
+                    if theme_option(ui, &palette, &shown, engine == engines.image) {
+                        app.settings.media_engines.image = engine;
+                        app.settings.media_engines.image_model.clear();
+                        changed = true;
+                    }
+                }
+            }
+        });
+        theme::reveal_focus(&response.response);
+        if !default_model.is_empty() {
+            let model = if speech {
+                &mut app.settings.media_engines.speech_model
+            } else {
+                &mut app.settings.media_engines.image_model
+            };
+            let edit = ui.add(
+                egui::TextEdit::singleline(model)
+                    .hint_text(default_model)
+                    .font(theme::regular(13.0))
+                    .text_color(palette.text)
+                    .desired_width(240.0),
+            );
+            changed |= edit.changed();
+        }
+        if let Some(account) = key {
+            let saved = crate::keys::get(account).is_some();
+            let id = ui.id().with(("api_key", account));
+            let mut draft: String = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
+            ui.horizontal(|ui| {
+                let hint = if saved {
+                    crate::i18n::gettext(locale, "Key saved. Type to replace it")
+                } else {
+                    crate::i18n::gettext(locale, "API key")
+                };
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft)
+                        .password(true)
+                        .hint_text(hint.as_ref())
+                        .font(theme::regular(13.0))
+                        .text_color(palette.text)
+                        .desired_width(170.0),
+                );
+                if theme::soft_button(
+                    ui,
+                    &palette,
+                    None,
+                    &crate::i18n::gettext(locale, "Save"),
+                    false,
+                )
+                .clicked()
+                    && !draft.trim().is_empty()
+                {
+                    match crate::keys::set(account, &draft) {
+                        Ok(()) => draft.clear(),
+                        Err(error) => app.toast_error(error.to_string()),
+                    }
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(id, draft));
+        }
+        if let Some(name) = cli {
+            let installed = crate::media_ai::find_cli(name).is_some();
+            let note = if installed {
+                format!("{name}: {}", crate::i18n::gettext(locale, "installed"))
+            } else {
+                format!(
+                    "{name}: {}",
+                    crate::i18n::gettext(locale, "not installed on this computer")
+                )
+            };
+            ui.label(
+                egui::RichText::new(note)
+                    .font(theme::regular(12.5))
+                    .color(if installed {
+                        palette.secondary
+                    } else {
+                        palette.danger
+                    }),
+            );
+        }
+        if changed {
+            app.actions.push(Action::SettingsChanged);
+        }
+    });
 }
 
 #[cfg(test)]

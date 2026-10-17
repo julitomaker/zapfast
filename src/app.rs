@@ -2110,7 +2110,8 @@ impl App {
         }
         self.transcript_errors.remove(&key);
         self.transcribing.insert(key);
-        self.backend.send(Command::Transcribe { chat, id });
+        let engines = self.settings.media_engines.clone();
+        self.backend.send(Command::Transcribe { chat, id, engines });
     }
 
     /// Announces a message while the app lock is on, or with notification

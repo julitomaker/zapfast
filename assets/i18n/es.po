@@ -3271,3 +3271,38 @@ msgstr "Claude Opus 5.5 vía OpenRouter"
 #: src/ui/projects.rs
 msgid "Claude Sonnet 5.5 through OpenRouter"
 msgstr "Claude Sonnet 5.5 vía OpenRouter"
+msgid "Engine for voice and videos"
+msgstr "Motor para audios y videos"
+
+msgid "Engine for pictures"
+msgstr "Motor para imágenes"
+
+msgid "Whisper large-v3-turbo on this computer: free and private. It is installed."
+msgstr "Whisper large-v3-turbo en esta computadora: gratis y privado. Ya está instalado."
+
+msgid "Whisper large-v3-turbo on this computer: free and private. It downloads (about 550 MB) the first time."
+msgstr "Whisper large-v3-turbo en esta computadora: gratis y privado. Se descarga (unos 550 MB) la primera vez."
+
+msgid "The audio of the chosen chats is sent to this provider to be transcribed."
+msgstr "El audio de los chats elegidos se envía a este proveedor para transcribirlo."
+
+msgid "macOS reads the text on this computer, for free. An AI engine also describes what the picture shows."
+msgstr "macOS lee el texto en esta computadora, gratis. Un motor de IA además describe qué muestra la imagen."
+
+msgid "The pictures of the chosen chats are sent to this engine, which describes them and reads their text."
+msgstr "Las imágenes de los chats elegidos se envían a este motor, que las describe y lee su texto."
+
+msgid "This computer (Whisper)"
+msgstr "Esta computadora (Whisper)"
+
+msgid "This computer (text only)"
+msgstr "Esta computadora (solo texto)"
+
+msgid "Key saved. Type to replace it"
+msgstr "Clave guardada. Escribí para reemplazarla"
+
+msgid "installed"
+msgstr "instalado"
+
+msgid "not installed on this computer"
+msgstr "no está instalado en esta computadora"

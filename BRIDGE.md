@@ -73,3 +73,12 @@ since the MCP server reads through the bridge.
   as each message's `transcript`, search matches them, and the MCP tools show
   them as `[transcript: …]`.
 - `zapfast transcribe <file>` prints a file's transcription from the shell.
+
+### Choosing the engine
+
+Settings > Transcription > Engine picks who reads voice and videos (this
+computer with Whisper, the OpenAI, Groq or Gemini API, or the Gemini CLI)
+and pictures (this computer with Vision for text only, or Claude Code,
+Codex or Gemini CLI, or the Anthropic, OpenAI, Gemini or OpenRouter API,
+which also describe the picture). Models are editable; API keys live in the
+OS keyring under `com.julitomaker.whatspro.ai`, shared with Projects.

@@ -26,10 +26,12 @@ pub mod geo;
 pub mod i18n;
 pub mod image_cache;
 pub mod image_preview;
+pub mod keys;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod markup;
 pub mod mcp;
+pub mod media_ai;
 pub mod media_pause;
 pub mod mentions;
 pub mod model;
