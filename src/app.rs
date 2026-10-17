@@ -6590,6 +6590,13 @@ impl App {
                 }
             }
             Action::OpenLog(path) => self.backend.send(Command::OpenLog(path)),
+            Action::ConnectClaudeDesktop => match crate::mcp::connect_claude_desktop() {
+                Ok(_) => self.toast(crate::i18n::gettext(
+                    self.locale,
+                    "Connected. Quit and reopen Claude Desktop to use Whats Pro there.",
+                )),
+                Err(error) => self.toast_error(error),
+            },
             Action::SaveAttachmentAs { path, name } => {
                 self.backend
                     .send(Command::SaveAttachmentAs { source: path, name });

@@ -198,6 +198,11 @@ fn main() -> eframe::Result<()> {
 }
 
 fn run() -> eframe::Result<()> {
+    // `mcp`: serve the Model Context Protocol on stdio for Claude Desktop and
+    // exit, without a window, the instance lock or the account (src/mcp.rs).
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        std::process::exit(zapfast::mcp::run(&paths::AppDirs::discover().config));
+    }
     // First, before parsing the command line or touching any state: run the
     // update helper when asked (`--apply-update <job>`, then exit), and take
     // `--update-receipt` and `--update-error` off the command line.

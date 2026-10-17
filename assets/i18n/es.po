@@ -2629,3 +2629,18 @@ msgstr "Restaurar"
 
 #~ msgid "Next pinned message"
 #~ msgstr "Siguiente mensaje fijado"
+
+msgid "Integrations"
+msgstr "Integraciones"
+
+msgid "Lets Claude read your chats to summarize them and find pending items. Read-only: it cannot send anything. Keep Whats Pro open while you use it."
+msgstr "Permite que Claude lea tus chats para resumirlos y encontrar pendientes. Solo lectura: no puede enviar nada. Dejá Whats Pro abierto mientras lo usás."
+
+msgid "Connected. Quit and reopen Claude Desktop to use Whats Pro there."
+msgstr "Conectado. Cerrá y volvé a abrir Claude Desktop para usar Whats Pro ahí."
+
+msgid "Liquid Glass"
+msgstr "Liquid Glass"
+
+msgid "Connect"
+msgstr "Conectar"

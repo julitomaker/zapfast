@@ -866,6 +866,28 @@ fn sections(app: &App) -> Vec<Section> {
         },
     );
 
+    let mut integrations = Section::new(translated(locale, "Integrations"));
+    integrations.row(
+        "Claude Desktop",
+        translated(
+            locale,
+            "Lets Claude read your chats to summarize them and find pending items. Read-only: it cannot send anything. Keep Whats Pro open while you use it.",
+        ),
+        move |ui, app| {
+            if theme::soft_button(
+                ui,
+                &palette,
+                Some(Icon::Link),
+                &crate::i18n::gettext(app.locale, "Connect"),
+                false,
+            )
+            .clicked()
+            {
+                app.actions.push(Action::ConnectClaudeDesktop);
+            }
+        },
+    );
+
     let mut about_section = Section::new(translated(locale, "About"));
     about_section.block(
         vec![
@@ -884,6 +906,7 @@ fn sections(app: &App) -> Vec<Section> {
         system,
         account_section,
         files,
+        integrations,
         about_section,
     ]
 }

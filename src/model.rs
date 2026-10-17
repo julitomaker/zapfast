@@ -2459,6 +2459,8 @@ pub enum Action {
     /// Opens Whats Pro's log, or shows it in its folder when no application
     /// takes it, and says so when neither works.
     OpenLog(PathBuf),
+    /// Registers this app as an MCP server in Claude Desktop (src/mcp.rs).
+    ConnectClaudeDesktop,
     OpenFolder(PathBuf),
     /// Saves a copy of a downloaded attachment where the person chooses.
     SaveAttachmentAs {

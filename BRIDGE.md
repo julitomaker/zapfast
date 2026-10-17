@@ -49,3 +49,12 @@ this repository.
 Each rebuild has a new ad-hoc signature, so macOS asks once more for the
 keychain item: choose "Always Allow". Self-update is off in this fork; bring
 upstream changes in with `git fetch upstream && git rebase upstream/main`.
+
+## Claude Desktop (MCP)
+
+The app binary is also a stdio MCP server: `<app>/Contents/MacOS/zapfast mcp`.
+Settings > Integrations > Claude Desktop > Connect adds it to Claude
+Desktop's `claude_desktop_config.json` as `whats-pro` (keeping the other
+servers, with a `.bak` copy). Tools, all read-only: `list_chats`,
+`read_chat`, `recent_activity`, `search_messages`. Whats Pro must be open,
+since the MCP server reads through the bridge.
