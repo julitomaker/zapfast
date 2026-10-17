@@ -10,6 +10,8 @@
 //!   ringback of that shape while the other phone rings.
 //! - The ringtone is two soft bell notes, E5 then B4, played twice and followed by a rest, every
 //!   [`RINGTONE_CYCLE`]: the cadence the ring of an unanswered call already had.
+//! - The recording notice is two short beeps at 1.4 kHz, mixed into our microphone when a call
+//!   starts being recorded, so the other side hears it and the recording keeps it.
 //!
 //! One cycle of each is rendered once into a buffer and repeated by rodio on the default output,
 //! on a thread of its own, so opening the device never waits on the interface thread. Each tone
@@ -43,6 +45,15 @@ const RINGTONE_LEVEL: f32 = 0.28;
 const EDGE: f32 = 0.02;
 /// How long a stopped tone takes to fade out.
 const FADE_OUT: Duration = Duration::from_millis(60);
+/// The recording notice is rendered at the call engine's rate, not [`RATE`]: it is mixed into
+/// the microphone's frames rather than played.
+const NOTICE_RATE: u32 = 16_000;
+const NOTICE_HZ: f32 = 1_400.0;
+/// How long each of its two beeps sounds, and the rest between them, in milliseconds.
+const NOTICE_BEEP_MS: usize = 180;
+const NOTICE_REST_MS: usize = 120;
+/// Loud enough to be heard over a voice, soft enough not to startle.
+const NOTICE_LEVEL: f32 = 0.25;
 /// How often a playing tone looks at its output's health.
 const WATCH: Duration = Duration::from_millis(100);
 /// How long a tone whose output failed waits before opening it again,
@@ -236,6 +247,23 @@ fn ringtone() -> Vec<f32> {
     samples
 }
 
+/// The notice that a call is being recorded: two beeps, mono at 16 kHz, played once.
+pub fn recording_notice() -> Vec<i16> {
+    let rate = NOTICE_RATE as f32;
+    let beep = NOTICE_RATE as usize * NOTICE_BEEP_MS / 1000;
+    let rest = NOTICE_RATE as usize * NOTICE_REST_MS / 1000;
+    let length = beep as f32 / rate;
+    let mut samples = vec![0i16; 2 * beep + rest];
+    for first in [0, beep + rest] {
+        for (offset, sample) in samples[first..first + beep].iter_mut().enumerate() {
+            let t = offset as f32 / rate;
+            let value = NOTICE_LEVEL * edge(t, length) * (TAU * NOTICE_HZ * t).sin();
+            *sample = (value * f32::from(i16::MAX)).round() as i16;
+        }
+    }
+    samples
+}
+
 /// A raised-cosine fade over [`EDGE`] at both ends of a span of `length` seconds.
 fn edge(t: f32, length: f32) -> f32 {
     let ramp = |x: f32| 0.5 - 0.5 * (std::f32::consts::PI * (x / EDGE).clamp(0.0, 1.0)).cos();
@@ -285,6 +313,23 @@ mod tests {
             cycle(Tone::Ringtone).len() as f32,
             RINGTONE_CYCLE.as_secs_f32() * RATE as f32
         );
+    }
+
+    #[test]
+    fn the_recording_notice_is_two_soft_beeps_in_half_a_second() {
+        let samples = recording_notice();
+        assert_eq!(samples.len(), 7_680, "480 ms at 16 kHz");
+        let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap();
+        assert!(f32::from(peak) <= 0.26 * f32::from(i16::MAX), "peak {peak}");
+        assert!(f32::from(peak) > 0.2 * f32::from(i16::MAX), "peak {peak}");
+        // The rest between the beeps, 180 to 300 ms, is silent.
+        assert!(samples[2_880..4_800].iter().all(|&s| s == 0));
+        assert!(samples[0].abs() < 50 && samples[samples.len() - 1].abs() < 50);
+        // Both beeps sound in full between their fades.
+        for middle in [1_400..1_500, 6_200..6_300] {
+            let loudest = samples[middle].iter().map(|s| s.unsigned_abs()).max();
+            assert!(loudest > Some(7_000), "{loudest:?}");
+        }
     }
 
     #[test]

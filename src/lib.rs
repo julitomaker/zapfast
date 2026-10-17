@@ -18,6 +18,7 @@ pub mod bridge;
 pub mod call_audio;
 pub mod call_capture;
 pub mod call_library;
+pub mod call_tape;
 pub mod call_tones;
 pub mod calls;
 pub mod camera;
