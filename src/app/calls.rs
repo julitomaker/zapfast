@@ -61,6 +61,14 @@ impl App {
             && !self.call_surface_hidden
     }
 
+    /// Whether a recording of the call `generation` was asked of the worker
+    /// and its answer has not come yet: the record button waits meanwhile.
+    pub fn call_record_pending(&self, generation: u64) -> bool {
+        self.call_record_requested.is_some_and(|(requested, at)| {
+            requested == generation && at.elapsed() < RECORDING_ANSWER
+        })
+    }
+
     /// Whether this chat of the account on screen has the live call, which is
     /// what the chat header's call button reflects. A finished call keeps its
     /// snapshot for the farewell, but that is no call to hang up.
@@ -696,9 +704,7 @@ impl App {
             });
         } else if self.call_record_armed == Some(generation) {
             self.call_record_armed = None;
-        } else if self.call_record_requested.is_some_and(|(requested, at)| {
-            requested == generation && at.elapsed() < RECORDING_ANSWER
-        }) {
+        } else if self.call_record_pending(generation) {
             // Already asked for; the worker's answer is on its way.
         } else if !self.settings.call_record_intro_done {
             self.call_record_intro = Some(PendingRecord::Toggle);

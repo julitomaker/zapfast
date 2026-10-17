@@ -193,6 +193,10 @@ pub fn handle(app: &mut App, ctx: &egui::Context) {
             actions.push(Action::CancelEdit);
         } else if app.reply_to.is_some() {
             actions.push(Action::CancelReply);
+        } else if app.call_record_intro.is_some() && app.call.is_some() && !app.call_surface_hidden
+        {
+            // The sheet before a first recording sits over the call screen.
+            actions.push(Action::CancelCallRecordingIntro);
         } else if app.call_fullscreen {
             // The window shrinks back first, and only then does the next Escape put the surface
             // aside. Neither one ends the call; only the hang-up button does that.

@@ -606,6 +606,59 @@ fn sections(app: &App) -> Vec<Section> {
         notifications.row(title, description, |ui, app| sound_control(ui, app, true));
     }
 
+    let mut calls = Section::new(translated(locale, "Calls"));
+    calls.toggle(
+        translated(locale, "Play a tone when recording starts"),
+        translated(
+            locale,
+            "The other person hears two short beeps; they stay in the recording too.",
+        ),
+        |settings| &mut settings.call_record_notice,
+    );
+    calls.row(
+        translated(locale, "How recording works"),
+        translated(
+            locale,
+            "Shows the explanation again before the next recording.",
+        ),
+        move |ui, app| {
+            let seen = app.settings.call_record_intro_done;
+            let label = if seen {
+                crate::i18n::gettext(app.locale, "Show again")
+            } else {
+                crate::i18n::gettext(app.locale, "Shown next time")
+            };
+            ui.add_enabled_ui(seen, |ui| {
+                if theme::soft_button(ui, &palette, None, &label, false).clicked() {
+                    app.settings.call_record_intro_done = false;
+                    app.actions.push(Action::SettingsChanged);
+                }
+            });
+        },
+    );
+    let (count, size) = recordings(app);
+    let recorded = crate::i18n::ngettext(locale, "{count} call", "{count} calls", count as u32)
+        .replace("{count}", &count.to_string());
+    calls.row(
+        translated(locale, "Recordings"),
+        Text::from(format!("{recorded} · {}", crate::util::bytes(size))),
+        move |ui, app| {
+            let folder = crate::call_library::Library::dir(&app.dirs.state);
+            if theme::soft_button(
+                ui,
+                &palette,
+                Some(Icon::ExternalLink),
+                &crate::i18n::gettext(app.locale, "Show folder"),
+                false,
+            )
+            .clicked()
+            {
+                let _ = std::fs::create_dir_all(&folder);
+                app.actions.push(Action::OpenFolder(folder));
+            }
+        },
+    );
+
     let mut privacy = Section::new(translated(locale, "Privacy"));
     let receipts_note = if app.account_receipts_off {
         translated(locale, "Off for your account, so only groups get them.")
@@ -1043,6 +1096,7 @@ fn sections(app: &App) -> Vec<Section> {
         appearance,
         chats,
         notifications,
+        calls,
         privacy,
         system,
         account_section,
@@ -1052,6 +1106,32 @@ fn sections(app: &App) -> Vec<Section> {
         about_section,
     ]
 }
+
+/// How many calls were recorded here and how much room their audio takes.
+/// The sizes are summed again only when the call library changes.
+fn recordings(app: &App) -> (usize, u64) {
+    let library = crate::call_library::Library::cached(&app.dirs.state);
+    let recorded = library.recorded();
+    let key = (std::sync::Arc::as_ptr(&library) as usize, recorded.len());
+    let mut sizes = SIZES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((known, size)) = *sizes
+        && known == key
+    {
+        return (recorded.len(), size);
+    }
+    let size = recorded
+        .iter()
+        .filter_map(|call| std::fs::metadata(call.path(&app.dirs.state)).ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    *sizes = Some((key, size));
+    (recorded.len(), size)
+}
+
+/// The last sum [`recordings`] made, by the library it was made for.
+static SIZES: std::sync::Mutex<Option<((usize, usize), u64)>> = std::sync::Mutex::new(None);
 
 /// The app lock: a password, how long Whats Pro may go unused, and the form
 /// that sets, changes, or removes the password.

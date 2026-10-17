@@ -12,9 +12,10 @@ use std::time::Instant;
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Rect, TextureOptions, Vec2, vec2};
 
 use crate::app::{App, CallPerson};
+use crate::call_tape::{NoticeState, RecordingView};
 use crate::calls::{CallOutcome, CallPhase, CallUpdate, PeerAudio, SilenceReason};
 use crate::i18n::{Locale, gettext};
-use crate::model::Action;
+use crate::model::{Action, PendingRecord};
 use crate::theme::{self, Icon, Palette};
 use crate::ui::widgets;
 
@@ -94,6 +95,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             });
         });
+    match app.call_record_intro {
+        Some(pending) => record_intro(app, ctx, pending),
+        None => ctx.data_mut(|data| data.remove::<Intro>(intro_id())),
+    }
 }
 
 /// The strip a call keeps at the bottom of the window while the reader is
@@ -124,6 +129,21 @@ pub fn strip(app: &mut App, ui: &mut egui::Ui) {
                 if !call.phase.is_live() {
                     return;
                 }
+                // A recording keeps saying so away from the call screen.
+                if let Some(recording) = &call.recording {
+                    ui.add_space(6.0);
+                    let (dot, _) = ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                    ui.painter()
+                        .circle_filled(dot.center(), 4.0, palette.on_accent);
+                    theme::text(
+                        ui,
+                        rec_time(app.locale, recording),
+                        theme::tabular(fastframe_fonts::Weight::SemiBold, 13.0),
+                        palette.on_accent,
+                    );
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_millis(500));
+                }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let locale = app.locale;
                     let hang_up = gettext(locale, "Hang up").into_owned();
@@ -138,6 +158,21 @@ pub fn strip(app: &mut App, ui: &mut egui::Ui) {
                     .clicked()
                     {
                         app.actions.push(Action::HangupCall);
+                    }
+                    if call.recording.is_some() {
+                        let stop = gettext(locale, "Stop recording").into_owned();
+                        if theme::icon_button(
+                            ui,
+                            Icon::Stop,
+                            15.0,
+                            palette.on_accent,
+                            palette.on_accent,
+                            &stop,
+                        )
+                        .clicked()
+                        {
+                            app.actions.push(Action::ToggleCallRecording);
+                        }
                     }
                     let back = gettext(locale, "Return to the call").into_owned();
                     let response = ui.add(
@@ -171,6 +206,7 @@ fn live(
 ) {
     let locale = app.locale;
     let screen = area.expand(PADDING);
+    let record = record_lines(ui.ctx(), app, call, peer);
     // The peer's picture fills the window when there is one, and everything
     // else is drawn over it.
     let remote = (call.video && call.remote_video)
@@ -230,7 +266,7 @@ fn live(
                     palette.secondary,
                 );
             }
-            notes(ui, locale, call, palette);
+            notes(ui, locale, call, palette, &record);
         });
     } else {
         // Over a picture, the name and the length sit on a plate of their own,
@@ -262,16 +298,28 @@ fn live(
             line,
             Color32::WHITE,
         );
+        ui.ctx()
+            .data_mut(|data| data.insert_temp(plate_id(), plate));
+        // A recording says so under the plate, where the corner's buttons
+        // leave the picture's top to the name.
+        let mut top = plate.bottom() + 6.0;
+        if call.recording.is_some() {
+            let center = egui::pos2(area.center().x, top + PILL_HEIGHT / 2.0);
+            if let Some(pill) = rec_pill(ui, app, call, peer, center, area.width(), true) {
+                top = pill.bottom() + 6.0;
+            }
+        }
         let below = Rect::from_min_max(
-            egui::pos2(area.left(), plate.bottom() + 6.0),
-            egui::pos2(area.right(), plate.bottom() + 60.0),
+            egui::pos2(area.left(), top),
+            egui::pos2(area.right(), top + 80.0),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(below), |ui| {
-            ui.vertical_centered(|ui| notes(ui, locale, call, palette));
+            ui.vertical_centered(|ui| notes(ui, locale, call, palette, &record));
         });
     }
 
-    corner_buttons(ui, app, call, area, remote.is_some());
+    let pill = remote.is_none().then_some(peer);
+    corner_buttons(ui, app, call, area, remote.is_some(), pill);
 
     let controls_row = bottom_row(ui, area, CONTROL, |ui| controls(ui, app, call, palette));
     if app.call_devices_open && call.phase.is_live() {
@@ -284,12 +332,14 @@ fn live(
 
 /// Stepping back to the chat and full screen, along the top: neither ends
 /// the call. Over a picture they are white, as the plate's words are.
+/// Between them goes the recording pill, naming the other side `pill`.
 fn corner_buttons(
     ui: &mut egui::Ui,
     app: &mut App,
     call: &CallUpdate,
     area: Rect,
     over_picture: bool,
+    pill: Option<&str>,
 ) {
     let locale = app.locale;
     let palette = app.palette;
@@ -305,6 +355,19 @@ fn corner_buttons(
         egui::pos2(corner.left() + room.left, corner.top() + room.top),
         egui::pos2(corner.right() - room.right, corner.bottom() + room.top),
     );
+    if let Some(them) = pill {
+        // Clear of a button at either end.
+        let ends = 2.0 * (20.0 + theme::ICON_BUTTON_PAD + 12.0);
+        rec_pill(
+            ui,
+            app,
+            call,
+            them,
+            corner.center(),
+            corner.width() - ends,
+            over_picture,
+        );
+    }
     ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
         ui.horizontal(|ui| {
             if call.phase.is_live() {
@@ -425,8 +488,15 @@ fn status_color(call: &CallUpdate, palette: &Palette) -> Color32 {
 }
 
 /// What moved under the call: a device that went away, or the peer's audio
-/// not arriving, said rather than swallowed.
-fn notes(ui: &mut egui::Ui, locale: Locale, call: &CallUpdate, palette: &Palette) {
+/// not arriving, said rather than swallowed, then what a recording has to
+/// say (`record`).
+fn notes(
+    ui: &mut egui::Ui,
+    locale: Locale,
+    call: &CallUpdate,
+    palette: &Palette,
+    record: &[(String, Color32)],
+) {
     for lost in &call.lost_devices {
         ui.add_space(4.0);
         let template = match lost.kind {
@@ -455,6 +525,10 @@ fn notes(ui: &mut egui::Ui, locale: Locale, call: &CallUpdate, palette: &Palette
             theme::medium(12.5),
             palette.warning,
         );
+    }
+    for (line, color) in record {
+        ui.add_space(4.0);
+        theme::text(ui, line, theme::medium(12.5), *color);
     }
 }
 
@@ -576,25 +650,55 @@ fn controls(ui: &mut egui::Ui, app: &mut App, call: &CallUpdate, palette: &Palet
 
         // Recording both voices, kept in the call library once it stops. The
         // worker owns the recording; the button only asks.
-        let (tip, fill, tint) = match &call.recording {
-            Some(recording) => {
-                let seconds = recording.since.elapsed().as_secs();
-                ui.ctx()
-                    .request_repaint_after(std::time::Duration::from_millis(500));
-                (
-                    gettext(locale, "Recording {time}: click to stop and keep it")
-                        .replace("{time}", &crate::util::call_duration(seconds)),
-                    palette.danger,
-                    Color32::WHITE,
-                )
-            }
-            None => (
-                gettext(locale, "Record the call (tell the other side)").into_owned(),
+        let state = record_state(app, call);
+        let (icon, tip, fill, tint) = match state {
+            RecordState::Idle if call.video => (
+                Icon::Record,
+                gettext(locale, "Record the call (audio only)"),
                 palette.surface_active,
                 palette.text,
             ),
+            RecordState::Idle => (
+                Icon::Record,
+                gettext(locale, "Record the call"),
+                palette.surface_active,
+                palette.text,
+            ),
+            RecordState::Armed => (
+                Icon::Record,
+                gettext(locale, "Recording starts as soon as the call connects"),
+                palette.surface_active,
+                palette.danger,
+            ),
+            // The spinner takes the icon's place.
+            RecordState::Requested => (
+                Icon::Record,
+                gettext(locale, "Getting the recording ready…"),
+                palette.surface_active,
+                Color32::TRANSPARENT,
+            ),
+            RecordState::Recording => (
+                Icon::Stop,
+                gettext(locale, "Stop and save the recording"),
+                palette.danger,
+                Color32::WHITE,
+            ),
         };
-        if control(ui, Icon::Record, fill, tint, &tip, live).clicked() {
+        let response = control(ui, icon, fill, tint, &tip, live);
+        match state {
+            RecordState::Armed => {
+                ui.painter().circle_stroke(
+                    response.rect.center(),
+                    CONTROL / 2.0 - 1.0,
+                    egui::Stroke::new(2.0, palette.danger),
+                );
+            }
+            RecordState::Requested => {
+                theme::paint_spinner(ui, response.rect, 22.0, palette.text);
+            }
+            RecordState::Idle | RecordState::Recording => {}
+        }
+        if response.clicked() {
             app.actions.push(Action::ToggleCallRecording);
         }
 
@@ -802,37 +906,76 @@ fn ringing(
         }
     });
     bottom_row(ui, area, CONTROL + 26.0, |ui| {
-        let gap = 72.0;
-        ui.spacing_mut().item_spacing.x = gap;
-        let width = 2.0 * CONTROL + gap;
+        let answers = [
+            (
+                Icon::PhoneOff,
+                palette.danger,
+                Color32::WHITE,
+                gettext(locale, "Decline"),
+                Action::DeclineCall,
+            ),
+            (
+                Icon::Record,
+                palette.accent,
+                palette.on_accent,
+                gettext(locale, "Answer and record"),
+                Action::AnswerAndRecord,
+            ),
+            (
+                Icon::Phone,
+                palette.accent,
+                palette.on_accent,
+                gettext(locale, "Accept"),
+                Action::AnswerCall,
+            ),
+        ];
+        // Every cell as wide as the widest word, so the circles keep an even
+        // step whatever the language.
+        let word = answers
+            .iter()
+            .map(|(_, _, _, label, _)| {
+                ui.painter()
+                    .layout_no_wrap(label.to_string(), theme::medium(13.0), palette.secondary)
+                    .size()
+                    .x
+            })
+            .fold(0.0, f32::max);
+        let (cell, spacing) = answer_cells(word, ui.available_width());
+        ui.spacing_mut().item_spacing.x = spacing;
+        let width = 3.0 * cell + 2.0 * spacing;
         ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
-        let decline = gettext(locale, "Decline");
-        if answer(
-            ui,
-            Icon::PhoneOff,
-            palette.danger,
-            Color32::WHITE,
-            &decline,
-            palette,
-        )
-        .clicked()
-        {
-            app.actions.push(Action::DeclineCall);
-        }
-        let accept = gettext(locale, "Accept");
-        if answer(
-            ui,
-            Icon::Phone,
-            palette.accent,
-            palette.on_accent,
-            &accept,
-            palette,
-        )
-        .clicked()
-        {
-            app.actions.push(Action::AnswerCall);
+        for (icon, fill, tint, label, action) in answers {
+            if answer(ui, icon, fill, tint, &label, cell, palette).clicked() {
+                app.actions.push(action);
+            }
         }
     });
+}
+
+/// The gap between a ringing call's answers: wide as WhatsApp's own prompt,
+/// closer in a narrow window.
+const ANSWER_GAP: f32 = 72.0;
+const ANSWER_GAP_NARROW: f32 = 40.0;
+
+/// The width of each of a ringing call's three answers and the spacing
+/// between them, for words up to `word` wide in `room`: the circles stand
+/// [`ANSWER_GAP`] apart, or [`ANSWER_GAP_NARROW`] when that does not fit,
+/// and the words under them never touch. In a window too narrow even for
+/// that, the words are cut short; the circles say them in full on hover.
+pub(crate) fn answer_cells(word: f32, room: f32) -> (f32, f32) {
+    const APART: f32 = 12.0;
+    let cell = CONTROL.max(word);
+    let spacing = |gap: f32| (gap - (cell - CONTROL)).max(APART);
+    let wide = spacing(ANSWER_GAP);
+    let narrow = spacing(ANSWER_GAP_NARROW);
+    if 3.0 * cell + 2.0 * wide <= room {
+        (cell, wide)
+    } else if 3.0 * cell + 2.0 * narrow <= room {
+        (cell, narrow)
+    } else {
+        let cell = ((room - 2.0 * APART) / 3.0).clamp(CONTROL, cell);
+        (cell, spacing(ANSWER_GAP_NARROW))
+    }
 }
 
 /// How many faces the ringing prompt shows before it counts the rest.
@@ -956,22 +1099,48 @@ fn group_live(
     area: Rect,
 ) {
     let locale = app.locale;
-    // The group's name and how the call is going, over the tiles.
+    let record = record_lines(ui.ctx(), app, call, who.peer);
+    // The group's name and how the call is going, over the tiles, with the
+    // recording pill beside the length while one runs.
     // Inset past the corner buttons on either side.
-    let header = Rect::from_min_size(area.min, vec2(area.width(), 52.0)).shrink2(vec2(56.0, 0.0));
+    let height = if call.recording.is_some() { 58.0 } else { 52.0 };
+    let header = Rect::from_min_size(area.min, vec2(area.width(), height)).shrink2(vec2(56.0, 0.0));
     ui.scope_builder(egui::UiBuilder::new().max_rect(header), |ui| {
         ui.vertical_centered(|ui| {
             theme::text(ui, who.peer, theme::bold(19.0), palette.text);
             ui.add_space(2.0);
-            theme::text(
-                ui,
-                status(locale, call),
-                theme::medium(13.5),
-                status_color(call, palette),
-            );
+            if call.recording.is_some() {
+                let line = ui.painter().layout_no_wrap(
+                    status(locale, call),
+                    theme::medium(13.5),
+                    status_color(call, palette),
+                );
+                let (row, _) = ui.allocate_exact_size(
+                    vec2(ui.available_width(), PILL_HEIGHT),
+                    egui::Sense::hover(),
+                );
+                let room = row.width() - line.size().x - 10.0;
+                let width = Pill::lay_out(ui, locale, call, who.peer, palette.text, room)
+                    .map_or(0.0, |pill| pill.size.x);
+                let left = row.center().x - (line.size().x + 10.0 + width) / 2.0;
+                ui.painter().galley(
+                    egui::pos2(left, row.center().y - line.size().y / 2.0),
+                    line.clone(),
+                    status_color(call, palette),
+                );
+                let center = egui::pos2(left + line.size().x + 10.0 + width / 2.0, row.center().y);
+                rec_pill(ui, app, call, who.peer, center, room, false);
+            } else {
+                theme::text(
+                    ui,
+                    status(locale, call),
+                    theme::medium(13.5),
+                    status_color(call, palette),
+                );
+            }
         });
     });
-    corner_buttons(ui, app, call, area, false);
+    corner_buttons(ui, app, call, area, false, None);
 
     let controls_row = bottom_row(ui, area, CONTROL, |ui| controls(ui, app, call, palette));
     let mut bottom = controls_row.top() - 20.0;
@@ -983,14 +1152,14 @@ fn group_live(
         bottom = pickers.top() - 16.0;
     }
     // What moved under the call, between the tiles and the controls.
-    let notes_height = notes_height(call);
+    let notes_height = notes_height(call, record.len());
     if notes_height > 0.0 {
         let room = Rect::from_min_max(
             egui::pos2(area.left(), bottom - notes_height),
             egui::pos2(area.right(), bottom),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(room), |ui| {
-            ui.vertical_centered(|ui| notes(ui, locale, call, palette));
+            ui.vertical_centered(|ui| notes(ui, locale, call, palette, &record));
         });
         bottom -= notes_height + 8.0;
     }
@@ -1128,9 +1297,10 @@ fn tile_fill(palette: &Palette) -> Color32 {
     )
 }
 
-/// The room the notes under a call take, so a group call's tiles leave it.
-fn notes_height(call: &CallUpdate) -> f32 {
-    let lines = call.lost_devices.len() + usize::from(call.peer_audio.is_some());
+/// The room the notes under a call take, so a group call's tiles leave it,
+/// with `record` lines about a recording.
+fn notes_height(call: &CallUpdate, record: usize) -> f32 {
+    let lines = call.lost_devices.len() + usize::from(call.peer_audio.is_some()) + record;
     lines as f32 * 22.0
 }
 
@@ -1248,17 +1418,19 @@ fn person_tile(
     });
 }
 
-/// One of a ringing call's two answers, its word under it.
+/// One of a ringing call's answers, its word under it, in a cell `width`
+/// wide.
 fn answer(
     ui: &mut egui::Ui,
     icon: Icon,
     fill: Color32,
     tint: Color32,
     label: &str,
+    width: f32,
     palette: &Palette,
 ) -> egui::Response {
     ui.allocate_ui_with_layout(
-        vec2(CONTROL, CONTROL + 26.0),
+        vec2(width, CONTROL + 26.0),
         Layout::top_down(Align::Center),
         |ui| {
             ui.spacing_mut().item_spacing.y = 6.0;
@@ -1268,6 +1440,595 @@ fn answer(
         },
     )
     .inner
+}
+
+/// What the record control shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordState {
+    Idle,
+    /// It starts as soon as the call is up.
+    Armed,
+    /// Asked of the worker, whose answer has not come yet.
+    Requested,
+    Recording,
+}
+
+/// Where the call's recording stands, as the record control draws it.
+pub(crate) fn record_state(app: &App, call: &CallUpdate) -> RecordState {
+    if call.recording.is_some() {
+        RecordState::Recording
+    } else if app.call_record_pending(call.generation) {
+        RecordState::Requested
+    } else if app.call_record_armed == Some(call.generation) {
+        RecordState::Armed
+    } else {
+        RecordState::Idle
+    }
+}
+
+/// "REC" and how long the recording has run.
+fn rec_time(locale: Locale, recording: &RecordingView) -> String {
+    gettext(locale, "REC {time}").replace(
+        "{time}",
+        &crate::util::call_duration(recording.since.elapsed().as_secs()),
+    )
+}
+
+/// The recording pill's height.
+const PILL_HEIGHT: f32 = 30.0;
+/// Its padding at either end.
+const PILL_PAD: f32 = 12.0;
+/// The red dot it starts with.
+const PILL_DOT: f32 = 8.0;
+/// The width of one of its level bars.
+const LEVEL_BAR: f32 = 26.0;
+/// The widest a name beside a level bar is drawn.
+const LEVEL_NAME: f32 = 84.0;
+
+/// The recording pill's words and size, laid out before it is placed.
+struct Pill {
+    time: std::sync::Arc<egui::Galley>,
+    /// Our side's and the other side's names over their level bars, left
+    /// out where there is no room for them.
+    sides: Option<[std::sync::Arc<egui::Galley>; 2]>,
+    size: Vec2,
+}
+
+impl Pill {
+    /// The pill for the call's recording in at most `room`, or `None` while
+    /// nothing is recorded.
+    fn lay_out(
+        ui: &egui::Ui,
+        locale: Locale,
+        call: &CallUpdate,
+        peer: &str,
+        ink: Color32,
+        room: f32,
+    ) -> Option<Self> {
+        let recording = call.recording.as_ref()?;
+        let mut words = rec_time(locale, recording);
+        if call.muted {
+            words = gettext(locale, "{rec} · without your voice").replace("{rec}", &words);
+        }
+        let time = ui.painter().layout_no_wrap(
+            words,
+            theme::tabular(fastframe_fonts::Weight::SemiBold, 12.5),
+            ink,
+        );
+        let bare = 2.0 * PILL_PAD + PILL_DOT + 6.0 + time.size().x;
+        let you = ui.painter().layout_no_wrap(
+            gettext(locale, "You").into_owned(),
+            theme::medium(11.5),
+            ink,
+        );
+        let them = if call.group.is_some() {
+            gettext(locale, "Them").into_owned()
+        } else {
+            peer.to_owned()
+        };
+        let mut job = egui::text::LayoutJob::simple_singleline(them, theme::medium(11.5), ink);
+        job.wrap = egui::text::TextWrapping {
+            max_width: LEVEL_NAME,
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('\u{2026}'),
+        };
+        let them = ui.painter().layout_job(job);
+        let sides = 12.0 + you.size().x + 5.0 + LEVEL_BAR + 10.0 + them.size().x + 5.0 + LEVEL_BAR;
+        let (width, sides) = if bare + sides <= room {
+            (bare + sides, Some([you, them]))
+        } else {
+            (bare, None)
+        };
+        Some(Self {
+            time,
+            sides,
+            size: vec2(width, PILL_HEIGHT),
+        })
+    }
+}
+
+/// Where the recording pill was drawn this frame, for layout tests.
+pub fn pill_id() -> egui::Id {
+    egui::Id::new(SURFACE).with("recording-pill")
+}
+
+/// Where the name plate over a peer's picture was drawn, for layout tests.
+pub fn plate_id() -> egui::Id {
+    egui::Id::new(SURFACE).with("plate")
+}
+
+/// The recording pill: "REC" and how long, how loud our side and the other
+/// side come in, and a menu to stop, tell the other side in the chat, or
+/// discard. Centred on `center` and no wider than `room`; returns where it
+/// went, or `None` while nothing is recorded.
+fn rec_pill(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    call: &CallUpdate,
+    peer: &str,
+    center: egui::Pos2,
+    room: f32,
+    over_picture: bool,
+) -> Option<Rect> {
+    let locale = app.locale;
+    let palette = app.palette;
+    let (fill, ink) = if over_picture {
+        (VIDEO_SCRIM, Color32::WHITE)
+    } else {
+        let tint = if palette.dark { 0.22 } else { 0.12 };
+        (
+            theme::blend(palette.window, palette.danger, tint),
+            palette.text,
+        )
+    };
+    let pill = Pill::lay_out(ui, locale, call, peer, ink, room)?;
+    let rect = Rect::from_center_size(center, pill.size);
+    let response = ui.interact(rect, pill_id(), egui::Sense::click());
+    let label = gettext(locale, "Recording options");
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label.as_ref())
+    });
+    theme::reveal_focus(&response);
+    theme::focus_outline(ui, response.id, rect, rect.height() / 2.0);
+    let open = egui::Popup::is_id_open(ui.ctx(), response.id.with("popup"));
+    let fill = if response.hovered() || open {
+        theme::blend(fill, ink, 0.08)
+    } else {
+        fill
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, rect.height() / 2.0, fill);
+    let mut x = rect.left() + PILL_PAD;
+    painter.circle_filled(
+        egui::pos2(x + PILL_DOT / 2.0, rect.center().y),
+        PILL_DOT / 2.0,
+        palette.danger,
+    );
+    x += PILL_DOT + 6.0;
+    let middle = |galley: &egui::Galley| rect.center().y - galley.size().y / 2.0;
+    painter.galley(egui::pos2(x, middle(&pill.time)), pill.time.clone(), ink);
+    x += pill.time.size().x;
+    if let Some(sides) = &pill.sides {
+        let levels = levels(app, call).unwrap_or_default();
+        x += 12.0;
+        for (side, level) in sides.iter().zip(levels) {
+            painter.galley(
+                egui::pos2(x, middle(side)),
+                side.clone(),
+                ink.gamma_multiply(0.75),
+            );
+            x += side.size().x + 5.0;
+            let track =
+                Rect::from_min_size(egui::pos2(x, rect.center().y - 2.0), vec2(LEVEL_BAR, 4.0));
+            painter.rect_filled(track, 2.0, ink.gamma_multiply(0.18));
+            let shown = level_shown(level);
+            if shown > 0.0 {
+                painter.rect_filled(
+                    track.with_max_x(track.left() + LEVEL_BAR * shown),
+                    2.0,
+                    palette.accent,
+                );
+            }
+            x += LEVEL_BAR + 10.0;
+        }
+    }
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(100));
+    ui.ctx().data_mut(|data| data.insert_temp(pill_id(), rect));
+    let mut response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if call.muted && !open {
+        let tip = if call.group.is_some() {
+            gettext(
+                locale,
+                "You are muted: your voice is not recorded, just as the others do not hear it",
+            )
+            .into_owned()
+        } else {
+            gettext(
+                locale,
+                "You are muted: your voice is not recorded, just as {name} does not hear it",
+            )
+            .replace("{name}", peer)
+        };
+        response = response.on_hover_text(tip);
+    }
+    recording_menu(ui, app, call, &response);
+    Some(rect)
+}
+
+/// How much of a level bar a loudness fills: speech sits far below full
+/// scale, so the bar is scaled up and eased for it to move visibly.
+fn level_shown(level: f32) -> f32 {
+    (level / 0.3).clamp(0.0, 1.0).sqrt()
+}
+
+/// The loudness of each side of the call's recording, while one runs.
+fn levels(app: &App, call: &CallUpdate) -> Option<[f32; 2]> {
+    #[cfg(any(test, feature = "demo"))]
+    if let Some(levels) = app.call_demo_levels {
+        return Some(levels);
+    }
+    #[cfg(not(any(test, feature = "demo")))]
+    let _ = app;
+    crate::call_tape::live_levels(call.generation)
+}
+
+/// The recording pill's menu: stop and keep, a note for the chat, and a
+/// discard that asks first, in place.
+fn recording_menu(ui: &egui::Ui, app: &mut App, call: &CallUpdate, pill: &egui::Response) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let asking = pill.id.with(("discard", call.generation));
+    #[cfg(any(test, feature = "demo"))]
+    if let Some(discard) = app.open_recording_menu {
+        egui::Popup::open_id(ui.ctx(), pill.id.with("popup"));
+        if discard {
+            ui.ctx().data_mut(|data| data.insert_temp(asking, true));
+        }
+    }
+    let mut confirm = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(asking))
+        .unwrap_or(false);
+    let stop = gettext(locale, "Stop and save");
+    let notify = gettext(locale, "Notify by chat");
+    let discard = gettext(locale, "Discard recording…");
+    let width = widgets::menu_width(ui, &[&stop, &notify, &discard], true).max(260.0);
+    let mut actions = Vec::new();
+    let shown = egui::Popup::menu(pill)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .width(width)
+        .frame(widgets::menu_frame(&palette))
+        .show(|ui| {
+            if confirm {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.add_space(10.0);
+                    ui.set_width(width - 34.0);
+                    theme::paragraph(
+                        ui,
+                        gettext(
+                            locale,
+                            "Discard the recording? It is deleted and nothing is kept.",
+                        ),
+                        theme::regular(13.5),
+                        palette.text,
+                    );
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.add_space(4.0);
+                        let discard = gettext(locale, "Discard");
+                        if super::dialogs::danger_button(ui, app, &discard).clicked() {
+                            actions.push(Action::DiscardCallRecording);
+                            confirm = false;
+                            ui.close();
+                        }
+                        let keep = gettext(locale, "Keep recording");
+                        if theme::pill_button(ui, &palette, &keep, false).clicked() {
+                            confirm = false;
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+            } else {
+                if widgets::menu_item(ui, &palette, Some(Icon::Stop), &stop) {
+                    actions.push(Action::ToggleCallRecording);
+                }
+                // A call link has no chat to write in.
+                if widgets::menu_item_enabled(
+                    ui,
+                    &palette,
+                    Some(Icon::MessageCircle),
+                    &notify,
+                    !call.chat.is_empty(),
+                ) {
+                    actions.push(Action::DraftRecordingNotice);
+                }
+                widgets::menu_separator(ui, &palette);
+                if widgets::menu_item_staying(ui, &palette, Some(Icon::Trash), &discard, true) {
+                    confirm = true;
+                }
+            }
+        });
+    // A menu that closed takes its question with it.
+    let confirm = confirm && shown.is_some();
+    ui.ctx().data_mut(|data| data.insert_temp(asking, confirm));
+    app.actions.extend(actions);
+}
+
+/// How long the line saying the notice played stays.
+const NOTICE_SHOWN: std::time::Duration = std::time::Duration::from_secs(4);
+/// How long the other side may stay silent on a recording before the call
+/// screen says it is not coming through.
+const SILENCE_SHOWN: std::time::Duration = std::time::Duration::from_secs(20);
+/// The loudness under which the other side counts as silent.
+const HEARD: f32 = 0.01;
+
+/// What the call screen follows of a recording from frame to frame.
+#[derive(Clone, Copy, Debug)]
+struct Watch {
+    generation: u64,
+    notice: NoticeState,
+    /// When the notice finished playing, seen here.
+    played: Option<Instant>,
+    /// When the other side was last heard.
+    heard: Instant,
+}
+
+impl Watch {
+    /// The first look at a recording. A notice that played long before the
+    /// screen came back is not news any more.
+    fn new(call: &CallUpdate, recording: &RecordingView, now: Instant) -> Self {
+        let fresh = now.saturating_duration_since(recording.since) < NOTICE_SHOWN;
+        Self {
+            generation: call.generation,
+            notice: recording.notice,
+            played: (recording.notice == NoticeState::Played && fresh).then_some(recording.since),
+            heard: recording.since,
+        }
+    }
+
+    /// The next frame's look.
+    fn step(
+        mut self,
+        call: &CallUpdate,
+        recording: &RecordingView,
+        levels: Option<[f32; 2]>,
+        now: Instant,
+    ) -> Self {
+        if recording.notice == NoticeState::Played && self.notice != NoticeState::Played {
+            self.played = Some(now);
+        }
+        self.notice = recording.notice;
+        // Silence counts only on a call that is up with nothing else said
+        // about the other side's audio, and only with levels to go by.
+        let silent = call.phase == CallPhase::Active
+            && call.peer_audio.is_none()
+            && levels.is_some_and(|levels| levels[1] < HEARD);
+        if !silent {
+            self.heard = now;
+        }
+        self
+    }
+}
+
+/// What a recording in progress has to say under the call.
+fn record_lines(
+    ctx: &egui::Context,
+    app: &App,
+    call: &CallUpdate,
+    peer: &str,
+) -> Vec<(String, Color32)> {
+    let id = egui::Id::new(SURFACE).with("recording-watch");
+    let Some(recording) = &call.recording else {
+        ctx.data_mut(|data| data.remove::<Watch>(id));
+        return Vec::new();
+    };
+    let now = Instant::now();
+    let watch = ctx
+        .data(|data| data.get_temp::<Watch>(id))
+        .filter(|watch| watch.generation == call.generation)
+        .unwrap_or_else(|| Watch::new(call, recording, now))
+        .step(call, recording, levels(app, call), now);
+    ctx.data_mut(|data| data.insert_temp(id, watch));
+    recording_notes(app.locale, call, recording, &watch, now, peer, &app.palette)
+}
+
+/// The lines a recording adds under the call: the notice that played or
+/// waits for the microphone, and the other side heard as silence.
+fn recording_notes(
+    locale: Locale,
+    call: &CallUpdate,
+    recording: &RecordingView,
+    watch: &Watch,
+    now: Instant,
+    peer: &str,
+    palette: &Palette,
+) -> Vec<(String, Color32)> {
+    let mut lines = Vec::new();
+    match recording.notice {
+        NoticeState::Held => lines.push((
+            gettext(
+                locale,
+                "The recording notice plays when you turn your microphone on",
+            )
+            .into_owned(),
+            palette.warning,
+        )),
+        NoticeState::Played
+            if watch
+                .played
+                .is_some_and(|played| now.saturating_duration_since(played) < NOTICE_SHOWN) =>
+        {
+            lines.push((
+                gettext(locale, "The recording notice played").into_owned(),
+                palette.secondary,
+            ));
+        }
+        NoticeState::Off | NoticeState::Pending | NoticeState::Played => {}
+    }
+    if now.saturating_duration_since(watch.heard) >= SILENCE_SHOWN {
+        let line = if call.group.is_some() {
+            gettext(locale, "The others' voices are not being recorded").into_owned()
+        } else {
+            gettext(locale, "The voice of {name} is not being recorded").replace("{name}", peer)
+        };
+        lines.push((line, palette.warning));
+    }
+    lines
+}
+
+/// The first-time sheet's id, and the facts it shows, read once when it
+/// opens rather than every frame.
+fn intro_id() -> egui::Id {
+    egui::Id::new(SURFACE).with("record-intro")
+}
+
+#[derive(Clone, Debug)]
+struct Intro {
+    /// Whether the other side hears the notice, as the switch now says.
+    notice: bool,
+    /// Whether the local speech model is already on this computer.
+    model_ready: bool,
+    /// Who summarizes the call.
+    provider: crate::projects::engine::Provider,
+}
+
+/// "Before recording": what is recorded, where it stays, who reads it,
+/// the law, and the notice the other side hears, before the first one.
+fn record_intro(app: &mut App, ctx: &egui::Context, pending: PendingRecord) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let mut intro = ctx
+        .data(|data| data.get_temp::<Intro>(intro_id()))
+        .unwrap_or_else(|| Intro {
+            notice: app.settings.call_record_notice,
+            model_ready: crate::transcribe::model_ready(&app.dirs.state),
+            provider: crate::projects::engine::EngineConfig::load(&app.dirs.config).provider,
+        });
+    let speech = app.settings.media_engines.speech;
+    let frame = Frame::new()
+        .fill(palette.overlay)
+        .stroke(egui::Stroke::new(1.0, palette.outline))
+        .corner_radius(CornerRadius::same(theme::RADIUS + 4))
+        .inner_margin(Margin::same(22))
+        .shadow(palette.modal_shadow());
+    let mut actions = Vec::new();
+    let response = egui::Modal::new(intro_id())
+        .frame(frame)
+        .backdrop_color(palette.shadow)
+        .show(ctx, |ui| {
+            ui.set_width(400.0_f32.min((ctx.content_rect().width() - 64.0).max(220.0)));
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.horizontal(|ui| {
+                theme::icon(ui, Icon::Record, 18.0, palette.danger);
+                theme::text(
+                    ui,
+                    gettext(locale, "Before recording"),
+                    theme::bold(18.0),
+                    palette.text,
+                );
+            });
+            ui.add_space(2.0);
+            let point = |ui: &mut egui::Ui, text: &str, color: Color32| {
+                theme::paragraph(ui, text, theme::regular(13.5), color);
+            };
+            point(
+                ui,
+                &gettext(
+                    locale,
+                    "Both voices are recorded. On video calls, only the audio.",
+                ),
+                palette.text,
+            );
+            point(
+                ui,
+                &gettext(
+                    locale,
+                    "It stays on this computer. It is not sent to WhatsApp or to the other person.",
+                ),
+                palette.text,
+            );
+            if speech == crate::media_ai::SpeechEngine::Local {
+                let text = if intro.model_ready {
+                    gettext(locale, "When you save it, it is transcribed on this computer.")
+                } else {
+                    gettext(
+                        locale,
+                        "When you save it, it is transcribed on this computer. The first time, about 550 MB download.",
+                    )
+                };
+                point(ui, &text, palette.text);
+            } else {
+                point(
+                    ui,
+                    &gettext(
+                        locale,
+                        "When you save it, {engine} transcribes it: the audio leaves your computer.",
+                    )
+                    .replace("{engine}", &gettext(locale, speech.label())),
+                    palette.warning,
+                );
+            }
+            let summary = if intro.provider == crate::projects::engine::Provider::Off {
+                gettext(locale, "Nobody summarizes it: summaries are off.").into_owned()
+            } else {
+                gettext(locale, "{engine} summarizes it.")
+                    .replace("{engine}", &gettext(locale, intro.provider.label()))
+            };
+            point(ui, &summary, palette.text);
+            point(
+                ui,
+                &gettext(
+                    locale,
+                    "The rules vary by country: in many places you have to tell the other person.",
+                ),
+                palette.secondary,
+            );
+            ui.add_space(4.0);
+            let label = gettext(locale, "Play a short notice the other person hears");
+            ui.horizontal(|ui| {
+                let response = widgets::switch(ui, &palette, &mut intro.notice);
+                theme::reveal_focus(&response);
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Checkbox,
+                        ui.is_enabled(),
+                        intro.notice,
+                        label.as_ref(),
+                    )
+                });
+                ui.add_space(4.0);
+                theme::paragraph(ui, label.as_ref(), theme::medium(13.5), palette.text);
+            });
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let record = match pending {
+                        PendingRecord::Toggle => gettext(locale, "Record"),
+                        PendingRecord::AnswerAndRecord => gettext(locale, "Answer and record"),
+                    };
+                    if theme::pill_button(ui, &palette, &record, true).clicked() {
+                        actions.push(Action::ConfirmCallRecording {
+                            notice: intro.notice,
+                        });
+                    }
+                    let later = gettext(locale, "Not now");
+                    if theme::pill_button(ui, &palette, &later, false).clicked() {
+                        actions.push(Action::CancelCallRecordingIntro);
+                    }
+                });
+            });
+        });
+    ctx.move_to_top(response.response.layer_id);
+    if response.should_close() && actions.is_empty() {
+        actions.push(Action::CancelCallRecordingIntro);
+    }
+    ctx.data_mut(|data| data.insert_temp(intro_id(), intro));
+    app.actions.extend(actions);
 }
 
 /// A picture's size as a vector.
@@ -1320,6 +2081,7 @@ fn call_texture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn tiles_fill_the_room_without_overlapping() {
@@ -1349,6 +2111,157 @@ mod tests {
         let middle = (five[3].left() + five[4].right()) / 2.0;
         assert!((middle - area.center().x).abs() < 0.5);
         assert!(tile_grid(0, area, TILE_GAP).is_empty());
+    }
+
+    /// Three answers keep WhatsApp's gap between their circles where it fits and a narrower one
+    /// where it does not, and a long word never runs into its neighbour's.
+    #[test]
+    fn a_ringing_calls_answers_space_out_by_their_words() {
+        let (cell, spacing) = answer_cells(40.0, 1000.0);
+        assert_eq!(
+            cell, CONTROL,
+            "short words leave the cells as wide as a circle"
+        );
+        assert_eq!(spacing, ANSWER_GAP);
+        let (cell, spacing) = answer_cells(40.0, 3.0 * CONTROL + 2.0 * ANSWER_GAP - 1.0);
+        assert_eq!((cell, spacing), (CONTROL, ANSWER_GAP_NARROW));
+        // "Answer and record" is wider than a circle: the circles stay a gap apart, the words at
+        // least 12 points.
+        let (cell, spacing) = answer_cells(100.0, 1000.0);
+        assert_eq!(cell, 100.0);
+        assert_eq!(spacing + cell - CONTROL, ANSWER_GAP);
+        let (_, spacing) = answer_cells(200.0, 1000.0);
+        assert_eq!(spacing, 12.0);
+        // Too narrow even for that: the cells shrink to fit and the words are cut short.
+        let (cell, spacing) = answer_cells(120.0, 290.0);
+        assert!(3.0 * cell + 2.0 * spacing <= 290.0 + 0.01);
+        assert!(cell >= CONTROL);
+    }
+
+    fn recorded(notice: NoticeState, since: Duration) -> (CallUpdate, RecordingView) {
+        let mut call = crate::calls::CallUpdate::placing(1, "123@s.whatsapp.net".into(), false);
+        call.phase = CallPhase::Active;
+        let view = RecordingView {
+            since: Instant::now() - since,
+            notice,
+            failed: None,
+        };
+        call.recording = Some(view.clone());
+        (call, view)
+    }
+
+    fn said(lines: &[(String, Color32)]) -> Vec<&str> {
+        lines.iter().map(|(line, _)| line.as_str()).collect()
+    }
+
+    /// The notice is said when it plays and while it waits for the microphone, and only for a
+    /// few seconds once it has played.
+    #[test]
+    fn the_call_screen_says_when_the_notice_plays() {
+        let palette = Palette::dark();
+        let (call, view) = recorded(NoticeState::Held, Duration::from_secs(30));
+        let now = Instant::now();
+        let watch = Watch::new(&call, &view, now).step(&call, &view, Some([0.2, 0.2]), now);
+        let lines = recording_notes(Locale::English, &call, &view, &watch, now, "Ada", &palette);
+        assert_eq!(
+            said(&lines),
+            ["The recording notice plays when you turn your microphone on"]
+        );
+
+        let (call, played) = recorded(NoticeState::Played, Duration::from_secs(30));
+        let watch = watch.step(&call, &played, Some([0.2, 0.2]), now);
+        let lines = recording_notes(
+            Locale::English,
+            &call,
+            &played,
+            &watch,
+            now,
+            "Ada",
+            &palette,
+        );
+        assert_eq!(said(&lines), ["The recording notice played"]);
+        let later = now + NOTICE_SHOWN;
+        let lines = recording_notes(
+            Locale::English,
+            &call,
+            &played,
+            &watch,
+            later,
+            "Ada",
+            &palette,
+        );
+        assert!(lines.is_empty(), "{lines:?}");
+
+        // A screen that comes back long after the notice played does not announce it.
+        let watch = Watch::new(&call, &played, now);
+        assert!(watch.played.is_none());
+    }
+
+    /// The other side heard as silence for twenty seconds on a call that is up is said, unless
+    /// the engine already says its audio is not arriving; a sound resets the count.
+    #[test]
+    fn a_silent_other_side_is_said_after_twenty_seconds() {
+        let palette = Palette::dark();
+        let (mut call, view) = recorded(NoticeState::Off, Duration::from_secs(19));
+        let now = Instant::now();
+        let silent = Some([0.2, 0.0]);
+        let watch = Watch::new(&call, &view, now).step(&call, &view, silent, now);
+        let soon = recording_notes(Locale::English, &call, &view, &watch, now, "Ada", &palette);
+        assert!(soon.is_empty(), "{soon:?}");
+        let later = now + Duration::from_secs(1);
+        let watch = watch.step(&call, &view, silent, later);
+        let lines = recording_notes(
+            Locale::English,
+            &call,
+            &view,
+            &watch,
+            later,
+            "Ada",
+            &palette,
+        );
+        assert_eq!(said(&lines), ["The voice of Ada is not being recorded"]);
+
+        let heard = watch.step(&call, &view, Some([0.2, 0.2]), later);
+        assert!(
+            recording_notes(
+                Locale::English,
+                &call,
+                &view,
+                &heard,
+                later,
+                "Ada",
+                &palette
+            )
+            .is_empty()
+        );
+        // No levels to go by, or audio the engine already reports missing, is not silence.
+        let unknown = Watch::new(&call, &view, now).step(&call, &view, None, later);
+        assert!(
+            recording_notes(
+                Locale::English,
+                &call,
+                &view,
+                &unknown,
+                later,
+                "Ada",
+                &palette
+            )
+            .is_empty()
+        );
+        call.peer_audio = Some(PeerAudio::Stalled);
+        let stalled = Watch::new(&call, &view, now).step(&call, &view, silent, later);
+        assert!(
+            recording_notes(
+                Locale::English,
+                &call,
+                &view,
+                &stalled,
+                later,
+                "Ada",
+                &palette
+            )
+            .is_empty()
+        );
     }
 
     #[test]

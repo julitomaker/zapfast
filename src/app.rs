@@ -534,6 +534,14 @@ pub struct App {
     /// Demo/test: keep the selection bar's delete menu open.
     #[cfg(any(test, feature = "demo"))]
     pub open_selection_delete_menu: bool,
+    /// Demo/test: keep the call's recording menu open, on its discard
+    /// question when true.
+    #[cfg(any(test, feature = "demo"))]
+    pub open_recording_menu: Option<bool>,
+    /// Demo/test: the loudness of each side of a recording, which a real
+    /// call reads from its tape.
+    #[cfg(any(test, feature = "demo"))]
+    pub call_demo_levels: Option<[f32; 2]>,
     /// Emoji-grid header to scroll into view.
     pub emoji_jump: Option<&'static str>,
     /// Attachments pending in the composer.
@@ -1399,6 +1407,10 @@ impl App {
             open_header_menu: None,
             #[cfg(any(test, feature = "demo"))]
             open_selection_delete_menu: false,
+            #[cfg(any(test, feature = "demo"))]
+            open_recording_menu: None,
+            #[cfg(any(test, feature = "demo"))]
+            call_demo_levels: None,
             emoji_jump: None,
             pending: Vec::new(),
             next_pending_id: 0,

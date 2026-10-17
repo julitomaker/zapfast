@@ -612,6 +612,22 @@ pub fn menu_item_enabled(
     label: &str,
     enabled: bool,
 ) -> bool {
+    let clicked = menu_item_staying(ui, palette, icon, label, enabled);
+    if clicked {
+        ui.close();
+    }
+    clicked
+}
+
+/// A menu item that leaves its menu open when clicked, for one that asks to
+/// confirm in place.
+pub fn menu_item_staying(
+    ui: &mut Ui,
+    palette: &Palette,
+    icon: Option<Icon>,
+    label: &str,
+    enabled: bool,
+) -> bool {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(
         vec2(width, 28.0),
@@ -665,9 +681,6 @@ pub fn menu_item_enabled(
         );
     }
     let clicked = enabled && response.clicked();
-    if clicked {
-        ui.close();
-    }
     if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand);
     }

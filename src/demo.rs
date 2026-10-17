@@ -2641,6 +2641,62 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 call_sample(app, false, false);
                 app.call_surface_hidden = true;
             }
+            // A call being recorded: the pill with both sides heard, muted
+            // with the notice held for the microphone, over a picture, in a
+            // group, behind the bar, with its menu open and on its discard
+            // question, and with the other side silent.
+            "call-recording" => {
+                call_sample(app, false, false);
+                recording_sample(app);
+            }
+            "call-recording-muted" => {
+                call_sample(app, false, false);
+                recording_sample(app);
+                if let Some(call) = app.call.as_mut() {
+                    call.muted = true;
+                    if let Some(recording) = call.recording.as_mut() {
+                        recording.notice = crate::call_tape::NoticeState::Held;
+                    }
+                }
+                app.call_demo_levels = Some([0.0, 0.11]);
+            }
+            "call-recording-video" => {
+                call_sample(app, false, true);
+                recording_sample(app);
+            }
+            "call-recording-group" => {
+                group_call_sample(app, false, false);
+                recording_sample(app);
+            }
+            "call-recording-strip" => {
+                call_sample(app, false, false);
+                recording_sample(app);
+                app.call_surface_hidden = true;
+            }
+            "call-recording-menu" | "call-recording-discard" => {
+                call_sample(app, false, false);
+                recording_sample(app);
+                app.open_recording_menu = Some(part == "call-recording-discard");
+            }
+            "call-recording-silent" => {
+                call_sample(app, false, false);
+                recording_sample(app);
+                app.call_demo_levels = Some([0.14, 0.0]);
+            }
+            // A call armed to record while it still rings on the other side,
+            // and the sheet before a first recording.
+            "call-recording-armed" => {
+                call_sample(app, false, false);
+                if let Some(call) = app.call.as_mut() {
+                    call.phase = CallPhase::Ringing;
+                    call.started = None;
+                    app.call_record_armed = Some(call.generation);
+                }
+            }
+            "call-recording-intro" => {
+                call_sample(app, false, false);
+                app.call_record_intro = Some(crate::model::PendingRecord::Toggle);
+            }
             "call-entries" => {
                 // Calls among the open chat's messages, as WhatsApp files them.
                 let open = app.open_chat.clone().unwrap_or_default();
@@ -4257,6 +4313,19 @@ pub fn call_sample(app: &mut App, incoming: bool, video: bool) {
         app.call_remote_frame = Some(std::sync::Arc::new(stock_frame(stock::SPACEWALK, 720)));
         app.call_local_frame = Some(std::sync::Arc::new(stock_frame(stock::DUSK, 320)));
     }
+}
+
+/// The call on screen recorded for the last three minutes and twenty
+/// seconds, its notice played and both sides heard.
+pub fn recording_sample(app: &mut App) {
+    if let Some(call) = app.call.as_mut() {
+        call.recording = Some(crate::call_tape::RecordingView {
+            since: std::time::Instant::now() - std::time::Duration::from_secs(200),
+            notice: crate::call_tape::NoticeState::Played,
+            failed: None,
+        });
+    }
+    app.call_demo_levels = Some([0.16, 0.09]);
 }
 
 /// A call in the Rust Berlin group, started by Jonas: Mira, Tom and Ada are
@@ -6423,6 +6492,16 @@ mod tests {
             "call-devices",
             "call-ended",
             "call-strip",
+            "call-recording",
+            "call-recording-muted",
+            "call-recording-video",
+            "call-recording-group",
+            "call-recording-strip",
+            "call-recording-menu",
+            "call-recording-discard",
+            "call-recording-silent",
+            "call-recording-armed",
+            "call-recording-intro",
             "call-group",
             "call-group-active",
             "call-group-video",
@@ -18137,12 +18216,275 @@ mod call_surface_tests {
         ctx.enable_accesskit();
         ringing.attach(&ctx);
         let incoming = labels(&mut ringing, &ctx);
-        for expected in ["Accept", "Decline"] {
+        for expected in ["Accept", "Answer and record", "Decline"] {
             assert!(
                 incoming.contains(&expected.to_owned()),
                 "missing accessible label: {expected}"
             );
         }
+    }
+}
+
+/// The recording on the call screen: the pill and where it goes, the record control's states, the
+/// ringing call's three answers, the bar, and the sheet before a first recording.
+#[cfg(test)]
+mod call_recording_tests {
+    use super::tests::{app, frame_with};
+    use super::*;
+    use crate::model::Action;
+
+    /// The labelled nodes one frame publishes in a window `size` big, with their rectangles.
+    fn nodes(app: &mut App, ctx: &egui::Context, size: egui::Vec2) -> Vec<(String, egui::Rect)> {
+        let mut nodes = Vec::new();
+        for _ in 0..3 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |ui| {
+                    let ctx = ui.ctx().clone();
+                    app.background_frame(&ctx);
+                    app.frame_ui(ui);
+                },
+            );
+            output.textures_delta.clear();
+            let scale = f64::from(ctx.pixels_per_point());
+            nodes = output
+                .platform_output
+                .accesskit_update
+                .expect("accessibility tree")
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    let label = node.label()?.to_owned();
+                    let bounds = node.bounds()?;
+                    let rect = egui::Rect::from_min_max(
+                        egui::pos2((bounds.x0 / scale) as f32, (bounds.y0 / scale) as f32),
+                        egui::pos2((bounds.x1 / scale) as f32, (bounds.y1 / scale) as f32),
+                    );
+                    Some((label, rect))
+                })
+                .collect();
+        }
+        nodes
+    }
+
+    /// The window a page is drawn in, with a screen reader attached.
+    fn page(name: &str) -> (App, egui::Context) {
+        let mut app = app();
+        apply_flags(&mut app, Some(name));
+        let ctx = egui::Context::default();
+        app.attach(&ctx);
+        ctx.enable_accesskit();
+        (app, ctx)
+    }
+
+    fn find<'a>(nodes: &'a [(String, egui::Rect)], label: &str) -> Option<&'a egui::Rect> {
+        nodes
+            .iter()
+            .find(|(shown, _)| shown == label)
+            .map(|(_, rect)| rect)
+    }
+
+    const WIDE: egui::Vec2 = egui::vec2(1180.0, 780.0);
+
+    /// A recorded call says so between the corner's buttons, under the name plate over a picture,
+    /// and beside the length in a group's header, never over a button and never off screen.
+    #[test]
+    fn the_recording_pill_sits_clear_of_everything_else() {
+        for (name, size) in [
+            ("call-recording", WIDE),
+            ("call-recording", egui::vec2(420.0, 780.0)),
+            ("call-recording-muted", WIDE),
+            ("call-recording-video", WIDE),
+            ("call-recording-group", WIDE),
+            ("call-recording-group", egui::vec2(520.0, 780.0)),
+        ] {
+            let (mut app, ctx) = page(name);
+            let shown = nodes(&mut app, &ctx, size);
+            let pill = ctx
+                .data(|data| data.get_temp::<egui::Rect>(crate::ui::call::pill_id()))
+                .unwrap_or_else(|| panic!("{name}: the pill is drawn"));
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            assert!(
+                screen.contains_rect(pill),
+                "{name} at {size:?}: {pill:?} leaves the window"
+            );
+            assert!(
+                find(&shown, "Recording options").is_some(),
+                "{name}: the pill is a button: {shown:?}"
+            );
+            for corner in ["Hide the call screen", "Full screen"] {
+                let button = find(&shown, corner).unwrap_or_else(|| panic!("{name}: {corner}"));
+                assert!(
+                    !pill.intersects(*button),
+                    "{name} at {size:?}: the pill covers {corner}"
+                );
+            }
+            assert!(
+                find(&shown, "Stop and save the recording").is_some(),
+                "{name}: the record control stops it: {shown:?}"
+            );
+            if name == "call-recording-video" {
+                let plate = ctx
+                    .data(|data| data.get_temp::<egui::Rect>(crate::ui::call::plate_id()))
+                    .expect("the name plate is drawn");
+                assert!(pill.top() >= plate.bottom(), "the pill goes under the name");
+            }
+        }
+    }
+
+    /// The bar a recorded call keeps away from its screen offers the way to stop it, beside the
+    /// way back and hanging up.
+    #[test]
+    fn the_bar_stops_a_recording() {
+        let (mut app, ctx) = page("call-recording-strip");
+        let shown = nodes(&mut app, &ctx, WIDE);
+        for label in ["Return to the call", "Stop recording", "Hang up"] {
+            assert!(find(&shown, label).is_some(), "{label} in {shown:?}");
+        }
+        let (mut plain, ctx) = page("call-strip");
+        let shown = nodes(&mut plain, &ctx, WIDE);
+        assert!(
+            find(&shown, "Stop recording").is_none(),
+            "nothing to stop on a call not recorded"
+        );
+    }
+
+    /// The record control says what pressing it does in each state.
+    #[test]
+    fn the_record_control_follows_the_recording() {
+        for (name, label) in [
+            ("call-active", "Record the call"),
+            ("call-video", "Record the call (audio only)"),
+            (
+                "call-recording-armed",
+                "Recording starts as soon as the call connects",
+            ),
+            ("call-recording", "Stop and save the recording"),
+        ] {
+            let (mut app, ctx) = page(name);
+            let shown = nodes(&mut app, &ctx, WIDE);
+            assert!(
+                find(&shown, label).is_some(),
+                "{name}: {label} in {shown:?}"
+            );
+        }
+        let (mut app, ctx) = page("call-active");
+        let generation = app.call.as_ref().unwrap().generation;
+        app.call_record_requested = Some((generation, std::time::Instant::now()));
+        let shown = nodes(&mut app, &ctx, WIDE);
+        assert!(find(&shown, "Getting the recording ready…").is_some());
+    }
+
+    /// A ringing call offers three answers in a row, none on another, each word under its own
+    /// circle, in a wide window and a narrow one.
+    #[test]
+    fn a_ringing_call_answers_three_ways_side_by_side() {
+        for size in [WIDE, egui::vec2(420.0, 780.0), egui::vec2(340.0, 640.0)] {
+            let (mut app, ctx) = page("call");
+            let shown = nodes(&mut app, &ctx, size);
+            let answers: Vec<egui::Rect> = ["Decline", "Answer and record", "Accept"]
+                .iter()
+                .map(|label| *find(&shown, label).unwrap_or_else(|| panic!("{label} at {size:?}")))
+                .collect();
+            let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, size);
+            for (index, answer) in answers.iter().enumerate() {
+                assert!(
+                    screen.contains_rect(*answer),
+                    "{size:?}: {answer:?} is off screen"
+                );
+                for other in &answers[index + 1..] {
+                    assert!(!answer.intersects(*other), "{size:?}: the answers overlap");
+                }
+            }
+            assert!(
+                answers[0].center().x < answers[1].center().x
+                    && answers[1].center().x < answers[2].center().x,
+                "decline, record, accept, in that order"
+            );
+            assert!((answers[0].center().y - answers[2].center().y).abs() < 0.5);
+        }
+        let (mut app, ctx) = page("call");
+        app.backend.record_demo_commands();
+        app.settings.call_record_intro_done = true;
+        app.actions.push(Action::AnswerAndRecord);
+        frame_with(&mut app, &ctx, Vec::new());
+        assert_eq!(app.call_record_armed, Some(1), "answered armed to record");
+    }
+
+    /// The pill's menu stops, drafts the notice, or asks before it discards.
+    #[test]
+    fn the_recording_menu_asks_before_it_discards() {
+        let (mut app, ctx) = page("call-recording-menu");
+        let shown = nodes(&mut app, &ctx, WIDE);
+        for label in ["Stop and save", "Notify by chat", "Discard recording…"] {
+            assert!(find(&shown, label).is_some(), "{label} in {shown:?}");
+        }
+        assert!(find(&shown, "Keep recording").is_none());
+        let (mut app, ctx) = page("call-recording-discard");
+        app.backend.record_demo_commands();
+        let shown = nodes(&mut app, &ctx, WIDE);
+        for label in ["Discard", "Keep recording"] {
+            assert!(find(&shown, label).is_some(), "{label} in {shown:?}");
+        }
+        assert!(
+            !app.backend
+                .take_demo_commands()
+                .iter()
+                .any(|command| matches!(command, crate::backend::Command::CallRecording { .. })),
+            "asking discards nothing"
+        );
+    }
+
+    /// Settings has a Calls section: the notice's switch, the sheet shown again, and where the
+    /// recordings are.
+    #[test]
+    fn settings_say_how_calls_are_recorded() {
+        let (mut app, ctx) = page("settings-search=recording");
+        app.settings.call_record_intro_done = true;
+        let shown = nodes(&mut app, &ctx, WIDE);
+        for label in [
+            "Play a tone when recording starts",
+            "Show again",
+            "Show folder",
+        ] {
+            assert!(find(&shown, label).is_some(), "{label} in {shown:?}");
+        }
+    }
+
+    /// The sheet before a first recording sits over the call screen; Escape closes the sheet and
+    /// leaves the screen where it was.
+    #[test]
+    fn the_sheet_before_recording_comes_first_and_escape_only_closes_it() {
+        let (mut app, ctx) = page("call-recording-intro");
+        let shown = nodes(&mut app, &ctx, WIDE);
+        for label in [
+            "Play a short notice the other person hears",
+            "Record",
+            "Not now",
+        ] {
+            assert!(find(&shown, label).is_some(), "{label} in {shown:?}");
+        }
+        frame_with(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        frame_with(&mut app, &ctx, Vec::new());
+        assert_eq!(app.call_record_intro, None, "the sheet is gone");
+        assert!(!app.call_surface_hidden, "and the call screen stays");
+        assert!(
+            !app.settings.call_record_intro_done,
+            "it shows again next time"
+        );
     }
 }
 
