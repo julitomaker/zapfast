@@ -1275,6 +1275,7 @@ impl App {
             .unwrap_or_else(|| match settings.theme {
                 ThemeChoice::Light => Palette::light(),
                 ThemeChoice::Messages => Palette::messages(),
+                ThemeChoice::Glass => Palette::liquid_glass(true),
                 _ => Palette::dark(),
             });
         let locale = crate::i18n::resolve(settings.interface_language);
@@ -1837,9 +1838,8 @@ impl App {
         }
         crate::wallpaper::Look {
             color,
-            // Messages draws its conversations on a plain background.
-            doodles: self.settings.show_wallpaper
-                && self.palette.bubbles != crate::theme::BubbleStyle::Messages,
+            // Glass and Messages draw conversations on a plain background.
+            doodles: self.settings.show_wallpaper && !self.palette.vibrant(),
             image: self
                 .account()
                 .settings
@@ -5833,7 +5833,9 @@ impl App {
                 ThemeChoice::Dark => egui::ThemePreference::Dark,
                 ThemeChoice::Light => egui::ThemePreference::Light,
                 // Messages follows the system's appearance, as Messages does.
-                ThemeChoice::System | ThemeChoice::Messages => egui::ThemePreference::System,
+                ThemeChoice::System | ThemeChoice::Messages | ThemeChoice::Glass => {
+                    egui::ThemePreference::System
+                }
             },
             |palette| {
                 if palette.dark {
@@ -5883,6 +5885,8 @@ impl App {
                 } else {
                     Palette::messages_light()
                 }
+            } else if self.settings.theme == ThemeChoice::Glass {
+                Palette::liquid_glass(dark)
             } else if dark {
                 Palette::dark()
             } else {

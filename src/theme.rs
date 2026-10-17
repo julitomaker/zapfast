@@ -90,6 +90,11 @@ pub struct Palette {
     /// WhatsApp's: only the built-in Messages palettes choose another.
     #[serde(skip)]
     pub bubbles: BubbleStyle,
+    /// Liquid glass: the desktop shows through the window's material, with
+    /// frosted headers and a plain conversation background, whatever the
+    /// bubbles' shape. Like `bubbles`, only built-in palettes set it.
+    #[serde(skip)]
+    pub glass: bool,
 }
 
 /// The shape of message bubbles.
@@ -134,6 +139,16 @@ impl Palette {
             link: Color32::from_rgb(0x53, 0xbd, 0xeb),
             read: Color32::from_rgb(0x53, 0xbd, 0xeb),
             bubbles: BubbleStyle::WhatsApp,
+            glass: false,
+        }
+    }
+
+    /// WhatsApp's colours as liquid glass: the window's material shows
+    /// through a translucent, plain conversation and frosted headers.
+    pub fn liquid_glass(dark: bool) -> Self {
+        Self {
+            glass: true,
+            ..if dark { Self::dark() } else { Self::light() }
         }
     }
 
@@ -168,6 +183,7 @@ impl Palette {
             link: Color32::from_rgb(0x64, 0xd2, 0xff),
             read: Color32::from_rgb(0x64, 0xd2, 0xff),
             bubbles: BubbleStyle::Messages,
+            glass: true,
         }
     }
 
@@ -200,6 +216,7 @@ impl Palette {
             link: Color32::from_rgb(0x00, 0x66, 0xcc),
             read: Color32::from_rgb(0x00, 0x66, 0xcc),
             bubbles: BubbleStyle::Messages,
+            glass: true,
         }
     }
 
@@ -233,6 +250,7 @@ impl Palette {
             // The lighter blue vanished on the green outgoing bubble.
             read: Color32::from_rgb(0x02, 0x7e, 0xb5),
             bubbles: BubbleStyle::WhatsApp,
+            glass: false,
         }
     }
 
@@ -256,7 +274,7 @@ impl Palette {
     /// pills and tints, on every platform. Whether the desktop also shows
     /// through the window is [`crate::backdrop::active`].
     pub fn vibrant(&self) -> bool {
-        self.bubbles == BubbleStyle::Messages
+        self.glass || self.bubbles == BubbleStyle::Messages
     }
 
     /// The chat list's background. Over a window's material it only darkens

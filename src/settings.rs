@@ -36,13 +36,26 @@ pub enum ThemeChoice {
     /// macOS's greys, light or dark as the system is, with bubbles shaped as
     /// Messages draws them.
     Messages,
+    /// WhatsApp's colours as liquid glass, light or dark as the system is.
+    Glass,
 }
 
 impl ThemeChoice {
     /// The choices Settings offers, on every platform. Messages shows the
     /// desktop through its window where the platform can, and is opaque in
     /// its own colours elsewhere (see [`crate::backdrop`]).
-    pub const ALL: &[ThemeChoice] = &[Self::System, Self::Light, Self::Dark, Self::Messages];
+    pub const ALL: &[ThemeChoice] = &[
+        Self::System,
+        Self::Light,
+        Self::Dark,
+        Self::Glass,
+        Self::Messages,
+    ];
+
+    /// Whether the window shows the desktop through its material.
+    pub fn translucent(self) -> bool {
+        matches!(self, Self::Messages | Self::Glass)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -50,6 +63,7 @@ impl ThemeChoice {
             Self::Light => "Light",
             Self::System => "Follow system",
             Self::Messages => "Messages",
+            Self::Glass => "Liquid Glass",
         }
     }
 }
