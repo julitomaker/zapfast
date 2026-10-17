@@ -58,3 +58,18 @@ Desktop's `claude_desktop_config.json` as `whats-pro` (keeping the other
 servers, with a `.bak` copy). Tools, all read-only: `list_chats`,
 `read_chat`, `recent_activity`, `search_messages`. Whats Pro must be open,
 since the MCP server reads through the bridge.
+
+## Local transcription and picture text (fork addition)
+
+- Voice messages, audio files and videos are transcribed on this computer
+  with whisper.cpp (`whisper-rs`): Metal on Apple Silicon, the CPU on Intel
+  Macs. The model, `ggml-large-v3-turbo-q5_0.bin` (~550 MB), downloads from
+  whisper.cpp's model repository into `<data>/models/` on first use.
+- The text in pictures is read with macOS's Vision framework.
+- Settings > Transcription chooses Off, Chosen chats or All chats, for speech
+  and for pictures; a chat's right-click menu chooses it. Older messages have a
+  Transcribe / Read text button under the bubble.
+- Results live in the archive's `transcripts` table; the bridge returns them
+  as each message's `transcript`, search matches them, and the MCP tools show
+  them as `[transcript: …]`.
+- `zapfast transcribe <file>` prints a file's transcription from the shell.

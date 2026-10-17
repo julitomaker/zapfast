@@ -3119,3 +3119,59 @@ msgstr "{n} min"
 #: src/ui/projects.rs
 msgid "{n} selected"
 msgstr "{n} seleccionados"
+msgid "Transcription"
+msgstr "Transcripción"
+
+msgid "Voice messages and videos"
+msgstr "Audios y videos"
+
+msgid "Transcribed on this computer as they arrive, with Whisper. Nothing is uploaded. Choose chats from their right-click menu."
+msgstr "Se transcriben en esta computadora cuando llegan, con Whisper. No se sube nada. Elegí los chats desde su menú (clic derecho)."
+
+msgid "Text in pictures"
+msgstr "Texto en imágenes"
+
+msgid "Read on this computer with macOS's text recognition. Choose chats from their right-click menu."
+msgstr "Se lee en esta computadora con el reconocimiento de texto de macOS. Elegí los chats desde su menú (clic derecho)."
+
+msgid "Speech model"
+msgstr "Modelo de voz"
+
+msgid "Whisper large-v3-turbo is installed."
+msgstr "Whisper large-v3-turbo está instalado."
+
+msgid "Whisper large-v3-turbo (about 550 MB) downloads the first time something is transcribed."
+msgstr "Whisper large-v3-turbo (unos 550 MB) se descarga la primera vez que se transcribe algo."
+
+msgid "Chosen chats"
+msgstr "Chats elegidos"
+
+msgid "All chats"
+msgstr "Todos los chats"
+
+msgid "Transcribe voice and videos"
+msgstr "Transcribir audios y videos"
+
+msgid "Read text in pictures"
+msgstr "Leer texto de imágenes"
+
+msgid "Transcribe"
+msgstr "Transcribir"
+
+msgid "Read text"
+msgstr "Leer texto"
+
+msgid "Transcribing…"
+msgstr "Transcribiendo…"
+
+msgid "Reading text…"
+msgstr "Leyendo texto…"
+
+msgid "Could not read it. Try again"
+msgstr "No se pudo leer. Reintentar"
+
+msgid "No speech"
+msgstr "Sin voz"
+
+msgid "No text"
+msgstr "Sin texto"

@@ -2254,6 +2254,17 @@ struct View<'a> {
     player: &'a crate::audio::Player,
     video: &'a crate::video::Player,
     copy_rows: Option<&'a std::sync::Mutex<Vec<crate::transcript::Row>>>,
+    /// Text read out of messages on this computer, for the bubbles that
+    /// show it; `None` where messages are drawn without it.
+    reading: Option<Reading<'a>>,
+}
+
+/// Transcripts of this account's messages and their progress.
+#[derive(Clone, Copy)]
+struct Reading<'a> {
+    transcripts: &'a HashMap<(ChatId, String), crate::archive::Transcript>,
+    busy: &'a HashSet<(ChatId, String)>,
+    errors: &'a HashMap<(ChatId, String), String>,
 }
 
 /// Protocol album parent carried by pictures and ordinary videos.
@@ -2496,6 +2507,11 @@ fn messages(app: &mut App, ui: &mut egui::Ui, chat: &Chat, under: f32) {
         account_receipts_off: app.account_receipts_off,
         poll_voting: &app.poll_voting,
         interactive_pending: &app.interactive_sending,
+        reading: Some(Reading {
+            transcripts: &app.transcripts,
+            busy: &app.transcribing,
+            errors: &app.transcript_errors,
+        }),
         selecting: app
             .selection
             .as_ref()
@@ -5550,6 +5566,11 @@ pub(crate) fn list_menu(
         connected: app.link.is_connected(),
         poll_voting: &app.poll_voting,
         interactive_pending: &app.interactive_sending,
+        reading: Some(Reading {
+            transcripts: &app.transcripts,
+            busy: &app.transcribing,
+            errors: &app.transcript_errors,
+        }),
         // Nothing scrolls, highlights, or selects in a list row.
         anchor: None,
         open_menu: None,
@@ -5927,6 +5948,29 @@ fn context_menu(
     {
         actions.push(Action::SaveSticker(path.clone()));
     }
+    let speech = matches!(
+        message.content,
+        Content::Audio { .. } | Content::Video { gif: false, .. }
+    );
+    if (speech || matches!(message.content, Content::Image { .. }))
+        && let Some(reading) = view.reading
+    {
+        let key = (message.chat.clone(), message.id.clone());
+        if !reading.transcripts.contains_key(&key) && !reading.busy.contains(&key) {
+            let label = if speech { "Transcribe" } else { "Read text" };
+            if widgets::menu_item(
+                ui,
+                &palette,
+                Some(if speech { Icon::Mic } else { Icon::FileText }),
+                &crate::i18n::gettext(view.locale, label),
+            ) {
+                actions.push(Action::Transcribe {
+                    chat: message.chat.clone(),
+                    id: message.id.clone(),
+                });
+            }
+        }
+    }
     if let Some(media) = message.content.media() {
         match &media.path {
             Some(path) => {
@@ -6198,6 +6242,87 @@ fn shared_contact_details(vcard: &str, fallback_name: &str) -> Option<SharedCont
 
 /// Draws a message body and returns optional footer space on its last line.
 fn content(
+    ui: &mut egui::Ui,
+    view: &View<'_>,
+    message: &Message,
+    width: f32,
+    reserve: f32,
+    actions: &mut Vec<Action>,
+) -> Option<Rect> {
+    let body = content_body(ui, view, message, width, reserve, actions);
+    reading_line(ui, view, message, width, actions);
+    body
+}
+
+/// Under a voice message, audio, video or picture: what was read out of it
+/// on this computer, its progress, or a button to read it.
+fn reading_line(
+    ui: &mut egui::Ui,
+    view: &View<'_>,
+    message: &Message,
+    width: f32,
+    actions: &mut Vec<Action>,
+) {
+    let Some(reading) = view.reading else {
+        return;
+    };
+    let speech = matches!(
+        message.content,
+        Content::Audio { .. } | Content::Video { gif: false, .. }
+    );
+    let image = matches!(message.content, Content::Image { .. });
+    if !speech && !image {
+        return;
+    }
+    let palette = view.palette;
+    let locale = view.locale;
+    let key = (message.chat.clone(), message.id.clone());
+    if !reading.transcripts.contains_key(&key)
+        && !reading.busy.contains(&key)
+        && !reading.errors.contains_key(&key)
+    {
+        return;
+    }
+    let small = |text: &str, color: egui::Color32| {
+        egui::RichText::new(text)
+            .font(theme::regular(13.0))
+            .color(color)
+    };
+    ui.add_space(4.0);
+    ui.scope(|ui| {
+        ui.set_max_width(width);
+        if let Some(transcript) = reading.transcripts.get(&key) {
+            let text = transcript.text.trim();
+            if text.is_empty() {
+                let none = if speech { "No speech" } else { "No text" };
+                ui.label(small(&crate::i18n::gettext(locale, none), palette.dim));
+            } else {
+                ui.add(egui::Label::new(small(text, palette.secondary).italics()).wrap());
+            }
+        } else if reading.busy.contains(&key) {
+            let busy = if speech {
+                "Transcribing…"
+            } else {
+                "Reading text…"
+            };
+            ui.label(small(&crate::i18n::gettext(locale, busy), palette.dim));
+        } else if let Some(error) = reading.errors.get(&key) {
+            let retry = egui::Button::new(small(
+                &crate::i18n::gettext(locale, "Could not read it. Try again"),
+                palette.accent,
+            ))
+            .frame(false);
+            if ui.add(retry).on_hover_text(error).clicked() {
+                actions.push(Action::Transcribe {
+                    chat: message.chat.clone(),
+                    id: message.id.clone(),
+                });
+            }
+        }
+    });
+}
+
+fn content_body(
     ui: &mut egui::Ui,
     view: &View<'_>,
     message: &Message,
@@ -10483,6 +10608,11 @@ mod tests {
             connected: false,
             poll_voting: &app.poll_voting,
             interactive_pending: &app.interactive_sending,
+            reading: Some(Reading {
+                transcripts: &app.transcripts,
+                busy: &app.transcribing,
+                errors: &app.transcript_errors,
+            }),
             anchor: None,
             open_menu: None,
             reaction: None,

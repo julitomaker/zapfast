@@ -920,6 +920,84 @@ fn sections(app: &App) -> Vec<Section> {
         },
     );
 
+    let mut reading = Section::new(translated(locale, "Transcription"));
+    for speech in [true, false] {
+        let (title, description, salt) = if speech {
+            (
+                translated(locale, "Voice messages and videos"),
+                translated(
+                    locale,
+                    "Transcribed on this computer as they arrive, with Whisper. Nothing is uploaded. Choose chats from their right-click menu.",
+                ),
+                "read_speech",
+            )
+        } else {
+            (
+                translated(locale, "Text in pictures"),
+                translated(
+                    locale,
+                    "Read on this computer with macOS's text recognition. Choose chats from their right-click menu.",
+                ),
+                "read_images",
+            )
+        };
+        reading.row(title, description, move |ui, app| {
+            let palette = app.palette;
+            let settings = &app.account().settings;
+            let (selected, chosen) = if speech {
+                (settings.speech, settings.speech_chats.len())
+            } else {
+                (settings.images, settings.image_chats.len())
+            };
+            let shown = |scope: crate::settings::ReadScope| {
+                let label = crate::i18n::gettext(app.locale, scope.label()).into_owned();
+                if scope == crate::settings::ReadScope::Chosen {
+                    format!("{label} ({chosen})")
+                } else {
+                    label
+                }
+            };
+            let mut picked = None;
+            let response = egui::ComboBox::from_id_salt(salt)
+                .selected_text(shown(selected))
+                .width(200.0_f32.min(ui.available_width()))
+                .show_ui(ui, |ui| {
+                    for scope in crate::settings::ReadScope::ALL {
+                        if theme_option(ui, &palette, &shown(scope), scope == selected) {
+                            picked = Some(scope);
+                        }
+                    }
+                });
+            theme::reveal_focus(&response.response);
+            if let Some(scope) = picked {
+                app.actions.push(if speech {
+                    Action::SetReadScope {
+                        speech: Some(scope),
+                        images: None,
+                    }
+                } else {
+                    Action::SetReadScope {
+                        speech: None,
+                        images: Some(scope),
+                    }
+                });
+            }
+        });
+    }
+    let model_ready = crate::transcribe::model_ready(&app.dirs.state);
+    reading.row(
+        translated(locale, "Speech model"),
+        if model_ready {
+            translated(locale, "Whisper large-v3-turbo is installed.")
+        } else {
+            translated(
+                locale,
+                "Whisper large-v3-turbo (about 550 MB) downloads the first time something is transcribed.",
+            )
+        },
+        |_ui, _app| {},
+    );
+
     let mut about_section = Section::new(translated(locale, "About"));
     about_section.block(
         vec![
@@ -938,6 +1016,7 @@ fn sections(app: &App) -> Vec<Section> {
         system,
         account_section,
         files,
+        reading,
         integrations,
         about_section,
     ]

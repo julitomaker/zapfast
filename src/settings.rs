@@ -855,6 +855,44 @@ pub struct AccountSettings {
     /// The chip the Calls page last showed, as
     /// [`crate::model::CallFilter::key`] writes it; `None` shows every call.
     pub call_filter: Option<String>,
+    /// Which chats have their voice messages, audio and videos transcribed
+    /// on this computer as they arrive.
+    pub speech: ReadScope,
+    pub speech_chats: Vec<String>,
+    /// Which chats have the text in their pictures read as they arrive.
+    pub images: ReadScope,
+    pub image_chats: Vec<String>,
+}
+
+/// Which chats something applies to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadScope {
+    Off,
+    /// Only the chats chosen one by one.
+    #[default]
+    Chosen,
+    All,
+}
+
+impl ReadScope {
+    pub const ALL: [ReadScope; 3] = [Self::Off, Self::Chosen, Self::All];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::Chosen => "Chosen chats",
+            Self::All => "All chats",
+        }
+    }
+
+    pub fn applies(self, chosen: &[String], chat: &str) -> bool {
+        match self {
+            Self::Off => false,
+            Self::Chosen => chosen.iter().any(|c| c == chat),
+            Self::All => true,
+        }
+    }
 }
 
 impl Default for AccountSettings {
@@ -871,6 +909,10 @@ impl Default for AccountSettings {
             history_prefetch: false,
             list_filter: None,
             call_filter: None,
+            speech: ReadScope::Chosen,
+            speech_chats: Vec::new(),
+            images: ReadScope::Chosen,
+            image_chats: Vec::new(),
         }
     }
 }
@@ -889,6 +931,7 @@ impl AccountSettings {
             history_prefetch: false,
             list_filter: None,
             call_filter: None,
+            ..Self::default()
         }
     }
 

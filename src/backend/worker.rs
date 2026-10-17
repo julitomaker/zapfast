@@ -767,6 +767,8 @@ pub async fn run(
         first_names_recovered,
         first_names_recovering: false,
         downloads: HashSet::new(),
+        transcribe_after_download: HashSet::new(),
+        transcribing: HashSet::new(),
         read_sync: ReadSync::default(),
         favorite_chats: Default::default(),
         poll_decrypting: 0,
@@ -1211,6 +1213,10 @@ struct Worker {
     first_names_recovering: bool,
     /// Active attachment downloads by chat, message id, and carousel card.
     downloads: HashSet<(ChatId, String, Option<usize>)>,
+    /// Messages to transcribe once their attachment has downloaded.
+    transcribe_after_download: HashSet<(ChatId, String)>,
+    /// Transcriptions running, so a message is read once at a time.
+    transcribing: HashSet<(ChatId, String)>,
     /// Serial forward in flight. The next send waits for the running one.
     forward_queue: Option<ForwardQueue<ForwardJob>>,
     call: Option<calls::CallRuntime>,
@@ -1498,8 +1504,98 @@ impl Worker {
         {
             return;
         }
+        // Each page of a chat brings the transcripts of its messages along.
+        let transcripts = match &event {
+            Event::Messages { chat, messages, .. } if !messages.is_empty() => {
+                let ids: Vec<&str> = messages.iter().map(|m| m.id.as_str()).collect();
+                self.archive
+                    .transcripts_for(chat, &ids)
+                    .ok()
+                    .filter(|found| !found.is_empty())
+                    .map(|found| Event::Transcripts {
+                        chat: chat.clone(),
+                        transcripts: found,
+                    })
+            }
+            _ => None,
+        };
         let _ = self.events.send(event);
+        if let Some(transcripts) = transcripts {
+            let _ = self.events.send(transcripts);
+        }
         self.waker.wake();
+    }
+
+    /// Starts reading a message's speech or a picture's text, after
+    /// downloading its attachment when it is not here yet.
+    fn transcribe(&mut self, chat: ChatId, id: String) {
+        let key = (chat.clone(), id.clone());
+        if self.transcribing.contains(&key) {
+            return;
+        }
+        let Ok(Some(message)) = self.archive.message(&chat, &id) else {
+            return;
+        };
+        let (media, kind) = match &message.content {
+            Content::Audio { media, .. } => (media, "speech"),
+            Content::Video {
+                media, gif: false, ..
+            } => (media, "speech"),
+            Content::Image { media, .. } => (media, "image"),
+            _ => return,
+        };
+        let path = media.path.clone().filter(|path| path.exists());
+        let Some(path) = path else {
+            self.transcribe_after_download.insert(key);
+            self.download_media(chat, id, None, false);
+            return;
+        };
+        self.transcribing.insert(key);
+        let commands = self.commands.clone();
+        let kind = kind.to_owned();
+        tokio::task::spawn_blocking(move || {
+            let state = crate::paths::AppDirs::discover().state;
+            let result = if kind == "image" {
+                crate::ocr::read_text(&path)
+            } else {
+                crate::transcribe::transcribe(&state, &path)
+            };
+            let _ = commands.send(Command::Transcribed {
+                chat,
+                id,
+                kind,
+                result,
+            });
+        });
+    }
+
+    fn transcribed(
+        &mut self,
+        chat: ChatId,
+        id: String,
+        kind: String,
+        result: Result<String, String>,
+    ) {
+        self.transcribing.remove(&(chat.clone(), id.clone()));
+        match result {
+            Ok(text) => {
+                let model = if kind == "image" {
+                    "vision"
+                } else {
+                    crate::transcribe::MODEL_FILE
+                };
+                if let Err(error) = self.archive.put_transcript(&chat, &id, &kind, &text, model) {
+                    log::warn!("could not store a transcript: {error}");
+                }
+                let mut transcripts = std::collections::HashMap::new();
+                transcripts.insert(id, crate::archive::Transcript { kind, text });
+                self.emit(Event::Transcripts { chat, transcripts });
+            }
+            Err(error) => {
+                log::warn!("transcription failed: {error}");
+                self.emit(Event::TranscriptFailed { chat, id, error });
+            }
+        }
     }
 
     /// Syncs a chat setting to the phone without blocking the worker.
@@ -7454,6 +7550,13 @@ impl Worker {
                 id,
                 result,
             } => self.downloaded(chat, id, card, result),
+            Command::Transcribe { chat, id } => self.transcribe(chat, id),
+            Command::Transcribed {
+                chat,
+                id,
+                kind,
+                result,
+            } => self.transcribed(chat, id, kind, result),
             Command::DownloadMotion { chat, message } => self.download_motion(chat, message),
             Command::MotionDownloaded { chat, id, result } => {
                 if let Ok(path) = &result
@@ -8775,6 +8878,20 @@ impl Worker {
             let _ = self.archive.put_media_path_at(&chat, &id, card, Some(path));
         }
         self.downloads.remove(&(chat.clone(), id.clone(), card));
+        if card.is_none()
+            && self
+                .transcribe_after_download
+                .remove(&(chat.clone(), id.clone()))
+        {
+            match &result {
+                Ok(_) => self.transcribe(chat.clone(), id.clone()),
+                Err(error) => self.emit(Event::TranscriptFailed {
+                    chat: chat.clone(),
+                    id: id.clone(),
+                    error: error.clone(),
+                }),
+            }
+        }
         let key = (chat.clone(), id.clone());
         let for_picker = self.sticker_downloads.remove(&key);
         let clicked = self.sticker_clicked.remove(&key);
@@ -16576,6 +16693,8 @@ mod receipt_tests {
             first_names_recovered: true,
             first_names_recovering: false,
             downloads: HashSet::new(),
+            transcribe_after_download: HashSet::new(),
+            transcribing: HashSet::new(),
             read_sync: ReadSync::default(),
             favorite_chats: Default::default(),
             poll_decrypting: 0,

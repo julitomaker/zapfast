@@ -26,9 +26,11 @@ mod polls;
 mod receipts;
 mod stars;
 mod stickers;
+mod transcripts;
 pub use polls::PollVote;
 pub use stars::Starred;
 pub use stickers::FavoriteSticker;
+pub use transcripts::Transcript;
 
 /// Outcome of deleting or clearing a chat.
 #[derive(Clone, Debug, Default)]
@@ -420,6 +422,7 @@ impl Archive {
         connection.execute_batch(favorites::SCHEMA)?;
         connection.execute_batch(stars::SCHEMA)?;
         connection.execute_batch(pins::SCHEMA)?;
+        connection.execute_batch(transcripts::SCHEMA)?;
         for (table, column, definition) in MIGRATIONS {
             let exists = connection
                 .prepare(&format!("PRAGMA table_info({table})"))?

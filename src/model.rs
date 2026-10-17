@@ -2465,6 +2465,23 @@ pub enum Action {
     ConnectClaudeDesktop,
     /// Shows a test notification with the message sound.
     TestNotification,
+    /// Transcribes one message's speech, or reads one picture's text.
+    Transcribe {
+        chat: ChatId,
+        id: String,
+    },
+    /// Turns automatic transcription (`speech`) or picture reading for one
+    /// chat on or off.
+    SetChatReading {
+        chat: ChatId,
+        speech: Option<bool>,
+        images: Option<bool>,
+    },
+    /// Chooses which chats are read: off, the chosen ones, or all.
+    SetReadScope {
+        speech: Option<crate::settings::ReadScope>,
+        images: Option<crate::settings::ReadScope>,
+    },
     /// Opens the system's notification settings for this app (macOS).
     OpenNotificationSettings,
     OpenFolder(PathBuf),

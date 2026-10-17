@@ -39,6 +39,8 @@ pub struct BridgeMessage {
     pub text: String,
     pub reply_to: Option<BridgeQuote>,
     pub edited: bool,
+    /// What was transcribed or read out of the message on this computer.
+    pub transcript: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -52,11 +54,12 @@ pub struct BridgeQuote {
 /// A sender behind a privacy id is named through its phone number.
 const COLUMNS: &str = "m.chat, c.name, m.id, m.sender,
     COALESCE(NULLIF(ct.full_name, ''), NULLIF(ct.push_name, ''), m.sender_name),
-    m.from_me, m.timestamp, m.content, m.quoted, m.edited
+    m.from_me, m.timestamp, m.content, m.quoted, m.edited, t.text
     FROM messages m
     JOIN chats c ON c.id = m.chat
     LEFT JOIN lids l ON l.lid = m.sender
-    LEFT JOIN contacts ct ON ct.id = COALESCE(l.pn, m.sender)";
+    LEFT JOIN contacts ct ON ct.id = COALESCE(l.pn, m.sender)
+    LEFT JOIN transcripts t ON t.chat = m.chat AND t.id = m.id";
 
 fn bridge_row(row: &Row) -> Result<BridgeMessage> {
     let content: String = row.get(7)?;
@@ -88,6 +91,7 @@ fn bridge_row(row: &Row) -> Result<BridgeMessage> {
                 text: quoted.summary,
             }),
         edited: row.get(9)?,
+        transcript: row.get(10)?,
     })
 }
 
@@ -173,7 +177,8 @@ impl Archive {
         let mut statement = self.connection.prepare(&format!(
             "SELECT {COLUMNS}
              WHERE c.locked = 0 AND (?1 IS NULL OR m.chat = ?1)
-               AND json_valid(m.content) AND {SEARCHED_TEXT} LIKE ?2 ESCAPE '\\'
+               AND ((json_valid(m.content) AND {SEARCHED_TEXT} LIKE ?2 ESCAPE '\\')
+                    OR lower(coalesce(t.text, '')) LIKE ?2 ESCAPE '\\')
              ORDER BY m.timestamp DESC, m.rowid DESC LIMIT ?3"
         ))?;
         let rows = statement.query_map(params![chat, pattern, limit as i64], bridge_row)?;

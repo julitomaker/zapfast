@@ -2086,6 +2086,33 @@ impl App {
         self.wants_attention = true;
     }
 
+    /// Reads a newly arrived message's speech or picture text when its chat
+    /// is chosen for that (Settings > Transcription, or the chat's info).
+    fn maybe_transcribe(&mut self, chat: &str, message: &Message) {
+        let settings = &self.account().settings;
+        let wanted = match &message.content {
+            Content::Audio { .. } | Content::Video { gif: false, .. } => {
+                settings.speech.applies(&settings.speech_chats, chat)
+            }
+            Content::Image { .. } => settings.images.applies(&settings.image_chats, chat),
+            _ => false,
+        };
+        if wanted {
+            self.request_transcript(chat.to_owned(), message.id.clone());
+        }
+    }
+
+    /// Asks the backend to transcribe one message, once at a time.
+    fn request_transcript(&mut self, chat: ChatId, id: String) {
+        let key = (chat.clone(), id.clone());
+        if self.transcribing.contains(&key) || self.transcripts.contains_key(&key) {
+            return;
+        }
+        self.transcript_errors.remove(&key);
+        self.transcribing.insert(key);
+        self.backend.send(Command::Transcribe { chat, id });
+    }
+
     /// Announces a message while the app lock is on, or with notification
     /// content turned off: "New message" from Whats Pro, without the chat, the
     /// sender, the text or a picture, so the desktop shows nothing the lock
@@ -3390,7 +3417,23 @@ impl App {
                         .collect();
                 }
             }
-            Event::Incoming { chat, message } => self.maybe_notify(&chat, &message),
+            Event::Incoming { chat, message } => {
+                self.maybe_transcribe(&chat, &message);
+                self.maybe_notify(&chat, &message);
+            }
+            Event::Transcripts { chat, transcripts } => {
+                for (id, transcript) in transcripts {
+                    let key = (chat.clone(), id);
+                    self.transcribing.remove(&key);
+                    self.transcript_errors.remove(&key);
+                    self.transcripts.insert(key, transcript);
+                }
+            }
+            Event::TranscriptFailed { chat, id, error } => {
+                let key = (chat, id);
+                self.transcribing.remove(&key);
+                self.transcript_errors.insert(key, error);
+            }
             Event::Picked {
                 chat,
                 paths,
@@ -6596,6 +6639,35 @@ impl App {
                     .arg("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=com.julitomaker.zapfast")
                     .spawn();
             }
+            Action::Transcribe { chat, id } => self.request_transcript(chat, id),
+            Action::SetChatReading {
+                chat,
+                speech,
+                images,
+            } => {
+                let settings = &mut self.account_mut().settings;
+                for (wanted, list) in [
+                    (speech, &mut settings.speech_chats),
+                    (images, &mut settings.image_chats),
+                ] {
+                    match wanted {
+                        Some(true) if !list.contains(&chat) => list.push(chat.clone()),
+                        Some(false) => list.retain(|c| *c != chat),
+                        _ => {}
+                    }
+                }
+                self.account_mut().mark_settings_dirty();
+            }
+            Action::SetReadScope { speech, images } => {
+                let settings = &mut self.account_mut().settings;
+                if let Some(scope) = speech {
+                    settings.speech = scope;
+                }
+                if let Some(scope) = images {
+                    settings.images = scope;
+                }
+                self.account_mut().mark_settings_dirty();
+            }
             Action::TestNotification => {
                 let waker = self.waker.clone();
                 self.notifications.show(
@@ -9398,6 +9470,7 @@ impl App {
     }
 
     pub fn shutdown(&mut self) {
+        crate::transcribe::unload();
         self.call_tones.set(None);
         self.save_state();
         self.flush_open_draft();

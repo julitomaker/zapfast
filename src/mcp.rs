@@ -171,6 +171,9 @@ fn line(message: &Value, with_chat: bool) -> String {
             )
     };
     let mut text = message["text"].as_str().unwrap_or("").to_owned();
+    if let Some(transcript) = message["transcript"].as_str().filter(|t| !t.is_empty()) {
+        text = format!("{text} [transcript: {transcript}]");
+    }
     if let Some(reply) = message["reply_to"]["text"].as_str() {
         text = format!("(replying to \"{reply}\") {text}");
     }

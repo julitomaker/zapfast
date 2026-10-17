@@ -2076,6 +2076,7 @@ fn context_menu(app: &mut App, ui: &mut egui::Ui, chat: &Chat, palette: &Palette
         }
     }
     sound_menu(app, ui, palette, chat);
+    reading_menu(app, ui, palette, chat);
     labels::chat_menu(app, ui, chat, palette);
     if widgets::menu_item(
         ui,
@@ -2127,6 +2128,42 @@ fn unread_announcement(title: &str, chat: &Chat) -> String {
         format!("{title}, {} unread messages, mentioned you", chat.unread)
     } else {
         format!("{title}, {} unread messages", chat.unread)
+    }
+}
+
+/// Whether this chat's voice messages, audio and videos are transcribed, and
+/// its pictures' text read, on this computer as they arrive.
+fn reading_menu(app: &mut App, ui: &mut egui::Ui, palette: &Palette, chat: &Chat) {
+    let settings = &app.account().settings;
+    let speech = settings.speech_chats.contains(&chat.id);
+    let images = settings.image_chats.contains(&chat.id);
+    let speech_label = crate::i18n::gettext(app.locale, "Transcribe voice and videos");
+    let images_label = crate::i18n::gettext(app.locale, "Read text in pictures");
+    if widgets::menu_item(
+        ui,
+        palette,
+        Some(if speech { Icon::Check } else { Icon::Mic }),
+        &speech_label,
+    ) {
+        app.actions.push(Action::SetChatReading {
+            chat: chat.id.clone(),
+            speech: Some(!speech),
+            images: None,
+        });
+        ui.close();
+    }
+    if widgets::menu_item(
+        ui,
+        palette,
+        Some(if images { Icon::Check } else { Icon::FileText }),
+        &images_label,
+    ) {
+        app.actions.push(Action::SetChatReading {
+            chat: chat.id.clone(),
+            speech: None,
+            images: Some(!images),
+        });
+        ui.close();
     }
 }
 

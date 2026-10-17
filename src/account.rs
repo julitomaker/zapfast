@@ -103,6 +103,11 @@ pub struct Account {
     pub reply_when_loaded: Option<(ChatId, String)>,
     pub account_privacy: crate::privacy::Snapshot,
     pub interactive_sending: HashSet<(ChatId, String)>,
+    /// Text read out of messages on this computer (speech, picture text).
+    pub transcripts: std::collections::HashMap<(ChatId, String), crate::archive::Transcript>,
+    /// Messages being transcribed, and why the last try of others failed.
+    pub transcribing: HashSet<(ChatId, String)>,
+    pub transcript_errors: std::collections::HashMap<(ChatId, String), String>,
     pub group_saving: HashSet<ChatId>,
     pub(crate) reported_online: Option<bool>,
     /// Chats this account may pin; WhatsApp Plus raises it once known.
@@ -207,6 +212,9 @@ impl Account {
             reply_when_loaded: None,
             account_privacy: crate::privacy::Snapshot::default(),
             interactive_sending: HashSet::new(),
+            transcripts: std::collections::HashMap::new(),
+            transcribing: HashSet::new(),
+            transcript_errors: std::collections::HashMap::new(),
             group_saving: HashSet::new(),
             reported_online: None,
             pin_limit: crate::backend::PINNED_CHATS,

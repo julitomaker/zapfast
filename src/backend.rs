@@ -815,6 +815,19 @@ pub enum Command {
         id: String,
         error: Option<String>,
     },
+    /// Reads a message's speech (voice, audio, video) or a picture's text on
+    /// this computer, downloading the attachment first when needed.
+    Transcribe {
+        chat: ChatId,
+        id: String,
+    },
+    /// Internal transcription result.
+    Transcribed {
+        chat: ChatId,
+        id: String,
+        kind: String,
+        result: Result<String, String>,
+    },
     /// Internal attachment-download result.
     Downloaded {
         card: Option<usize>,
@@ -1073,6 +1086,18 @@ pub enum Event {
         complete: bool,
     },
     MessageUpdated(Box<Message>),
+    /// Text read out of messages on this computer, by message id: sent with
+    /// each page of a chat and as each transcription finishes.
+    Transcripts {
+        chat: ChatId,
+        transcripts: std::collections::HashMap<String, crate::archive::Transcript>,
+    },
+    /// A transcription that could not finish, and why.
+    TranscriptFailed {
+        chat: ChatId,
+        id: String,
+        error: String,
+    },
     /// The account's media cache as measured, `None` when it could not be
     /// read. `cleared` says the cache was just emptied, so files the
     /// interface still points into it are gone.

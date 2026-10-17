@@ -333,6 +333,15 @@ fn sound_decoder(path: &Path, from: Duration) -> Option<AacTrack> {
     }
 }
 
+/// Every sample of an MP4's AAC sound track, interleaved, with its channel
+/// count and rate: for transcribing a video's speech (src/transcribe.rs).
+pub fn aac_samples(path: &Path) -> Result<(Vec<f32>, u16, u32), String> {
+    use rodio::Source;
+    let track = AacTrack::open(path, Duration::ZERO)?;
+    let (channels, rate) = (track.channels().get(), track.sample_rate().get());
+    Ok((track.collect(), channels, rate))
+}
+
 /// The MP4's AAC sound track, read with `mp4` and decoded with symphonia's
 /// AAC decoder. rodio's own MP4 reader (symphonia 0.5's isomp4) refuses the
 /// sound of the videos WhatsApp sends, whose `esds` carries a custom

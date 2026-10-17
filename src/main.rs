@@ -193,6 +193,8 @@ impl Drop for RemoveOnDrop {
 
 fn main() -> eframe::Result<()> {
     let result = run();
+    // Before the exit handlers tear down the GPU device (src/transcribe.rs).
+    zapfast::transcribe::unload();
     // A Windows release has no console, so an error that ends the start
     // would otherwise leave the reader nothing to see (#349). `run` has
     // already released the single-instance lock.
@@ -208,6 +210,38 @@ fn run() -> eframe::Result<()> {
     // exit, without a window, the instance lock or the account (src/mcp.rs).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         std::process::exit(zapfast::mcp::run(&paths::AppDirs::discover().config));
+    }
+    // `transcribe <file>`: prints a media file's transcription, for checking
+    // the local speech-to-text (src/transcribe.rs).
+    if std::env::args().nth(1).as_deref() == Some("transcribe") {
+        let Some(file) = std::env::args().nth(2) else {
+            eprintln!("usage: transcribe <audio or video file>");
+            std::process::exit(2);
+        };
+        let state = paths::AppDirs::discover().state;
+        let path = std::path::Path::new(&file);
+        let picture = path.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+            matches!(
+                e.to_ascii_lowercase().as_str(),
+                "jpg" | "jpeg" | "png" | "webp" | "heic" | "gif"
+            )
+        });
+        let result = if picture {
+            zapfast::ocr::read_text(path)
+        } else {
+            zapfast::transcribe::transcribe(&state, path)
+        };
+        zapfast::transcribe::unload();
+        match result {
+            Ok(text) => {
+                println!("{text}");
+                std::process::exit(0);
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
     }
     // First, before parsing the command line or touching any state: run the
     // update helper when asked (`--apply-update <job>`, then exit), and take

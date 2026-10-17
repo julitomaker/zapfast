@@ -93,6 +93,8 @@ jiff = "0.2"
 tiny_http = "0.12"
 form_urlencoded = "1"
 subtle = "2"
+# Local speech-to-text (src/transcribe.rs): whisper.cpp, built from source.
+whisper-rs = "0.16"
 # Treats joined emoji as one grapheme. Already included through egui.
 unicode-segmentation = "1"
 # Unicode bidi properties; already included through URL/IDNA handling.
@@ -260,7 +262,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # Reaches the window behind eframe's view, for the Messages theme's vibrancy.
 raw-window-handle = "0.6"
 # Reads the locale's clock format.
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSDateFormatter", "NSFormatter", "NSLocale", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSDateFormatter", "NSDictionary", "NSError", "NSFormatter", "NSLocale", "NSString", "NSURL"] }
 # The camera for video calls, through AVFoundation.
 nokhwa = { version = "0.10.11", default-features = false, features = ["input-avfoundation"] }
 
@@ -316,3 +318,13 @@ opt-level = 2
 # Compiles the PO catalogs to Rust, leaving out unfinished entries. Ordinary
 # builds do not need gettext tools.
 fastframe-i18n = { git = "https://github.com/crmne/fastframe", rev = "3339a8bc524a51c47f87ca78c368dde3569d90f5", features = ["build"] }
+
+# Metal acceleration for transcription on Apple Silicon; Intel Macs use the CPU.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+whisper-rs = { version = "0.16", features = ["metal"] }
+
+# The text in pictures, read with macOS's Vision framework (src/ocr.rs).
+[target.'cfg(target_os = "macos")'.dependencies.objc2-vision]
+version = "0.3"
+default-features = false
+features = ["std", "VNRequest", "VNRecognizeTextRequest", "VNRequestHandler", "VNObservation", "VNTypes"]
