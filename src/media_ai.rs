@@ -482,45 +482,17 @@ fn temporary_wav(samples: &[f32]) -> Result<tempfile::NamedTempFile, String> {
     Ok(file)
 }
 
-/// Where a command-line tool is installed. Apps started from the Dock get a
-/// bare PATH, so the usual install folders are tried too.
+/// Where a command-line tool is installed, including the copies Whats Pro
+/// installs itself (src/ai_tools.rs).
 pub fn find_cli(name: &str) -> Option<PathBuf> {
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|path| {
-            std::env::split_paths(&path)
-                .map(|dir| dir.join(name))
-                .collect()
-        })
-        .unwrap_or_default();
-    candidates.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(|dir| Path::new(dir).join(name)));
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        for dir in [
-            ".local/bin",
-            ".npm-global/bin",
-            ".claude/local",
-            ".bun/bin",
-            ".volta/bin",
-        ] {
-            candidates.push(home.join(dir).join(name));
-        }
-    }
-    candidates.into_iter().find(|path| path.is_file())
+    crate::ai_tools::find(name)
 }
 
 fn run_cli(name: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let binary =
         find_cli(name).ok_or_else(|| format!("{name} is not installed on this computer"))?;
-    // The tool may itself be a script that needs node and friends.
-    let mut path = std::env::var_os("PATH").unwrap_or_default();
-    if let Some(dir) = binary.parent() {
-        let mut dirs = vec![
-            dir.to_path_buf(),
-            "/opt/homebrew/bin".into(),
-            "/usr/local/bin".into(),
-        ];
-        dirs.extend(std::env::split_paths(&path));
-        path = std::env::join_paths(dirs).unwrap_or(path);
-    }
+    // The tool may be a script that needs node and friends.
+    let path = crate::ai_tools::path();
     let mut child = std::process::Command::new(&binary)
         .args(args)
         .env("PATH", path)
