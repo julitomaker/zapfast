@@ -947,10 +947,9 @@ mod tests {
         let source = app.dirs.state.join("fixture.wav");
         std::fs::create_dir_all(&app.dirs.state).unwrap();
         std::fs::write(&source, b"RIFF").unwrap();
-        let call = crate::call_library::Library::keep(
+        let call = crate::call_library::Library::keep_for_review(
             &app.dirs.state,
             &source,
-            crate::call_library::Origin::Recorded,
             20,
             "Meeting fixture",
             None,

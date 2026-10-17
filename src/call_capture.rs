@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::app::App;
 use crate::backend::Waker;
-use crate::call_library::{CallAnalysis, Library, Origin};
+use crate::call_library::{CallAnalysis, Library};
 use crate::i18n::{Locale, gettext};
 use crate::model::{Action, CallDirection, Page};
 use crate::ui::projects::CallReader;
@@ -294,10 +294,9 @@ fn file(
     meta: &Meta,
     details: &Details,
 ) -> Result<crate::call_library::Call, String> {
-    let mut call = Library::keep(
+    let mut call = Library::keep_for_review(
         state,
         wav,
-        Origin::Recorded,
         details.seconds,
         &meta.title,
         meta.project.as_deref(),
@@ -478,7 +477,9 @@ fn read(reader: &CallReader, id: &str, waker: &Waker) {
     {
         crate::ui::projects::note_call(reader, project, call, &analysis);
     }
-    // Lead history: added after rebasing onto `Lead::add_call`.
+    if let Some(call) = Library::load(&reader.state).get(id) {
+        lead_note(reader, call, &analysis);
+    }
     done_reading(&reader.state, id);
     finish(
         id,
@@ -486,6 +487,42 @@ fn read(reader: &CallReader, id: &str, waker: &Waker) {
         analysis.map(|analysis: CallAnalysis| analysis.summary),
     );
     waker.wake();
+}
+
+/// A read call updates its one entry in the lead's history on retries.
+fn lead_note(
+    reader: &CallReader,
+    call: &crate::call_library::Call,
+    analysis: &Result<CallAnalysis, String>,
+) {
+    let (Some(lead), Some(transcript)) = (&call.lead, call.transcript()) else {
+        return;
+    };
+    let mut store = crate::leads::Store::open(&reader.config);
+    let Some(lead) = store.get_mut(lead) else {
+        return;
+    };
+    let summary = analysis
+        .as_ref()
+        .map(|analysis| analysis.summary.clone())
+        .unwrap_or_else(|_| {
+            format!(
+                "{}: {}",
+                call.title,
+                transcript.text.chars().take(400).collect::<String>()
+            )
+        });
+    let existing = lead
+        .entries
+        .iter()
+        .find(|entry| entry.call.as_deref() == Some(call.id.as_str()))
+        .map(|entry| entry.id.clone());
+    if let Some(entry) = existing {
+        lead.redo_call(&entry, &summary, &transcript.text);
+    } else {
+        lead.add_call(&summary, &transcript.text, &call.id);
+    }
+    store.save();
 }
 
 fn done_reading(state: &Path, id: &str) {
@@ -601,7 +638,7 @@ pub(crate) fn recover(reader: CallReader, locale: Locale, waker: Waker) {
     }
 }
 
-/// What [`recover`] found, once.
+/// What startup recovery found, once.
 pub fn drain_recovery() -> Option<Recovery> {
     RECOVERY.lock().unwrap_or_else(|p| p.into_inner()).take()
 }
@@ -896,16 +933,7 @@ mod tests {
         };
         let source = directory.path().join("source.wav");
         crashed(&source);
-        let call = Library::keep(
-            &reader.state,
-            &source,
-            Origin::Recorded,
-            1,
-            "Call",
-            None,
-            None,
-        )
-        .unwrap();
+        let call = Library::keep_for_review(&reader.state, &source, 1, "Call", None, None).unwrap();
         Library::update(&reader.state, &call.id, |call| call.pending_read = true).unwrap();
         QUITTING.store(true, Ordering::Relaxed);
         read(&reader, &call.id, &Waker::default());
@@ -917,6 +945,52 @@ mod tests {
                 .unwrap()
                 .pending_read
         );
+    }
+
+    #[test]
+    fn reading_a_call_again_updates_one_lead_history_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let reader = CallReader {
+            engines: crate::media_ai::MediaEngines::default(),
+            state: directory.path().join("state"),
+            config: directory.path().join("config"),
+        };
+        let lead = {
+            let mut store = crate::leads::Store::open(&reader.config);
+            let id = store.add(crate::leads::Lead::new("p", "Fixture", None, None));
+            store.save();
+            id
+        };
+        let mut call: crate::call_library::Call = serde_json::from_value(serde_json::json!({
+            "id": "fixture", "title": "Fixture call", "at": 0, "file": "fixture.wav", "lead": lead,
+        }))
+        .unwrap();
+        call.transcripts.push(crate::call_library::Transcript {
+            engine: "fixture".into(),
+            text: "Fixture transcript".into(),
+            at: 0,
+        });
+        for summary in ["First summary", "Updated summary"] {
+            lead_note(
+                &reader,
+                &call,
+                &Ok(CallAnalysis {
+                    summary: summary.into(),
+                    ..Default::default()
+                }),
+            );
+        }
+        let store = crate::leads::Store::open(&reader.config);
+        let calls: Vec<_> = store
+            .get(&lead)
+            .unwrap()
+            .entries
+            .iter()
+            .filter(|entry| entry.kind == crate::leads::Kind::Call)
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].text, "Updated summary");
+        assert_eq!(calls[0].transcript.as_deref(), Some("Fixture transcript"));
     }
 
     #[test]

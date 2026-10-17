@@ -33,3 +33,5 @@ src/ui/projects.rs
 src/ui/leads.rs
 src/ui/call_review.rs
 src/call_tape.rs
+src/ui/take.rs
+src/note_capture.rs

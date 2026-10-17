@@ -12,7 +12,7 @@ SOURCES = (
     "src/call_capture.rs", "src/call_tape.rs", "src/ui/call.rs",
     "src/ui/call_review.rs", "src/ui/calls.rs", "src/ui/conversation.rs",
     "src/ui/projects.rs", "src/ui/leads.rs", "src/ui/settings.rs",
-    "src/ui/take.rs",
+    "src/ui/take.rs", "src/note_capture.rs",
 )
 
 
@@ -43,7 +43,7 @@ def main():
         subprocess.run([
             "xgettext", "--language=Rust", "--from-code=UTF-8",
             "--keyword=gettext:2", "--keyword=ngettext:2,3", "--keyword=pgettext:2c,3",
-            "--keyword=translated:2", f"--output={template}",
+            f"--output={template}",
             *(source for source in SOURCES if (ROOT / source).is_file()),
         ], cwd=ROOT, check=True)
         translated = {

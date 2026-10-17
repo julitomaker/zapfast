@@ -94,9 +94,6 @@ struct State {
     picked: bool,
     /// The note being written, and a spoken one being recorded or read.
     note: String,
-    recorder: Option<crate::audio::Recorder>,
-    spoken: Arc<Mutex<Option<Result<String, String>>>>,
-    transcribing: bool,
     /// The context being edited, for which project, and a member search.
     context: Option<(String, String)>,
     member_search: String,
@@ -210,9 +207,6 @@ impl Default for State {
             model_search: String::new(),
             picked: false,
             note: String::new(),
-            recorder: None,
-            spoken: Arc::default(),
-            transcribing: false,
             context: None,
             member_search: String::new(),
             pending: None,
@@ -2108,10 +2102,9 @@ fn record_call(
             Err(error) => return set_phase(&job, &ctx, CallPhase::Failed(error)),
         };
         // The file first: kept before anything reads it.
-        let call = match crate::call_library::Library::keep(
+        let call = match crate::call_library::Library::keep_for_review(
             &reader.state,
             &path,
-            crate::call_library::Origin::Recorded,
             seconds,
             &title,
             Some(&project),
@@ -2301,24 +2294,8 @@ fn call_controls(app: &App, ui: &mut egui::Ui, state: &State, project: &Project)
 fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Project) {
     let palette = app.palette;
     let locale = app.locale;
-    // A spoken note comes back as text to review before saving.
-    if let Some(result) = state
-        .spoken
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take()
-    {
-        state.transcribing = false;
-        match result {
-            Ok(text) => {
-                if !state.note.trim().is_empty() {
-                    state.note.push(' ');
-                }
-                state.note.push_str(text.trim());
-            }
-            Err(error) => log::warn!("projects: a spoken note could not be read: {error}"),
-        }
-    }
+    let voice_job = crate::note_capture::job(app, &project.id);
+    let mut voice = voice_job.lock().unwrap_or_else(|p| p.into_inner());
     let mut save = false;
     card_frame(&palette).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -2343,8 +2320,12 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
             (crate::projects::NoteKind::Log, gettext(locale, "What happened").into_owned()),
             (crate::projects::NoteKind::Memo, gettext(locale, "Note to keep").into_owned()),
         ];
-        if let Some(kind) = segmented(ui, &palette, &options, state.note_kind) {
+        let note_kind = voice.pending.as_ref().map_or(state.note_kind, |take| take.kind);
+        if let Some(kind) = segmented(ui, &palette, &options, note_kind) {
             state.note_kind = kind;
+            if let Some(take) = voice.pending.as_mut() {
+                take.kind = kind;
+            }
         }
         ui.add_space(4.0);
         Frame::new()
@@ -2365,7 +2346,7 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            if let Some(recorder) = &state.recorder {
+            if let Some(recorder) = &voice.recorder {
                 let seconds = recorder.elapsed().as_secs();
                 ui.painter().circle_filled(
                     ui.cursor().left_center() + vec2(6.0, 0.0),
@@ -2380,35 +2361,14 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
                     palette.text,
                 );
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-                if pill_button(ui, &palette, gettext(locale, "Stop").as_ref(), true).clicked()
-                    && let Some(recorder) = state.recorder.take()
-                {
-                    match recorder.finish() {
-                        Ok(samples) => {
-                            state.transcribing = true;
-                            let wav = crate::projects::wav(&samples, 48_000);
-                            let engines = app.settings.media_engines.clone();
-                            let slot = state.spoken.clone();
-                            let ctx = ui.ctx().clone();
-                            let state_dir = app.dirs.state.clone();
-                            std::thread::spawn(move || {
-                                let file = std::env::temp_dir()
-                                    .join(format!("whatspro-note-{}.wav", std::process::id()));
-                                let result = std::fs::write(&file, wav)
-                                    .map_err(|e| e.to_string())
-                                    .and_then(|()| crate::media_ai::speech(&engines, &state_dir, &file));
-                                let _ = std::fs::remove_file(&file);
-                                *slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
-                                ctx.request_repaint();
-                            });
-                        }
-                        Err(error) => log::warn!("projects: recording failed: {error}"),
-                    }
+                if pill_button(ui, &palette, gettext(locale, "Stop").as_ref(), true).clicked() {
+                    crate::note_capture::stop(&voice_job, &mut voice, ui.ctx());
                 }
-            } else if state.transcribing {
+            } else if voice.busy {
                 ui.add(egui::Spinner::new().size(16.0).color(palette.accent));
-                theme::text(ui, gettext(locale, "Transcribing…"), theme::regular(13.0), palette.secondary);
-            } else if theme::icon_button(
+                let label = if voice.pending.is_some() { gettext(locale, "Transcribing…") } else { gettext(locale, "Saving recording…") };
+                theme::text(ui, label, theme::regular(13.0), palette.secondary);
+            } else if voice.pending.is_none() && theme::icon_button(
                 ui,
                 Icon::Mic,
                 18.0,
@@ -2418,9 +2378,10 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
             )
             .clicked()
             {
-                state.recorder = Some(crate::audio::Recorder::start(crate::backend::Waker::default()));
+                let title = gettext(locale, "Voice note of {date}").replace("{date}", &crate::util::moment_stamp(locale, crate::util::now()));
+                crate::note_capture::start(&mut voice, app, state.note_kind, title);
             }
-            if state.recorder.is_none() && !state.transcribing {
+            if voice.recorder.is_none() && !voice.busy {
                 call_controls(app, ui, state, project);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2439,6 +2400,23 @@ fn note_card(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Proj
                 }
             });
         });
+        if !voice.busy && let Some(pending) = voice.pending.as_mut() {
+            ui.add_space(8.0);
+            ui.add(egui::TextEdit::singleline(&mut pending.title).font(theme::medium(14.0)).desired_width(f32::INFINITY));
+            let mut take = super::take::Take::new(pending.path.clone(), pending.seconds);
+            take.confirming = voice.confirming;
+            let choice = super::take::card(app, ui, &mut take, &gettext(locale, "Save and transcribe"));
+            voice.confirming = take.confirming;
+            if let Some(choice) = choice {
+                crate::note_capture::decide(&voice_job, &mut voice, app, ui.ctx(), choice == super::take::Choice::Keep);
+            }
+        }
+        if let Some(error) = &voice.error {
+            theme::paragraph(ui, error, theme::regular(13.0), palette.danger);
+        }
+        if voice.saved.is_some_and(|at| at.elapsed().as_secs() < 8) {
+            theme::text(ui, gettext(locale, "Note saved"), theme::regular(13.0), palette.accent);
+        }
     });
     if save {
         let mut journal = Journal::load(&app.dirs.config, &project.id);

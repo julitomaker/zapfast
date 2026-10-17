@@ -44,6 +44,7 @@ pub mod mentions;
 pub mod model;
 pub mod motion;
 pub mod nav;
+mod note_capture;
 pub mod notify;
 pub mod ocr;
 pub mod opener;

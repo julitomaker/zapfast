@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use egui::{Align, Layout, Sense, vec2};
+use egui::{Sense, vec2};
 
 use crate::app::App;
 use crate::audio::State as Playback;
@@ -60,7 +60,7 @@ fn clip(take: &Take) -> String {
 }
 
 fn clock(seconds: u64) -> String {
-    format!("{}:{:02}", seconds / 60, seconds % 60)
+    crate::util::call_duration(seconds)
 }
 
 /// The card: a play button with the time, the save action (`keep`) and
@@ -69,6 +69,11 @@ fn clock(seconds: u64) -> String {
 pub fn card(app: &mut App, ui: &mut egui::Ui, take: &mut Take, keep: &str) -> Option<Choice> {
     let palette = app.palette;
     let locale = app.locale;
+    let keep = if keep == gettext(locale, "Transcribe") {
+        gettext(locale, "Save and transcribe")
+    } else {
+        std::borrow::Cow::Borrowed(keep)
+    };
     let id = clip(take);
     let status = app.player.status(&id);
     let mut choice = None;
@@ -115,34 +120,36 @@ pub fn card(app: &mut App, ui: &mut egui::Ui, take: &mut Take, keep: &str) -> Op
                 );
             });
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                if take.confirming {
-                    theme::text(
-                        ui,
-                        gettext(locale, "Discard this recording?"),
-                        theme::medium(13.0),
-                        palette.danger,
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if pill(ui, &palette, &gettext(locale, "Yes, discard"), Pill::Danger)
-                            .clicked()
-                        {
-                            choice = Some(Choice::Discard);
-                        }
-                        if pill(ui, &palette, &gettext(locale, "Cancel"), Pill::Plain).clicked() {
-                            take.confirming = false;
-                        }
-                    });
-                } else {
-                    if pill(ui, &palette, keep, Pill::Primary).clicked() {
+            if take.confirming {
+                theme::paragraph(
+                    ui,
+                    gettext(
+                        locale,
+                        "Discard the recording? The audio is deleted and nothing is kept.",
+                    ),
+                    theme::medium(13.0),
+                    palette.danger,
+                );
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if pill(ui, &palette, &gettext(locale, "Discard"), Pill::Danger).clicked() {
+                        choice = Some(Choice::Discard);
+                    }
+                    if pill(ui, &palette, &gettext(locale, "Back"), Pill::Plain).clicked() {
+                        take.confirming = false;
+                    }
+                });
+            } else {
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    if pill(ui, &palette, &keep, Pill::Primary).clicked() {
                         choice = Some(Choice::Keep);
                     }
                     if pill(ui, &palette, &gettext(locale, "Discard"), Pill::Plain).clicked() {
                         take.confirming = true;
                     }
-                }
-            });
+                });
+            }
         });
     if choice.is_some() && !matches!(status.state, Playback::Idle) {
         // Its playback ends with it.
@@ -169,6 +176,9 @@ fn pill(ui: &mut egui::Ui, palette: &theme::Palette, label: &str, kind: Pill) ->
     let width = (galley.size().x + 24.0).max(64.0);
     let (rect, response) = ui.allocate_exact_size(vec2(width, 30.0), Sense::click());
     theme::reveal_focus(&response);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
     let hovered = response.hovered();
     let (fill, text) = match kind {
         Pill::Primary if hovered => (palette.accent_hover, palette.on_accent),

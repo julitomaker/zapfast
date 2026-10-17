@@ -7,7 +7,7 @@
 //!
 //! The two pumps that feed a [`Tape`] run on the call's own tasks, so handing a frame over never
 //! blocks: it is queued for a writer thread, and dropped if that queue is full. The writer lines
-//! the two sides up by the wall clock (see [`Timeline`]), so a gap on one side becomes silence on
+//! the two sides up by the wall clock (the internal `Timeline`), so a gap on one side becomes silence on
 //! that side instead of shifting the other.
 //!
 //! The file is written as `<path>.part` and renamed when the recording stops. Its header is

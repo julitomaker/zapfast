@@ -4326,20 +4326,13 @@ pub fn call_sample(app: &mut App, incoming: bool, video: bool) {
 
 /// Synthetic recording for the review sheet and the library's empty-log case.
 fn recorded_call_sample(app: &mut App, pending: bool) {
-    use crate::call_library::{CallAnalysis, Commitment, Library, Origin, Transcript};
+    use crate::call_library::{CallAnalysis, Commitment, Library, Transcript};
     std::fs::create_dir_all(&app.dirs.state).unwrap();
     let source = app.dirs.state.join("demo-recording.wav");
     std::fs::write(&source, crate::projects::wav(&[0.0; 480], 48_000)).unwrap();
-    let call = Library::keep(
-        &app.dirs.state,
-        &source,
-        Origin::Recorded,
-        1_380,
-        "Call with Ada",
-        None,
-        None,
-    )
-    .unwrap();
+    let call =
+        Library::keep_for_review(&app.dirs.state, &source, 1_380, "Call with Ada", None, None)
+            .unwrap();
     Library::update(&app.dirs.state, &call.id, |call| {
         call.account = Some(app.account().id.to_string());
         call.chat = Some(SAMPLES[0].id.into());

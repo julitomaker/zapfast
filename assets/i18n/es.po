@@ -5073,3 +5073,12 @@ msgstr "Acordamos:"
 
 msgid "Next steps:"
 msgstr "Próximos pasos:"
+
+msgid "Voice note of {date}"
+msgstr "Nota de voz del {date}"
+
+msgid "Note saved"
+msgstr "Nota guardada"
+
+msgid "Saving recording…"
+msgstr "Guardando grabación…"

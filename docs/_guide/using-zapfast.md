@@ -440,7 +440,10 @@ after saving. Closing the sheet keeps the audio waiting under **Calls >
 Recorded**, marked **Not reviewed**, and in its project's calls. Recordings
 interrupted by a crash are recovered for review on the next launch. Projects'
 **Record a call** captures a meeting's microphone and computer sound through
-macOS Screen Recording permission and uses the same review step.
+macOS Screen Recording permission and uses the same review step. A microphone
+note in Notes also waits for a title and **Save and transcribe** or **Discard**.
+Saving transcribes it into the project's journal; pending notes return to that
+project after a restart.
 
 A reviewed recording shows its summary, decisions, commitments, tasks, next
 steps and transcript. **Send summary to chat** prepares a draft that you can

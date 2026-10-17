@@ -21,6 +21,7 @@ On Linux:
 | Wallpaper image | `~/.local/state/zapfast/accounts/<id>/wallpaper.jpg` | Copy of the chosen picture (or `.png`, `.webp`, `.gif`) |
 | Attachments, avatars | `~/.cache/zapfast/accounts/<id>/` | Safe to delete; available files download again when viewed |
 | Recordings in progress | `<state>/recordings/` | Stereo call WAVs, `.part` files and `.json` recovery context; recovered after an interrupted run |
+| Pending spoken notes | `<state>/note-takes/` | Microphone-note WAVs and review metadata; return to the project's Notes to save and transcribe or discard |
 | Kept calls | `<state>/calls/` | Audio and `calls.json`: titles, projects, pending reviews, transcripts and summaries; delete recordings from their review sheet |
 | Last run's log | `~/.local/state/zapfast/zapfast.log` | `--verbose` for more |
 | Crash log | `~/.local/state/zapfast/panic.log` | Safe to delete |

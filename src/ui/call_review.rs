@@ -101,7 +101,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             header(app, ui, call, &mut sheet, &mut actions);
             egui::ScrollArea::vertical()
                 .id_salt(("recorded-call-body", &call.id))
-                .max_height((screen.height() - 220.0).max(160.0))
+                .max_height((screen.height() - 320.0).max(80.0))
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
@@ -359,8 +359,6 @@ pub enum Mark {
     NoNotice,
     /// The other side stayed silent the whole call.
     OneSide,
-    /// Longer than the hour a transcript covers.
-    FirstHour,
     /// Rescued from a recording a quit or a crash left behind.
     Recovered,
 }
@@ -380,10 +378,6 @@ impl Mark {
             Self::OneSide => (
                 gettext(locale, "Only one side is heard").into_owned(),
                 palette.warning,
-            ),
-            Self::FirstHour => (
-                gettext(locale, "Only the first hour was transcribed").into_owned(),
-                palette.secondary,
             ),
             Self::Recovered => (
                 gettext(locale, "Recovered after the app closed").into_owned(),
@@ -408,9 +402,6 @@ pub fn marks(call: &Call) -> Vec<Mark> {
         if call.levels.is_some_and(|levels| levels[1] < HEARD) {
             marks.push(Mark::OneSide);
         }
-    }
-    if call.seconds > 3600 && call.transcript().is_some() {
-        marks.push(Mark::FirstHour);
     }
     if call.recovered {
         marks.push(Mark::Recovered);
@@ -746,12 +737,7 @@ mod tests {
         });
         assert_eq!(
             marks(&heard),
-            [
-                Mark::NoNotice,
-                Mark::OneSide,
-                Mark::FirstHour,
-                Mark::Recovered
-            ]
+            [Mark::NoNotice, Mark::OneSide, Mark::Recovered]
         );
         // A recording of the computer's sound knows nothing of its sides.
         let mut plain = call();

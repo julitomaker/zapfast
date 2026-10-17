@@ -586,7 +586,7 @@ impl App {
             self.set_call_fullscreen(ctx, false);
         }
         self.sync_call_tone();
-        self.announce_recorded_calls();
+        self.announce_recorded_calls(ctx);
         if let Some(until) = self.call_surface_until {
             // The farewell goes on time even with nothing else to draw.
             ctx.request_repaint_after(until.saturating_duration_since(now));
@@ -1022,7 +1022,7 @@ impl App {
 
     /// Says what happened to recorded calls being read, and what the launch
     /// rescued.
-    fn announce_recorded_calls(&mut self) {
+    fn announce_recorded_calls(&mut self, ctx: &egui::Context) {
         let locale = self.locale;
         for id in crate::ui::projects::drain_recordings() {
             self.recorded_call_open = Some(id.clone());
@@ -1033,6 +1033,12 @@ impl App {
             );
         }
         for finished in crate::call_capture::drain_finished() {
+            if crate::call_library::Library::cached(&self.dirs.state)
+                .get(&finished.id)
+                .is_some_and(|call| call.lead.is_some() && call.transcript().is_some())
+            {
+                crate::eleva::push(ctx, &self.dirs.config);
+            }
             match finished.outcome {
                 Ok(_) => self.toast_with(
                     crate::i18n::gettext(locale, "Summary ready: {title}")

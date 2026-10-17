@@ -9571,6 +9571,7 @@ impl App {
         // No new read starts; one cut short is read on the next launch.
         crate::call_capture::quitting();
         crate::ui::projects::stop_call_recorder();
+        crate::note_capture::shutdown();
         crate::transcribe::unload();
         self.call_tones.set(None);
         self.save_state();

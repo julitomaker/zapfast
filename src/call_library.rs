@@ -398,7 +398,6 @@ impl Library {
     /// Keeps the audio at `source` in the library, moved (a recording made
     /// here) or copied (a file the person added, which stays where it is),
     /// and records it. Saved at once, before anything reads it.
-    #[allow(clippy::too_many_arguments)]
     pub fn keep(
         state: &Path,
         source: &Path,
@@ -408,6 +407,47 @@ impl Library {
         project: Option<&str>,
         lead: Option<&str>,
     ) -> Result<Call, String> {
+        Self::keep_with_review(
+            state,
+            source,
+            (origin, false),
+            seconds,
+            title,
+            project,
+            lead,
+        )
+    }
+
+    /// Keeps a new recording pending the person's save or discard decision.
+    pub fn keep_for_review(
+        state: &Path,
+        source: &Path,
+        seconds: u64,
+        title: &str,
+        project: Option<&str>,
+        lead: Option<&str>,
+    ) -> Result<Call, String> {
+        Self::keep_with_review(
+            state,
+            source,
+            (Origin::Recorded, true),
+            seconds,
+            title,
+            project,
+            lead,
+        )
+    }
+
+    fn keep_with_review(
+        state: &Path,
+        source: &Path,
+        origin: (Origin, bool),
+        seconds: u64,
+        title: &str,
+        project: Option<&str>,
+        lead: Option<&str>,
+    ) -> Result<Call, String> {
+        let (origin, pending_review) = origin;
         let dir = Self::dir(state);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let _held = lock();
@@ -457,7 +497,7 @@ impl Library {
             stereo: false,
             recovered: false,
             pending_read: false,
-            pending_review: origin == Origin::Recorded,
+            pending_review,
         };
         library.calls.push(call.clone());
         library.save(state).map_err(|e| e.to_string())?;
@@ -628,7 +668,7 @@ mod tests {
     fn kept(state: &Path, title: &str, change: impl FnOnce(&mut Call)) -> Call {
         let source = state.join(format!("{title}.wav"));
         std::fs::write(&source, b"RIFF").unwrap();
-        let call = Library::keep(state, &source, Origin::Recorded, 1, title, None, None).unwrap();
+        let call = Library::keep_for_review(state, &source, 1, title, None, None).unwrap();
         Library::update(state, &call.id, change).unwrap();
         Library::load(state).get(&call.id).cloned().unwrap()
     }
@@ -739,6 +779,24 @@ mod tests {
         assert!(library.of_chat("a2", chat).is_empty());
         assert_eq!(library.recorded().len(), 3);
         assert_eq!(library.recorded()[0].id, later.id);
+    }
+
+    #[test]
+    fn keeping_an_already_reviewed_lead_call_does_not_ask_again() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("fixture.wav");
+        std::fs::write(&source, b"RIFF").unwrap();
+        let call = Library::keep(
+            root.path(),
+            &source,
+            Origin::Recorded,
+            20,
+            "Lead fixture",
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(!call.pending_review);
     }
 
     #[test]
