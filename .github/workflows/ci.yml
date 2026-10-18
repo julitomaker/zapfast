@@ -124,7 +124,9 @@ jobs:
           name: macos-preview
           path: ${{ runner.temp }}/zapfast-*.png
 
+  # Off: whisper.cpp does not build for aarch64-pc-windows-msvc.
   windows-arm64:
+    if: false
     name: compile (Windows arm64)
     runs-on: windows-latest
     timeout-minutes: 40

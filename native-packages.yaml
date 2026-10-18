@@ -110,16 +110,6 @@ targets:
     native:
       command: [ruby, packaging/windows/msi.rb, '@PAYLOAD@', '@PACKAGE@', '@VERSION@']
       output: 'zapfast-@TAG@-x86_64-pc-windows-msvc.msi'
-  windows-arm64:
-    platform: windows
-    arch: arm64
-    formats: [msi]
-    input:
-      kind: directory
-      local: dist/windows-input-aarch64-pc-windows-msvc
-    native:
-      command: [ruby, packaging/windows/msi.rb, '@PAYLOAD@', '@PACKAGE@', '@VERSION@']
-      output: 'zapfast-@TAG@-aarch64-pc-windows-msvc.msi'
   linux-amd64:
     platform: linux
     arch: amd64
