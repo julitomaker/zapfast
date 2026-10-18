@@ -1752,7 +1752,7 @@ msgstr "Llamada entrante"
 #: src/ui/widgets.rs:886
 #, rust-format
 msgid "Built with love by {name}"
-msgstr "Hecho con amor por {name}"
+msgstr "Hecho con cariño por {name}"
 
 #: src/ui/message_info.rs:44
 msgid "This message is no longer available."
@@ -5204,6 +5204,3 @@ msgstr "hace {count} d"
 msgid "Connected with {client}."
 msgstr "Conectado con {client}."
 
-
-msgid "Made with love by JulitoMaker"
-msgstr "Hecho con cariño por JulitoMaker"

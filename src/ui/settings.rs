@@ -2026,12 +2026,6 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
                 theme::regular(13.0),
                 palette.secondary,
             );
-            theme::text(
-                ui,
-                crate::i18n::gettext(app.locale, "Made with love by JulitoMaker"),
-                theme::medium(13.0),
-                palette.accent,
-            );
         });
     });
     ui.add_space(12.0);
