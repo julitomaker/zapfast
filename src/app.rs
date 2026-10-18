@@ -14984,14 +14984,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "self-update is off in this fork (updates::ENABLED)"]
     fn automatic_updates_require_opt_in_and_explicit_restart() {
         use crate::updates::{DownloadState, Installation, Kind, Prepared};
         let mut app = app();
         let ctx = egui::Context::default();
         app.update = Some(crate::updates::Release {
             version: "99.0.0".into(),
-            url: "https://github.com/crmne/zapfast/releases/latest".into(),
+            url: "https://github.com/julitomaker/zapfast/releases/latest".into(),
         });
         app.update_support = Some(Err("Use your package manager".into()));
         app.settings.download_updates_automatically = true;

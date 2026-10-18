@@ -5204,3 +5204,6 @@ msgstr "hace {count} d"
 msgid "Connected with {client}."
 msgstr "Conectado con {client}."
 
+
+msgid "Made with love by JulitoMaker"
+msgstr "Hecho con cariño por JulitoMaker"

@@ -11,9 +11,9 @@ pub use fastframe_update::{
 };
 use fastframe_update::{MacConfig, ReqwestTransport, UpdateConfig};
 
-/// This is a fork built from source: an upstream release would replace it, so
-/// it never checks for or downloads updates. Pull upstream changes with git.
-pub const ENABLED: bool = false;
+/// Whats Pro updates itself from its own releases (julitomaker/zapfast),
+/// signed with its own key, never from upstream ZapFast's.
+pub const ENABLED: bool = true;
 
 /// Whats Pro's releases and the names its installations have had.
 pub const CONFIG: UpdateConfig = UpdateConfig {
@@ -22,16 +22,15 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     // release produces.
     legacy_names: &["fastsapp"],
     macos: MacConfig {
-        bundle_ids: &["me.paolino.fastsapp"],
+        bundle_ids: &["com.julitomaker.zapfast"],
         executable_names: &[],
-        legacy_bundle_names: &["FastsApp.app"],
+        legacy_bundle_names: &["ZapFast.app", "FastsApp.app"],
     },
     publisher_key: Some(include_str!("../assets/update-public-key.hex")),
-    // The next release key, backed up outside GitHub. Releases stay signed
-    // with the current key until installs trust this one too.
-    additional_publisher_keys: &[include_str!("../assets/update-public-key-next.hex")],
+    // Whats Pro's own key; its private half never enters the repository.
+    additional_publisher_keys: &[],
     ..UpdateConfig::new(
-        "crmne/zapfast",
+        "julitomaker/zapfast",
         "Whats Pro",
         "zapfast",
         env!("CARGO_PKG_VERSION"),

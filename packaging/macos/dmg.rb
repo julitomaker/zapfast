@@ -6,7 +6,7 @@ require "fileutils"
 require "tmpdir"
 
 payload, output = ARGV
-abort "usage: dmg.rb PAYLOAD OUTPUT.dmg (e.g. whatspro-v<version>-macos-universal.dmg)" unless payload && output
+abort "usage: dmg.rb PAYLOAD OUTPUT.dmg (e.g. zapfast-v<version>-macos-universal.dmg)" unless payload && output
 abort "output already exists: #{output}" if File.exist?(output)
 Dir.mktmpdir("whatspro-dmg-") do |directory|
   FileUtils.cp_r(File.join(payload, "."), directory, preserve: true)

@@ -1,6 +1,6 @@
 # Update signatures
 
-ZapFast verifies `checksums.txt.sig`, a raw 64-byte Ed25519 signature over the
+Whats Pro verifies `checksums.txt.sig`, a raw 64-byte Ed25519 signature over the
 exact bytes of `checksums.txt`, before parsing checksums or downloading a package.
 The trusted 32-byte public key is embedded from `assets/update-public-key.hex`
 as the `publisher_key` of ZapFast's configuration for
@@ -52,3 +52,12 @@ trusted installation. Older clients that only checked hashes do not gain
 signature protection until upgraded. This is separate from Apple notarization
 and Windows Authenticode. CI-held signing also remains dependent on GitHub and
 the protected workflow, unlike a genuinely offline signing authority.
+
+## Whats Pro
+
+Whats Pro (julitomaker/zapfast) has its own key, separate from upstream ZapFast's.
+Its private half lives only in
+`~/Library/Application Support/me.paolino.zapfast-julito/release-signing/whatspro-update-key.pem`
+on the publisher's Mac and in the `ZAPFAST_UPDATE_SIGNING_KEY` secret of this
+repository's `release-signing` environment. `assets/update-public-key.hex` is
+its public half. Releases are prepared with `packaging/release-whatspro.sh`.

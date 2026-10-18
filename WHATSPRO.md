@@ -191,3 +191,37 @@ contenido de las respuestas ni de los mensajes).
   va lo que anotás en un lead vinculado y los pedidos para leer la bandeja de
   su marca; los mensajes del chat no se mandan, salvo el resumen que vos
   pedís.
+
+## Instalar en otra computadora y actualizaciones
+
+Las versiones se publican en
+[github.com/julitomaker/zapfast/releases](https://github.com/julitomaker/zapfast/releases).
+
+- **Mac (Apple Silicon e Intel):** bajá `zapfast-v<versión>-macos-universal.dmg`,
+  abrilo y arrastrá **Whats Pro** a Aplicaciones. La primera vez, macOS avisa
+  que no puede verificar al desarrollador: hacé clic derecho en Whats Pro →
+  **Abrir** → **Abrir**, o andá a Ajustes del Sistema → Privacidad y seguridad
+  → **Abrir igualmente**.
+- **Windows (x64 o ARM):** bajá el `-setup.exe` de tu procesador
+  (`x86_64` en la mayoría de las PCs, `aarch64` en las ARM). Si aparece
+  SmartScreen: **Más información** → **Ejecutar de todas formas**.
+
+**Actualizaciones:** Whats Pro se fija una vez por día si hay una versión
+nueva (Ajustes → Buscar actualizaciones). La baja, comprueba la firma de
+JulitoMaker y te pide reiniciar para instalarla. Una actualización que no está
+firmada con la clave de Whats Pro nunca se instala.
+
+**Publicar una versión (JulitoMaker):**
+
+```bash
+packaging/release-whatspro.sh 0.20.0 "Qué cambia en esta versión"
+git push origin main v0.20.0
+```
+
+GitHub arma los instaladores de Mac y Windows, firma las actualizaciones y
+publica la versión; en cuanto aparece, las apps instaladas la ofrecen. La
+clave privada de firma está en
+`~/Library/Application Support/me.paolino.zapfast-julito/release-signing/` y,
+para GitHub, en el secreto `ZAPFAST_UPDATE_SIGNING_KEY` del entorno
+`release-signing`. Guardá una copia en un lugar seguro: sin ella no se pueden
+firmar más actualizaciones.
