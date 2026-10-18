@@ -72,15 +72,42 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         theme::semibold(14.0),
         palette.text,
     );
-    for engine in [
-        SpeechEngine::Local,
-        SpeechEngine::Groq,
-        SpeechEngine::OpenAi,
-        SpeechEngine::Gemini,
+    // Each way, in plain words: what it costs, where the audio goes, and
+    // what it needs. The subscriptions do not transcribe: neither Claude's
+    // nor ChatGPT's apps take audio, so they only read pictures (below).
+    for (engine, pitch) in [
+        (
+            SpeechEngine::Local,
+            t(
+                "Free and private: the audio never leaves this computer. Downloads Whisper once (about 550 MB).",
+            ),
+        ),
+        (
+            SpeechEngine::Gemini,
+            t("Free with your Google account: create a key in a minute. The audio goes to Google."),
+        ),
+        (
+            SpeechEngine::Groq,
+            t(
+                "Very fast and free up to a daily limit, with a Groq account. The audio goes to Groq.",
+            ),
+        ),
+        (
+            SpeechEngine::OpenAi,
+            t(
+                "The best for accents and noise. Paid per use with an OpenAI API key (ChatGPT Plus does not include it).",
+            ),
+        ),
     ] {
         let mut label = t(engine.label());
         if engine == state.advice.speech {
             label = format!("{label} · {}", t("suggested"));
+        }
+        let saved = engine
+            .key_account()
+            .is_some_and(|account| crate::keys::get(account).is_some());
+        if saved {
+            label = format!("{label} · {}", t("key already saved"));
         }
         ui.radio_value(
             &mut state.engines.speech,
@@ -89,8 +116,15 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .font(theme::regular(13.5))
                 .color(palette.text),
         );
+        ui.indent(("speech-pitch", engine.label()), |ui| {
+            ui.label(small(&pitch, palette.dim));
+        });
     }
     ui.label(small(&t(state.advice.speech_reason), palette.secondary));
+    ui.label(small(
+        &t("Claude and ChatGPT subscriptions cannot transcribe audio: their apps do not take it. They can read your pictures, below, and analyze your projects."),
+        palette.dim,
+    ));
     if let Some(account) = state.engines.speech.key_account() {
         let saved = crate::keys::get(account).is_some();
         let hint = if saved {
@@ -105,6 +139,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 .font(theme::regular(13.0))
                 .desired_width(f32::INFINITY),
         );
+        let (get, url) = match state.engines.speech {
+            SpeechEngine::Gemini => (
+                t("Get a free key at Google AI Studio"),
+                "https://aistudio.google.com/apikey",
+            ),
+            SpeechEngine::Groq => (t("Get a free key at Groq"), "https://console.groq.com/keys"),
+            _ => (
+                t("Get a key at OpenAI"),
+                "https://platform.openai.com/api-keys",
+            ),
+        };
+        if theme::link(ui, get, theme::regular(12.5), palette.link).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+        }
+        if state.engines.speech != SpeechEngine::Groq {
+            ui.label(small(
+                &t("The same key is used for the project analysis, and it is kept in the macOS Keychain."),
+                palette.dim,
+            ));
+        }
     }
     ui.add_space(6.0);
 

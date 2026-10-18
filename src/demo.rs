@@ -2886,6 +2886,11 @@ pub fn apply_flags(app: &mut App, page: Option<&str>) {
                 app.location_draft = "-23.5505, -46.6333".into();
             }
             "shortcuts" => app.dialog = Some(Dialog::Shortcuts),
+            // The first-run choice of who transcribes and reads pictures.
+            "media-setup" => {
+                app.media_setup = Some(crate::ui::media_setup::State::new(&app.dirs.state));
+                app.dialog = Some(Dialog::MediaSetup);
+            }
             "about" => app.dialog = Some(Dialog::About),
             "failed" => {
                 // The newest outgoing message in the open chat failed to send.

@@ -5204,3 +5204,45 @@ msgstr "hace {count} d"
 msgid "Connected with {client}."
 msgstr "Conectado con {client}."
 
+
+msgid "There is not enough free disk for the local model (about 2 GB). Gemini transcribes in the cloud, free with your Google account."
+msgstr "No hay lugar libre para el modelo local (unos 2 GB). Gemini transcribe en la nube, gratis con tu cuenta de Google."
+
+msgid "With less than 8 GB of memory the local model would slow your Mac down. Gemini transcribes in the cloud, free with your Google account."
+msgstr "Con menos de 8 GB de memoria, el modelo local haría lenta tu Mac. Gemini transcribe en la nube, gratis con tu cuenta de Google."
+
+msgid "On this Intel Mac the local model would be slow. Gemini transcribes in the cloud in seconds, free with your Google account."
+msgstr "En esta Mac Intel el modelo local sería lento. Gemini transcribe en la nube en segundos, gratis con tu cuenta de Google."
+
+msgid "Your Intel Mac can run Whisper on its processor, free and private, though slower than on an Apple chip. If it feels slow, switch to Gemini."
+msgstr "Tu Mac Intel puede correr Whisper en su procesador, gratis y privado, aunque más lento que con un chip de Apple. Si la notás lenta, pasate a Gemini."
+
+msgid "Free and private: the audio never leaves this computer. Downloads Whisper once (about 550 MB)."
+msgstr "Gratis y privado: el audio nunca sale de esta compu. Baja Whisper una sola vez (unos 550 MB)."
+
+msgid "Free with your Google account: create a key in a minute. The audio goes to Google."
+msgstr "Gratis con tu cuenta de Google: creás una clave en un minuto. El audio va a Google."
+
+msgid "Very fast and free up to a daily limit, with a Groq account. The audio goes to Groq."
+msgstr "Muy rápido y gratis hasta un límite por día, con una cuenta de Groq. El audio va a Groq."
+
+msgid "The best for accents and noise. Paid per use with an OpenAI API key (ChatGPT Plus does not include it)."
+msgstr "El mejor con acentos y ruido. Se paga por uso con una API key de OpenAI (ChatGPT Plus no la incluye)."
+
+msgid "key already saved"
+msgstr "clave ya guardada"
+
+msgid "Claude and ChatGPT subscriptions cannot transcribe audio: their apps do not take it. They can read your pictures, below, and analyze your projects."
+msgstr "Las suscripciones de Claude y ChatGPT no transcriben audio: sus apps no lo aceptan. Sí pueden leer tus fotos (abajo) y analizar tus proyectos."
+
+msgid "Get a free key at Google AI Studio"
+msgstr "Conseguí una clave gratis en Google AI Studio"
+
+msgid "Get a free key at Groq"
+msgstr "Conseguí una clave gratis en Groq"
+
+msgid "Get a key at OpenAI"
+msgstr "Conseguí una clave en OpenAI"
+
+msgid "The same key is used for the project analysis, and it is kept in the macOS Keychain."
+msgstr "La misma clave sirve para el análisis de proyectos y queda guardada en el llavero de macOS."

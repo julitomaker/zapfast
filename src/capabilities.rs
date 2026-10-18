@@ -83,8 +83,8 @@ pub struct Advice {
 pub fn advise(machine: &Machine) -> Advice {
     let (speech, speech_reason) = if !machine.room_for_model() {
         (
-            SpeechEngine::Groq,
-            "There is not enough free disk for the local model (about 2 GB). Groq transcribes in the cloud, fast and cheap.",
+            SpeechEngine::Gemini,
+            "There is not enough free disk for the local model (about 2 GB). Gemini transcribes in the cloud, free with your Google account.",
         )
     } else if machine.apple_silicon && machine.memory_gb >= 8 {
         (
@@ -93,18 +93,18 @@ pub fn advise(machine: &Machine) -> Advice {
         )
     } else if machine.apple_silicon {
         (
-            SpeechEngine::Groq,
-            "With less than 8 GB of memory the local model would slow your Mac down. Groq transcribes in the cloud, fast and cheap.",
+            SpeechEngine::Gemini,
+            "With less than 8 GB of memory the local model would slow your Mac down. Gemini transcribes in the cloud, free with your Google account.",
         )
     } else if machine.cores >= 8 && machine.memory_gb >= 16 {
         (
             SpeechEngine::Local,
-            "Your Intel Mac can run Whisper on its processor, free and private, though slower than on an Apple chip. If it feels slow, switch to Groq.",
+            "Your Intel Mac can run Whisper on its processor, free and private, though slower than on an Apple chip. If it feels slow, switch to Gemini.",
         )
     } else {
         (
-            SpeechEngine::Groq,
-            "On this Intel Mac the local model would be slow. Groq transcribes in the cloud in seconds, for a few cents.",
+            SpeechEngine::Gemini,
+            "On this Intel Mac the local model would be slow. Gemini transcribes in the cloud in seconds, free with your Google account.",
         )
     };
     let (image, image_reason) = match machine.clis.first() {
@@ -174,9 +174,18 @@ mod tests {
 
     #[test]
     fn small_or_old_or_full_machines_go_to_an_api() {
-        assert_eq!(advise(&machine(true, 4, 8, 50)).speech, SpeechEngine::Groq);
-        assert_eq!(advise(&machine(false, 8, 4, 50)).speech, SpeechEngine::Groq);
-        assert_eq!(advise(&machine(true, 16, 10, 1)).speech, SpeechEngine::Groq);
+        assert_eq!(
+            advise(&machine(true, 4, 8, 50)).speech,
+            SpeechEngine::Gemini
+        );
+        assert_eq!(
+            advise(&machine(false, 8, 4, 50)).speech,
+            SpeechEngine::Gemini
+        );
+        assert_eq!(
+            advise(&machine(true, 16, 10, 1)).speech,
+            SpeechEngine::Gemini
+        );
         assert_eq!(
             advise(&machine(false, 32, 12, 50)).speech,
             SpeechEngine::Local
