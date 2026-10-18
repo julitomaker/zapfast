@@ -116,6 +116,63 @@ una clave de API de la marca: con un token de edición, **Crear una clave para
 Whats Pro** la genera y la guarda en el llavero; si no, se puede pegar una
 (`eleva_…`, ElevaLeads → Integraciones).
 
+## 5. Conectar con IA (MCP)
+
+Whats Pro incluye un servidor MCP (*Model Context Protocol*) de **solo lectura**
+(`<binario> mcp`) para que Claude Desktop, Claude Code, Codex, Antigravity,
+Gemini CLI o cualquier otro cliente MCP puedan consultar tus chats, proyectos,
+llamadas y leads directamente desde tu computadora.
+
+### Cómo conectar cada cliente
+
+En **Ajustes → Conectar con IA** tenés un botón **Conectar** para cada
+herramienta instalada:
+
+- **Claude Desktop**: agrega `whats-pro` en
+  `~/Library/Application Support/Claude/claude_desktop_config.json` (guarda una
+  copia `.bak`). Cerrá y volvé a abrir Claude Desktop después de conectar.
+- **Claude Code**: corre `claude mcp add --scope user whats-pro -- "<binario>" mcp`.
+- **Codex**: corre `codex mcp add whats-pro -- "<binario>" mcp`.
+- **Antigravity**: corre `agy mcp add whats-pro "<binario>" mcp`.
+- **Gemini CLI**: corre `gemini mcp add whats-pro "<binario>" mcp`.
+- **Copiar configuración**: copia el bloque JSON estándar (`mcpServers.whats-pro`)
+  al portapapeles para pegarlo en Cursor, Windsurf o cualquier otro cliente MCP.
+
+### Permisos y herramientas
+
+Los permisos se guardan en `mcp.json` en la carpeta de configuración y se
+aplican en el acto sin reiniciar nada:
+
+- **Interruptor general**: *Permitir que otras IA lean Whats Pro*.
+- **Chats** (`list_chats`, `read_chat`, `recent_activity`, `search_messages`):
+  lee tus conversaciones a través del puente local mientras Whats Pro está
+  abierto. Los chats bloqueados y los marcados como Personal o Ignorados en
+  `projects.json` nunca se exponen.
+- **Proyectos y notas** (`list_projects`, `project_overview`, `project_notes`):
+  lee proyectos, contexto, miembros, resúmenes (hoy, ayer, semana), pendientes
+  abiertos (`todo`, `follow_up`, `slipping`, `needs`, `highlights`) y notas de
+  la bitácora directamente desde disco, incluso con Whats Pro cerrado.
+- **Llamadas (resúmenes)** (`list_calls`, `read_call`): lista y lee llamadas
+  grabadas o subidas con su resumen, decisiones, compromisos, tareas y próximos
+  pasos. Las llamadas marcadas como privadas nunca se comparten.
+- **Transcripciones de llamadas** (desactivado por defecto): cuando lo activás,
+  `read_call` y el historial de llamadas de `read_lead` incluyen también la
+  transcripción completa.
+- **Leads** (`list_leads`, `read_lead`): lista y lee leads por proyecto o
+  etapa (`new`, `contacted`, `quoted`, `customer`, `lost`), monto, próxima
+  acción con fecha, ventas e historial.
+
+En **Últimos accesos** se muestran las últimas 5 consultas registradas en
+`mcp-log.jsonl` (cliente, herramienta y hace cuánto, sin guardar nunca el
+contenido de las respuestas ni de los mensajes).
+
+### Ejemplos de preguntas que podés hacerle a tu IA
+
+- *"¿Qué quedó pendiente en Bordados Jas esta semana?"*
+- *"Resumime la última llamada con X"*
+- *"¿Qué leads tenemos cotizados y cuál es la próxima acción de cada uno?"*
+- *"Buscá en las notas y llamadas de esta semana qué acordamos sobre la entrega"*
+
 ## Privacidad
 
 - Con el motor desactivado, nada sale de tu Mac.
@@ -123,6 +180,9 @@ Whats Pro** la genera y la guarda en el llavero; si no, se puede pegar una
   las fuentes de tus proyectos. Los chats personales, los ignorados y los que
   no están en ningún proyecto nunca se mandan. Tampoco se mandan los mensajes
   que marcaste como que no son del proyecto.
+- Por MCP, ninguna IA puede mandar mensajes ni borrar nada: todas las
+  herramientas son de solo lectura, y nunca se comparten los chats bloqueados,
+  los personales/ignorados ni las llamadas privadas.
 - Las keys quedan en el llavero de macOS. Las herramientas instaladas quedan
   en `~/Library/Application Support/me.paolino.zapfast-julito/tools`, salvo
   Claude Code, que se instala en `~/.local/bin`.
