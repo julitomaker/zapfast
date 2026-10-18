@@ -169,6 +169,42 @@ struct Layout {
     channels: u16,
 }
 
+/// Plays `inner` and runs `started` once, on the device's own thread, when the first sample is
+/// taken: the moment the frame is actually heard, which the echo canceller needs.
+struct Tap<S> {
+    inner: S,
+    started: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl<S: Iterator<Item = rodio::Sample>> Iterator for Tap<S> {
+    type Item = rodio::Sample;
+
+    fn next(&mut self) -> Option<rodio::Sample> {
+        if let Some(started) = self.started.take() {
+            started();
+        }
+        self.inner.next()
+    }
+}
+
+impl<S: rodio::Source> rodio::Source for Tap<S> {
+    fn current_span_len(&self) -> Option<usize> {
+        self.inner.current_span_len()
+    }
+
+    fn channels(&self) -> rodio::ChannelCount {
+        self.inner.channels()
+    }
+
+    fn sample_rate(&self) -> rodio::SampleRate {
+        self.inner.sample_rate()
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+}
+
 impl Layout {
     /// Turns an engine frame into the interleaved samples this device wants.
     fn convert(&self, frame: &[i16]) -> Vec<f32> {
@@ -475,19 +511,28 @@ impl Sink {
         }
     }
 
-    fn append(&self, samples: Vec<f32>) {
+    /// Queues samples; `started` runs when the device takes the first of them.
+    fn append(&self, samples: Vec<f32>, started: Option<Box<dyn FnOnce() + Send>>) {
         match self {
             Sink::Real { player, layout, .. } => {
-                player.append(SamplesBuffer::new(
-                    NonZero::new(layout.channels).unwrap_or(NonZero::<u16>::MIN),
-                    NonZero::new(layout.rate)
-                        .unwrap_or(NonZero::new(48_000).expect("48 kHz is not zero")),
-                    samples,
-                ));
+                player.append(Tap {
+                    inner: SamplesBuffer::new(
+                        NonZero::new(layout.channels).unwrap_or(NonZero::<u16>::MIN),
+                        NonZero::new(layout.rate)
+                            .unwrap_or(NonZero::new(48_000).expect("48 kHz is not zero")),
+                        samples,
+                    ),
+                    started,
+                });
                 player.play();
             }
             #[cfg(test)]
-            Sink::Fake(speaker) => speaker.append(samples),
+            Sink::Fake(speaker) => {
+                if let Some(started) = started {
+                    started();
+                }
+                speaker.append(samples)
+            }
         }
     }
 
@@ -954,7 +999,7 @@ async fn play_pump(
     // counts a device that is not there rather than a busy one.
     let mut unplayed = 0_usize;
     loop {
-        let writer = match SpkWriter::start(target.as_deref(), Arc::clone(&relink)) {
+        let writer = match SpkWriter::start(target.as_deref(), Arc::clone(&relink), echo.clone()) {
             Ok(writer) => {
                 opens.fetch_add(1, Ordering::Relaxed);
                 writer
@@ -986,7 +1031,6 @@ async fn play_pump(
                     match frame {
                         Ok(frame) => {
                             tape.them(&frame);
-                            echo.played(&frame);
                             if writer.send(frame).await.is_err() {
                                 // The writer ended, either from a stall or from its device going away.
                                 break;
@@ -1083,7 +1127,11 @@ struct SpkWriter {
 }
 
 impl SpkWriter {
-    fn start(device: Option<&str>, relink: Arc<Mutex<Option<Instant>>>) -> Result<Self, String> {
+    fn start(
+        device: Option<&str>,
+        relink: Arc<Mutex<Option<Instant>>>,
+        echo: crate::echo::Echo,
+    ) -> Result<Self, String> {
         let (tx, rx) = async_channel::bounded::<Vec<i16>>(SPEAKER_QUEUE);
         let stop = Arc::new(AtomicBool::new(false));
         let accepted = Arc::new(AtomicBool::new(false));
@@ -1110,6 +1158,7 @@ impl SpkWriter {
                         },
                         &relink,
                         &ready,
+                        &echo,
                     )
                 })
                 .map_err(|error| format!("the speaker thread could not start: {error}"))?
@@ -1168,6 +1217,7 @@ fn write_speaker(
     flags: SpeakerFlags<'_>,
     relink: &Mutex<Option<Instant>>,
     ready: &std::sync::mpsc::Sender<Result<(), String>>,
+    echo: &crate::echo::Echo,
 ) {
     let SpeakerFlags {
         accepted,
@@ -1195,7 +1245,14 @@ fn write_speaker(
         if stop.load(Ordering::Relaxed) {
             return;
         }
-        sink.append(sink.layout().convert(&frame));
+        // The echo canceller hears this frame when the device starts playing it, not now: the
+        // queue in between would shift its reference by a varying delay.
+        let started = echo.is_on().then(|| {
+            let echo = echo.clone();
+            let frame = frame.clone();
+            Box::new(move || echo.played(&frame)) as Box<dyn FnOnce() + Send>
+        });
+        sink.append(sink.layout().convert(&frame), started);
         accepted.store(true, Ordering::Relaxed);
         if sink.failed() {
             // Reopened the way a stalled stream is.
