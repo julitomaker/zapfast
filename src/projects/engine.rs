@@ -26,6 +26,8 @@ const WINDOW: i64 = 7 * 86_400;
 const MAX_MESSAGES: usize = 900;
 /// The longest a message is quoted.
 const MAX_CHARS: usize = 600;
+/// The most relevant message ids kept per smart source across runs.
+const MAX_RELEVANT: usize = 1000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -374,7 +376,15 @@ fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConf
             continue;
         }
         set_status(ctx, |status| status.running = Some(project.name.clone()));
-        let result = analyze(config, settings, &map, project, &messages, now);
+        let result = analyze(
+            config,
+            settings,
+            &map,
+            project,
+            &messages,
+            previous.as_ref(),
+            now,
+        );
         engine()
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -770,12 +780,60 @@ fn feed_messages<'a>(
     messages[start..].to_vec()
 }
 
+/// Merges the messages the model just judged to belong with those kept from
+/// earlier runs, dropping any later marked "not this project" or from sources
+/// no longer in smart mode, and capping each chat's list at `cap` (newest kept).
+fn merge_relevant(
+    map: &ProjectMap,
+    project: &super::Project,
+    previous: Option<&Analysis>,
+    messages: &[&FeedMessage],
+    picked_by_model: &[serde_json::Value],
+    cap: usize,
+) -> HashMap<String, Vec<String>> {
+    let mut relevant: HashMap<String, Vec<String>> = HashMap::new();
+    if let Some(previous) = previous {
+        for source in project.sources.iter().filter(|s| s.mode == Mode::Smart) {
+            if let Some(old) = previous.relevant.get(&source.chat) {
+                let kept: Vec<String> = old
+                    .iter()
+                    .filter(|id| map.picked(&source.chat, id, &project.id) != Some(false))
+                    .cloned()
+                    .collect();
+                if !kept.is_empty() {
+                    relevant.insert(source.chat.clone(), kept);
+                }
+            }
+        }
+    }
+    for index in picked_by_model.iter().filter_map(number) {
+        if let Some(message) = messages.get(index)
+            && project
+                .source(&message.chat)
+                .is_some_and(|s| s.mode == Mode::Smart)
+            && map.picked(&message.chat, &message.id, &project.id) != Some(false)
+        {
+            let ids = relevant.entry(message.chat.clone()).or_default();
+            ids.retain(|id| id != &message.id);
+            ids.push(message.id.clone());
+        }
+    }
+    for ids in relevant.values_mut() {
+        if ids.len() > cap {
+            ids.drain(..ids.len() - cap);
+        }
+    }
+    relevant.retain(|_, ids| !ids.is_empty());
+    relevant
+}
+
 fn analyze(
     config: &Path,
     settings: &EngineConfig,
     map: &ProjectMap,
     project: &super::Project,
     all: &[FeedMessage],
+    previous: Option<&Analysis>,
     now: i64,
 ) -> anyhow::Result<Analysis> {
     let messages = feed_messages(map, project, all);
@@ -826,20 +884,22 @@ fn analyze(
             })
             .collect()
     };
-    let mut relevant: HashMap<String, Vec<String>> = HashMap::new();
-    for index in reply.relevant.iter().filter_map(number) {
-        if let Some(message) = messages.get(index) {
-            relevant
-                .entry(message.chat.clone())
-                .or_default()
-                .push(message.id.clone());
-        }
-    }
+    let relevant = merge_relevant(
+        map,
+        project,
+        previous,
+        messages,
+        &reply.relevant,
+        MAX_RELEVANT,
+    );
     let read = project
         .sources
         .iter()
         .filter(|source| source.mode == Mode::Smart)
-        .map(|source| (source.chat.clone(), now))
+        .map(|source| {
+            let prev = previous.map_or(0, |p| p.read_through(&source.chat));
+            (source.chat.clone(), now.max(prev))
+        })
         .collect();
     let _ = config;
     Ok(Analysis {
@@ -1494,5 +1554,46 @@ mod tests {
             Answer::Text,
         );
         assert!(gemini_text.get("generationConfig").is_none());
+    }
+
+    #[test]
+    fn smart_sources_keep_earlier_relevant_messages_across_runs() {
+        let mut map = ProjectMap::default();
+        let id = map.add("JAS");
+        map.add_source(&id, "p@s.whatsapp.net", Mode::Smart);
+        map.pick("p@s.whatsapp.net", "excluded", &id, false);
+        let project = map.project(&id).unwrap().clone();
+        let mut previous = Analysis::default();
+        previous.relevant.insert(
+            "p@s.whatsapp.net".into(),
+            vec![
+                "old-1".into(),
+                "old-2".into(),
+                "excluded".into(),
+                "m1".into(),
+            ],
+        );
+        previous
+            .relevant
+            .insert("gone@s.whatsapp.net".into(), vec!["x".into()]);
+        let m1 = message("p@s.whatsapp.net", "m1", 100, "pedido");
+        let m2 = message("p@s.whatsapp.net", "m2", 200, "envío");
+        let merged = merge_relevant(
+            &map,
+            &project,
+            Some(&previous),
+            &[&m1, &m2],
+            &[serde_json::json!(0), serde_json::json!(1)],
+            3,
+        );
+        assert!(
+            !merged.contains_key("gone@s.whatsapp.net"),
+            "removed sources are dropped"
+        );
+        assert_eq!(
+            merged.get("p@s.whatsapp.net").map(Vec::as_slice),
+            Some(&["old-2".to_owned(), "m1".to_owned(), "m2".to_owned()][..]),
+            "earlier relevant ids stay, excluded ids drop, and the cap keeps the newest"
+        );
     }
 }
