@@ -13,10 +13,10 @@ $root = Join-Path $env:RUNNER_TEMP "zapfast-installer-test"
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $root | Out-Null
 
-$innoKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{F2512314-384A-4002-9933-AB840FD01639}_is1"
-$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "ZapFast.lnk"
-$desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "ZapFast.lnk"
-$defaultFolder = Join-Path $env:LOCALAPPDATA "Programs\ZapFast"
+$innoKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{35F35912-F19C-4F2B-BD0A-63F14004C75B}_is1"
+$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "Whats Pro.lnk"
+$desktop = Join-Path ([Environment]::GetFolderPath("Desktop")) "Whats Pro.lnk"
+$defaultFolder = Join-Path $env:LOCALAPPDATA "Programs\Whats Pro"
 
 function Check($condition, $what) {
   if (-not $condition) { throw "FAILED: $what" }
@@ -42,13 +42,13 @@ function Inno($version, $arguments) {
   & $iscc /Q "/DVersion=$version" /DArch=x86_64 "/DBinary=$binary" `
     "/DOutputDir=$root" packaging\windows\zapfast.iss
   if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
-  $setup = Join-Path $root "zapfast-v$version-x86_64-pc-windows-msvc-setup.exe"
+  $setup = Join-Path $root "whatspro-v$version-x86_64-pc-windows-msvc-setup.exe"
   $process = Start-Process $setup -ArgumentList $arguments -Wait -PassThru
   Check ($process.ExitCode -eq 0) "Inno Setup $version installs"
 }
 
 function Msi($version, $arch = "x64") {
-  $package = Join-Path $root "zapfast-$version-$arch.msi"
+  $package = Join-Path $root "whatspro-$version-$arch.msi"
   ruby packaging\windows\msi.rb (Payload "msi-$version-$arch") $package $version $arch | Out-Host
   if ($LASTEXITCODE -ne 0) { throw "MSI build failed" }
   $package
@@ -68,8 +68,8 @@ function Program($folder) {
   Get-Content -Raw (Join-Path $folder "zapfast.exe")
 }
 
-# What Settings > Apps lists for ZapFast: the MSI installs Windows Installer
-# knows by ZapFast's UpgradeCode, and the Inno Setup entry.
+# What Settings > Apps lists for Whats Pro: the MSI installs Windows Installer
+# knows by Whats Pro's UpgradeCode, and the Inno Setup entry.
 function Entries {
   $installer = New-Object -ComObject WindowsInstaller.Installer
   $products = $installer.GetType().InvokeMember("RelatedProducts", "GetProperty", $null, $installer,
@@ -96,7 +96,7 @@ Check (-not (Test-Path (Join-Path $defaultFolder "unins000.exe"))) "Inno's unins
 Check (-not (Test-Path (Join-Path $defaultFolder "unins000.dat"))) "Inno's uninstall log is gone"
 Check (-not (Test-Path $innoKey)) "Inno's Settings > Apps entry is gone"
 Check (-not (Test-Path (Join-Path $defaultFolder "fastsapp.exe"))) "the copy kept for old updaters is gone"
-Check ((Entries) -eq 1) "Settings > Apps lists ZapFast once"
+Check ((Entries) -eq 1) "Settings > Apps lists Whats Pro once"
 Check (Test-Path $startMenu) "the Start menu shortcut is there"
 Check (Test-Path $desktop) "the desktop shortcut is kept"
 
@@ -105,18 +105,18 @@ $v2 = Msi "0.18.2"
 $code = Msiexec "/i `"$v2`" /qn /norestart"
 Check ($code -in 0, 3010) "the next MSI updates in place ($code)"
 Check ((Program $defaultFolder) -eq "zapfast.exe msi-0.18.2-x64") "the program is the new one"
-Check ((Entries) -eq 1) "Settings > Apps still lists ZapFast once"
+Check ((Entries) -eq 1) "Settings > Apps still lists Whats Pro once"
 Check (Test-Path $desktop) "the desktop shortcut survives the update"
 
-# 4. Uninstalling while ZapFast runs is refused, untouched.
+# 4. Uninstalling while Whats Pro runs is refused, untouched.
 $fake = Join-Path $root "running"
 New-Item -ItemType Directory $fake | Out-Null
 Copy-Item "$env:SystemRoot\System32\PING.EXE" (Join-Path $fake "zapfast.exe")
 $running = Start-Process (Join-Path $fake "zapfast.exe") -ArgumentList "-n 600 127.0.0.1" -PassThru -WindowStyle Hidden
 try {
   $code = Msiexec "/x `"$v2`" /qn /norestart"
-  Check ($code -ne 0 -and $code -ne 3010) "uninstalling while ZapFast runs is refused ($code)"
-  Check (Select-String -Quiet -Encoding unicode "ZapFast is running" $script:lastLog) "by the check for a running ZapFast"
+  Check ($code -ne 0 -and $code -ne 3010) "uninstalling while Whats Pro runs is refused ($code)"
+  Check (Select-String -Quiet -Encoding unicode "Whats Pro is running" $script:lastLog) "by the check for a running Whats Pro"
   Check ((Program $defaultFolder) -eq "zapfast.exe msi-0.18.2-x64") "nothing was removed"
 } finally {
   Stop-Process -Id $running.Id -Force

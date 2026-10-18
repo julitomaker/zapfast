@@ -11,32 +11,32 @@ libraries:
     deb: libasound2t64 | libasound2
     rpm: alsa-lib
 nfpm:
-  name: zapfast
-  maintainer: Carmine Paolino <carmine@paolino.me>
-  homepage: https://zapfast.rocks
-  description: Fast native WhatsApp client
+  name: whatspro
+  maintainer: JulitoMaker
+  homepage: https://github.com/julitomaker/zapfast
+  description: Whats Pro native WhatsApp client
   license: MIT
-  provides: [fastsapp]
-  conflicts: [fastsapp]
-  replaces: [fastsapp]
+  provides: [zapfast, fastsapp]
+  conflicts: [zapfast, fastsapp]
+  replaces: [zapfast, fastsapp]
   contents:
-  - src: "@PAYLOAD@/zapfast-v@VERSION@-@TARGET@/zapfast"
+  - src: "@PAYLOAD@/whatspro-v@VERSION@-@TARGET@/zapfast"
     dst: "/usr/bin/zapfast"
     file_info:
       mode: 493
-  - src: "@PAYLOAD@/zapfast-v@VERSION@-@TARGET@/LICENSE"
+  - src: "@PAYLOAD@/whatspro-v@VERSION@-@TARGET@/LICENSE"
     dst: "/usr/share/licenses/zapfast/LICENSE"
     file_info:
       mode: 420
-  - src: "@PAYLOAD@/zapfast-v@VERSION@-@TARGET@/README.md"
+  - src: "@PAYLOAD@/whatspro-v@VERSION@-@TARGET@/README.md"
     dst: "/usr/share/doc/zapfast/README.md"
     file_info:
       mode: 420
-  - src: "@PAYLOAD@/zapfast-v@VERSION@-@TARGET@/packaging/applications/zapfast.desktop"
+  - src: "@PAYLOAD@/whatspro-v@VERSION@-@TARGET@/packaging/applications/zapfast.desktop"
     dst: "/usr/share/applications/zapfast.desktop"
     file_info:
       mode: 420
-  - src: "@PAYLOAD@/zapfast-v@VERSION@-@TARGET@/packaging/icons/zapfast.svg"
+  - src: "@PAYLOAD@/whatspro-v@VERSION@-@TARGET@/packaging/icons/zapfast.svg"
     dst: "/usr/share/icons/hicolor/scalable/apps/zapfast.svg"
     file_info:
       mode: 420
@@ -99,7 +99,7 @@ targets:
       local: dist/macos-input
     native:
       command: [ruby, packaging/macos/dmg.rb, '@PAYLOAD@', '@PACKAGE@']
-      output: 'zapfast-@TAG@-macos-universal.dmg'
+      output: 'whatspro-@TAG@-macos-universal.dmg'
   windows-amd64:
     platform: windows
     arch: amd64
@@ -109,7 +109,7 @@ targets:
       local: dist/windows-input-x86_64-pc-windows-msvc
     native:
       command: [ruby, packaging/windows/msi.rb, '@PAYLOAD@', '@PACKAGE@', '@VERSION@']
-      output: 'zapfast-@TAG@-x86_64-pc-windows-msvc.msi'
+      output: 'whatspro-@TAG@-x86_64-pc-windows-msvc.msi'
   windows-arm64:
     platform: windows
     arch: arm64
@@ -119,7 +119,7 @@ targets:
       local: dist/windows-input-aarch64-pc-windows-msvc
     native:
       command: [ruby, packaging/windows/msi.rb, '@PAYLOAD@', '@PACKAGE@', '@VERSION@']
-      output: 'zapfast-@TAG@-aarch64-pc-windows-msvc.msi'
+      output: 'whatspro-@TAG@-aarch64-pc-windows-msvc.msi'
   linux-amd64:
     platform: linux
     arch: amd64
@@ -130,8 +130,8 @@ targets:
     - rpm
     - appimage
     input:
-      local: dist/zapfast-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
-      release_asset: zapfast-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
+      local: dist/whatspro-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
+      release_asset: whatspro-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
   linux-arm64:
     platform: linux
     arch: arm64
@@ -142,27 +142,27 @@ targets:
     - rpm
     - appimage
     input:
-      local: dist/zapfast-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
-      release_asset: zapfast-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
+      local: dist/whatspro-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
+      release_asset: whatspro-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
 release:
-  repository: crmne/zapfast
+  repository: julitomaker/zapfast
   checksums: checksums.txt
   prereleases: true
 assets:
   AMD64:
-    file: zapfast-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
-    local: dist/zapfast-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
+    file: whatspro-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
+    local: dist/whatspro-v@VERSION@-x86_64-unknown-linux-gnu.tar.gz
   ARM64:
-    file: zapfast-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
-    local: dist/zapfast-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
+    file: whatspro-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
+    local: dist/whatspro-v@VERSION@-aarch64-unknown-linux-gnu.tar.gz
   MACOS:
-    file: zapfast-v@VERSION@-macos-universal.dmg
-    local: dist/zapfast-v@VERSION@-macos-universal.dmg
+    file: whatspro-v@VERSION@-macos-universal.dmg
+    local: dist/whatspro-v@VERSION@-macos-universal.dmg
   SOURCE:
-    file: zapfast-@VERSION@.tar.gz
-    url: https://github.com/crmne/zapfast/archive/refs/tags/v@VERSION@.tar.gz
+    file: whatspro-@VERSION@.tar.gz
+    url: https://github.com/julitomaker/zapfast/archive/refs/tags/v@VERSION@.tar.gz
     checksummed: false
-    local: dist/zapfast-@VERSION@.tar.gz
+    local: dist/whatspro-@VERSION@.tar.gz
 templates:
   homebrew/zapfast.rb: packaging/homebrew/zapfast.rb.in
   arch/zapfast/PKGBUILD: packaging/arch/zapfast/PKGBUILD.in

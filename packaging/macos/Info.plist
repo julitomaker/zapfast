@@ -5,7 +5,7 @@
     <key>CFBundleName</key><string>Whats Pro</string>
     <key>CFBundleDisplayName</key><string>Whats Pro</string>
     <!-- Fork: its own identity, so macOS keeps its notifications, keychain
-         access and permissions apart from Whats Pro's. -->
+         access and permissions apart from upstream ZapFast's. -->
     <key>CFBundleIdentifier</key><string>com.julitomaker.zapfast</string>
     <key>CFBundleExecutable</key><string>zapfast</string>
     <key>CFBundleIconFile</key><string>zapfast</string>

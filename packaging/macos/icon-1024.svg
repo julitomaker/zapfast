@@ -1,78 +1,44 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
 <defs>
-<linearGradient id="bg" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#1c2422"/>
-<stop offset="1" stop-color="#0b0e0d"/>
+<linearGradient id="bg" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#117a5b"/>
+<stop offset="0.55" stop-color="#0a543e"/>
+<stop offset="1" stop-color="#053325"/>
 </linearGradient>
-<linearGradient id="ed" x1="0" y1="100" x2="0" y2="924" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
-<stop offset="0.5" stop-color="#ffffff" stop-opacity="0.03"/>
-<stop offset="1" stop-color="#ffffff" stop-opacity="0.06"/>
+<linearGradient id="rim" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#6ee7c2" stop-opacity="0.55"/>
+<stop offset="0.5" stop-color="#1f9d77" stop-opacity="0.2"/>
+<stop offset="1" stop-color="#032017" stop-opacity="0.8"/>
 </linearGradient>
-<radialGradient id="gl" cx="512" cy="540" r="420" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#00a884" stop-opacity="0.26"/>
-<stop offset="0.75" stop-color="#00a884" stop-opacity="0"/>
-</radialGradient>
-<filter id="sh" color-interpolation-filters="sRGB" x="-30%" y="-30%" width="160%" height="160%">
-<feGaussianBlur in="SourceAlpha" stdDeviation="12"/>
-<feOffset dy="10"/>
-<feComponentTransfer>
-<feFuncA type="linear" slope="0.45"/>
-</feComponentTransfer>
-<feMerge>
-<feMergeNode/>
-<feMergeNode in="SourceGraphic"/>
-</feMerge>
-</filter>
-<filter id="ts" color-interpolation-filters="sRGB" x="-10%" y="-10%" width="120%" height="125%">
-<feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
-<feOffset dy="12"/>
-<feComponentTransfer>
-<feFuncA type="linear" slope="0.3"/>
-</feComponentTransfer>
-</filter>
+<linearGradient id="pro" x1="680" y1="610" x2="680" y2="750" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ffd25a"/>
+<stop offset="1" stop-color="#e59812"/>
+</linearGradient>
 </defs>
-<path d="M285.4 100 H738.6 A185.4 185.4 0 0 1 924 285.4 V738.6 A185.4 185.4 0 0 1 738.6 924 H285.4 A185.4 185.4 0 0 1 100 738.6 V285.4 A185.4 185.4 0 0 1 285.4 100 Z" fill="#000" filter="url(#ts)"/>
-<path d="M285.4 100 H738.6 A185.4 185.4 0 0 1 924 285.4 V738.6 A185.4 185.4 0 0 1 738.6 924 H285.4 A185.4 185.4 0 0 1 100 738.6 V285.4 A185.4 185.4 0 0 1 285.4 100 Z" fill="url(#bg)"/>
-<path d="M285.4 100 H738.6 A185.4 185.4 0 0 1 924 285.4 V738.6 A185.4 185.4 0 0 1 738.6 924 H285.4 A185.4 185.4 0 0 1 100 738.6 V285.4 A185.4 185.4 0 0 1 285.4 100 Z" fill="url(#gl)"/>
-<path d="M285.4 100 H738.6 A185.4 185.4 0 0 1 924 285.4 V738.6 A185.4 185.4 0 0 1 738.6 924 H285.4 A185.4 185.4 0 0 1 100 738.6 V285.4 A185.4 185.4 0 0 1 285.4 100 Z" fill="none" stroke="url(#ed)" stroke-width="3"/>
-<g filter="url(#sh)">
-<g transform="translate(239.81 239.81) scale(4.2529)">
-<defs>
-<linearGradient id="m_b" x1="0" y1="2" x2="0" y2="126" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#009676"/>
-<stop offset="1" stop-color="#006b55"/>
-</linearGradient>
-<linearGradient id="m_f" x1="0" y1="8" x2="0" y2="120" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#3ed3b0"/>
-<stop offset="0.55" stop-color="#00a884"/>
-<stop offset="1" stop-color="#008e70"/>
-</linearGradient>
-<linearGradient id="m_r" x1="0" y1="8" x2="0" y2="120" gradientUnits="userSpaceOnUse">
-<stop offset="0" stop-color="#d9fff5"/>
-<stop offset="0.5" stop-color="#6fe3c8" stop-opacity="0.35"/>
-<stop offset="1" stop-color="#00574a" stop-opacity="0.9"/>
-</linearGradient>
-<filter id="m_s" color-interpolation-filters="sRGB" x="-30%" y="-30%" width="160%" height="160%">
-<feGaussianBlur in="SourceAlpha" stdDeviation="1.6"/>
-<feOffset dy="1.6"/>
-<feComponentTransfer>
-<feFuncA type="linear" slope="0.3"/>
-</feComponentTransfer>
-<feMerge>
-<feMergeNode/>
-<feMergeNode in="SourceGraphic"/>
-</feMerge>
-</filter>
-</defs>
-<circle cx="64" cy="64" r="62" fill="url(#m_b)"/>
-<circle cx="64" cy="64" r="54.4" fill="url(#m_f)"/>
-<circle cx="64" cy="64" r="55" fill="none" stroke="url(#m_r)" stroke-width="1.2"/>
-<g filter="url(#m_s)">
-<g transform="translate(23.35 21.13) scale(3.48)" fill="none" stroke="#0b0e0c" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round">
-<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
-</g>
-</g>
-</g>
+<!-- Deep green rounded square base -->
+<rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+<rect x="70" y="70" width="884" height="884" rx="202" fill="none" stroke="url(#rim)" stroke-width="12"/>
+<!-- Subtle shadow behind speech bubble (pure path, no SVG filter) -->
+<path d="M296 244 H728 A92 92 0 0 1 820 336 V596 A92 92 0 0 1 728 688 H436 L284 788 L308 688 H296 A92 92 0 0 1 204 596 V336 A92 92 0 0 1 296 244 Z" fill="#032017" fill-opacity="0.42" transform="translate(0 18)"/>
+<!-- White speech bubble -->
+<path d="M296 244 H728 A92 92 0 0 1 820 336 V596 A92 92 0 0 1 728 688 H436 L284 788 L308 688 H296 A92 92 0 0 1 204 596 V336 A92 92 0 0 1 296 244 Z" fill="#ffffff"/>
+<!-- Bar chart inside bubble -->
+<rect x="312" y="484" width="56" height="116" rx="16" fill="#0d6b4f"/>
+<rect x="398" y="420" width="56" height="180" rx="16" fill="#0f8562"/>
+<rect x="484" y="348" width="56" height="252" rx="16" fill="#12a378"/>
+<!-- Checkmark badge on right of bars -->
+<circle cx="658" cy="444" r="76" fill="#e6f7f1"/>
+<path d="M618 446 L646 474 L702 414" fill="none" stroke="#0b6e50" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+<!-- PRO tag pill at bottom-right -->
+<rect x="524" y="618" width="328" height="134" rx="67" fill="#052b1f" transform="translate(0 10)"/>
+<rect x="524" y="618" width="328" height="134" rx="67" fill="url(#pro)" stroke="#ffffff" stroke-width="10"/>
+<!-- Vector "PRO" lettering -->
+<g fill="#072b20">
+<!-- P -->
+<path d="M582 652 H620 C639 652 652 663 652 680 C652 697 639 708 620 708 H602 V722 H582 Z M602 668 V692 H618 C627 692 632 687 632 680 C632 673 627 668 618 668 Z"/>
+<!-- R -->
+<path d="M666 652 H706 C725 652 738 663 738 679 C738 691 730 701 718 704 L740 722 H716 L697 706 H686 V722 H666 Z M686 668 V691 H704 C713 691 718 686 718 679 C718 672 713 668 704 668 Z"/>
+<!-- O -->
+<path d="M784 650 C807 650 824 666 824 687 C824 708 807 724 784 724 C761 724 744 708 744 687 C744 666 761 650 784 650 Z M784 668 C772 668 764 676 764 687 C764 698 772 706 784 706 C796 706 804 698 804 687 C804 676 796 668 784 668 Z"/>
 </g>
 </svg>

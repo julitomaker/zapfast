@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs>
+<linearGradient id="bg" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#117a5b"/>
+<stop offset="0.55" stop-color="#0a543e"/>
+<stop offset="1" stop-color="#053325"/>
+</linearGradient>
+<linearGradient id="rim" x1="512" y1="64" x2="512" y2="960" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#6ee7c2" stop-opacity="0.55"/>
+<stop offset="0.5" stop-color="#1f9d77" stop-opacity="0.2"/>
+<stop offset="1" stop-color="#032017" stop-opacity="0.8"/>
+</linearGradient>
+<linearGradient id="pro" x1="680" y1="610" x2="680" y2="750" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#ffd25a"/>
+<stop offset="1" stop-color="#e59812"/>
+</linearGradient>
+</defs>
+<!-- Deep green rounded square base -->
+<rect x="64" y="64" width="896" height="896" rx="208" fill="url(#bg)"/>
+<rect x="70" y="70" width="884" height="884" rx="202" fill="none" stroke="url(#rim)" stroke-width="12"/>
+<!-- Subtle shadow behind speech bubble (pure path, no SVG filter) -->
+<path d="M296 244 H728 A92 92 0 0 1 820 336 V596 A92 92 0 0 1 728 688 H436 L284 788 L308 688 H296 A92 92 0 0 1 204 596 V336 A92 92 0 0 1 296 244 Z" fill="#032017" fill-opacity="0.42" transform="translate(0 18)"/>
+<!-- White speech bubble -->
+<path d="M296 244 H728 A92 92 0 0 1 820 336 V596 A92 92 0 0 1 728 688 H436 L284 788 L308 688 H296 A92 92 0 0 1 204 596 V336 A92 92 0 0 1 296 244 Z" fill="#ffffff"/>
+<!-- Bar chart inside bubble -->
+<rect x="312" y="484" width="56" height="116" rx="16" fill="#0d6b4f"/>
+<rect x="398" y="420" width="56" height="180" rx="16" fill="#0f8562"/>
+<rect x="484" y="348" width="56" height="252" rx="16" fill="#12a378"/>
+<!-- Checkmark badge on right of bars -->
+<circle cx="658" cy="444" r="76" fill="#e6f7f1"/>
+<path d="M618 446 L646 474 L702 414" fill="none" stroke="#0b6e50" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+<!-- PRO tag pill at bottom-right -->
+<rect x="524" y="618" width="328" height="134" rx="67" fill="#052b1f" transform="translate(0 10)"/>
+<rect x="524" y="618" width="328" height="134" rx="67" fill="url(#pro)" stroke="#ffffff" stroke-width="10"/>
+<!-- Vector "PRO" lettering -->
+<g fill="#072b20">
+<!-- P -->
+<path d="M582 652 H620 C639 652 652 663 652 680 C652 697 639 708 620 708 H602 V722 H582 Z M602 668 V692 H618 C627 692 632 687 632 680 C632 673 627 668 618 668 Z"/>
+<!-- R -->
+<path d="M666 652 H706 C725 652 738 663 738 679 C738 691 730 701 718 704 L740 722 H716 L697 706 H686 V722 H666 Z M686 668 V691 H704 C713 691 718 686 718 679 C718 672 713 668 704 668 Z"/>
+<!-- O -->
+<path d="M784 650 C807 650 824 666 824 687 C824 708 807 724 784 724 C761 724 744 708 744 687 C744 666 761 650 784 650 Z M784 668 C772 668 764 676 764 687 C764 698 772 706 784 706 C796 706 804 698 804 687 C804 676 796 668 784 668 Z"/>
+</g>
+</svg>

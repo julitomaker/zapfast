@@ -1,7 +1,11 @@
 #!/bin/bash
-# Build ZapFast.app from a GUI binary on macOS.
+# Build "Whats Pro.app" from a GUI binary on macOS.
 #
-#   packaging/macos/bundle.sh <binary> <output.app> <version>
+#   packaging/macos/bundle.sh <binary> [output.app] [version]
+#
+# The binary name inside Contents/MacOS/ remains `zapfast` so fastframe-update's
+# `--version` check, portable/installer markers, and existing MCP client
+# configurations continue to work without breaking across updates.
 #
 # Set CODESIGN_IDENTITY to use a Developer ID. Otherwise, use the ad-hoc
 # signature required on arm64.
@@ -11,8 +15,8 @@
 set -euo pipefail
 
 binary="$1"
-app="$2"
-version="$3"
+app="${2:-Whats Pro.app}"
+version="${3:-$(sed -n 's/^version = "\(.*\)"$/\1/p' "$(dirname "$0")/../../Cargo.toml" | head -n 1)}"
 numeric_version="${version%%-*}"
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,7 +27,9 @@ cp "$binary" "$app/Contents/MacOS/zapfast"
 chmod 755 "$app/Contents/MacOS/zapfast"
 sed "s/__VERSION__/$numeric_version/g" "$here/Info.plist" > "$app/Contents/Info.plist"
 
-iconset="$(mktemp -d)/zapfast.iconset"
+temporary="$(mktemp -d)"
+trap 'rm -rf "$temporary"' EXIT
+iconset="$temporary/zapfast.iconset"
 mkdir -p "$iconset"
 # iconutil reads these base sizes and optional @2x versions. It ignores 64x64.
 for size in 16 32 128 256 512; do

@@ -13,11 +13,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
-xcrun stapler validate "$dmg"
+if [ "${SKIP_NOTARIZATION:-0}" != "1" ]; then
+    xcrun stapler validate "$dmg"
+fi
 hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount" >/dev/null
-app="$mount/ZapFast.app"
+app="$mount/Whats Pro.app"
+if [ ! -d "$app" ]; then
+    app="$mount/ZapFast.app"
+fi
 codesign --verify --strict --deep "$app"
-spctl --assess --type execute --verbose=2 "$app"
+if [ "${SKIP_NOTARIZATION:-0}" != "1" ]; then
+    spctl --assess --type execute --verbose=2 "$app"
+fi
 lipo "$app/Contents/MacOS/zapfast" -verify_arch x86_64 arm64
 codesign --display --entitlements - --xml "$app" > "$temporary/entitlements.plist"
 

@@ -28,20 +28,20 @@
   #define InnoArch "x64compatible"
 #endif
 
-#define AppName "ZapFast"
+#define AppName "Whats Pro"
 #define AppExeName "zapfast.exe"
 
 [Setup]
 ; Never change: this is how Windows tells an update from a new program.
-AppId={{F2512314-384A-4002-9933-AB840FD01639}
+AppId={{35F35912-F19C-4F2B-BD0A-63F14004C75B}
 AppName={#AppName}
 AppVersion={#Version}
 AppVerName={#AppName} {#Version}
-AppPublisher=Carmine Paolino
-AppCopyright=© 2026 Carmine Paolino
-AppPublisherURL=https://zapfast.rocks
-AppSupportURL=https://github.com/crmne/zapfast/issues
-AppUpdatesURL=https://github.com/crmne/zapfast/releases
+AppPublisher=JulitoMaker
+AppCopyright=© 2026 JulitoMaker. Hecho con cariño por JulitoMaker
+AppPublisherURL=https://github.com/julitomaker/zapfast
+AppSupportURL=https://github.com/julitomaker/zapfast/issues
+AppUpdatesURL=https://github.com/julitomaker/zapfast/releases
 DefaultDirName={localappdata}\Programs\{#AppName}
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -51,7 +51,7 @@ ArchitecturesInstallIn64BitMode={#InnoArch}
 MinVersion=10.0
 LicenseFile=..\..\LICENSE
 OutputDir={#OutputDir}
-OutputBaseFilename=zapfast-v{#Version}-{#Arch}-pc-windows-msvc-setup
+OutputBaseFilename=whatspro-v{#Version}-{#Arch}-pc-windows-msvc-setup
 SetupIconFile=zapfast.ico
 Compression=lzma2/max
 SolidCompression=yes
@@ -82,6 +82,8 @@ Source: "zapfast-installer.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; previous shortcuts; fastsapp.exe is kept above for older updaters.
 Type: files; Name: "{autoprograms}\FastsApp.lnk"
 Type: files; Name: "{autodesktop}\FastsApp.lnk"
+Type: files; Name: "{autoprograms}\ZapFast.lnk"
+Type: files; Name: "{autodesktop}\ZapFast.lnk"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; AppUserModelID: "me.paolino.zapfast"
