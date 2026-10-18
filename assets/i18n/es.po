@@ -3119,6 +3119,7 @@ msgstr "{n} min"
 #: src/ui/projects.rs
 msgid "{n} selected"
 msgstr "{n} seleccionados"
+
 msgid "Transcription"
 msgstr "Transcripción"
 
@@ -3271,6 +3272,7 @@ msgstr "Claude Opus 5.5 vía OpenRouter"
 #: src/ui/projects.rs
 msgid "Claude Sonnet 5.5 through OpenRouter"
 msgstr "Claude Sonnet 5.5 vía OpenRouter"
+
 msgid "Engine for voice and videos"
 msgstr "Motor para audios y videos"
 
@@ -3350,6 +3352,7 @@ msgstr "Probar conexión"
 #: src/ui/projects.rs
 msgid "Connected"
 msgstr "Conectado"
+
 msgid "Voice messages and pictures"
 msgstr "Audios e imágenes"
 
