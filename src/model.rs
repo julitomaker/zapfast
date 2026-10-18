@@ -2535,6 +2535,8 @@ pub enum Action {
     OpenLog(PathBuf),
     /// Registers this app as an MCP server in Claude Desktop (src/mcp.rs).
     ConnectClaudeDesktop,
+    /// Registers this app as an MCP server in the chosen AI client (src/mcp.rs).
+    ConnectMcpClient(crate::mcp::Client),
     /// Shows a test notification with the message sound.
     TestNotification,
     /// Transcribes one message's speech, or reads one picture's text.

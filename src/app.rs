@@ -6769,6 +6769,22 @@ impl App {
                 )),
                 Err(error) => self.toast_error(error),
             },
+            Action::ConnectMcpClient(client) => match crate::mcp::connect_client(client) {
+                Ok(()) => {
+                    if client == crate::mcp::Client::ClaudeDesktop {
+                        self.toast(crate::i18n::gettext(
+                            self.locale,
+                            "Connected. Quit and reopen Claude Desktop to use Whats Pro there.",
+                        ));
+                    } else {
+                        self.toast(
+                            crate::i18n::gettext(self.locale, "Connected with {client}.")
+                                .replace("{client}", client.label()),
+                        );
+                    }
+                }
+                Err(error) => self.toast_error(error),
+            },
             Action::SaveAttachmentAs { path, name } => {
                 self.backend
                     .send(Command::SaveAttachmentAs { source: path, name });

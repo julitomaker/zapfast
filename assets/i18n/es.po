@@ -5128,3 +5128,79 @@ msgstr "{n} en la agenda"
 
 msgid "nothing waiting"
 msgstr "nada esperando"
+
+msgid "Connect with AI"
+msgstr "Conectar con IA"
+
+msgid "Allow other AIs to read Whats Pro"
+msgstr "Permitir que otras IA lean Whats Pro"
+
+msgid "Lets Claude, Codex, Antigravity or Gemini read your Whats Pro data on this computer."
+msgstr "Permite que Claude, Codex, Antigravity o Gemini lean tus datos de Whats Pro en esta computadora."
+
+msgid "WhatsApp chats and messages while Whats Pro is open."
+msgstr "Chats y mensajes de WhatsApp mientras Whats Pro está abierto."
+
+msgid "Projects and notes"
+msgstr "Proyectos y notas"
+
+msgid "Projects, summaries, pending items and notes."
+msgstr "Proyectos, resúmenes, pendientes y notas."
+
+msgid "Calls (summaries)"
+msgstr "Llamadas (resúmenes)"
+
+msgid "Recorded and uploaded call summaries, decisions, commitments and tasks."
+msgstr "Resúmenes, decisiones, compromisos y tareas de llamadas grabadas y subidas."
+
+msgid "Call transcripts"
+msgstr "Transcripciones de llamadas"
+
+msgid "Full text of transcribed calls."
+msgstr "Texto completo de las llamadas transcriptas."
+
+msgid "Sales leads, stages, amounts, next actions and history."
+msgstr "Leads comerciales, etapas, montos, próximas acciones e historial."
+
+msgid "Locked chats and private calls are never shared. Read-only: no AI can send or delete anything."
+msgstr "Nunca se comparten los chats bloqueados ni las llamadas privadas. Solo lectura: ninguna IA puede mandar ni borrar nada."
+
+msgid "Installed · Not connected"
+msgstr "Instalado · Sin conectar"
+
+msgid "Not installed on this computer"
+msgstr "No está instalado en esta computadora"
+
+msgid "Reconnect"
+msgstr "Reconectar"
+
+msgid "Copy configuration"
+msgstr "Copiar configuración"
+
+msgid "For Cursor, Windsurf or any other MCP client."
+msgstr "Para Cursor, Windsurf o cualquier otro cliente MCP."
+
+msgid "Configuration copied to clipboard."
+msgstr "Configuración copiada al portapapeles."
+
+msgid "No AI has queried Whats Pro yet"
+msgstr "Todavía ninguna IA consultó Whats Pro"
+
+msgid "Recent access"
+msgstr "Últimos accesos"
+
+msgid "just now"
+msgstr "recién"
+
+msgid "{count} min ago"
+msgstr "hace {count} min"
+
+msgid "{count} h ago"
+msgstr "hace {count} h"
+
+msgid "{count} d ago"
+msgstr "hace {count} d"
+
+msgid "Connected with {client}."
+msgstr "Conectado con {client}."
+

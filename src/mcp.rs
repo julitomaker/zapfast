@@ -1519,6 +1519,255 @@ fn connect_at(path: &Path, executable: &Path) -> Result<(), String> {
         .map_err(|error| format!("Could not save Claude Desktop's settings: {error}"))
 }
 
+/// AI clients that can connect to Whats Pro's MCP server with one click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Client {
+    ClaudeDesktop,
+    ClaudeCode,
+    Codex,
+    Antigravity,
+    GeminiCli,
+}
+
+impl Client {
+    pub const ALL: [Self; 5] = [
+        Self::ClaudeDesktop,
+        Self::ClaudeCode,
+        Self::Codex,
+        Self::Antigravity,
+        Self::GeminiCli,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ClaudeDesktop => "Claude Desktop",
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+            Self::Antigravity => "Antigravity",
+            Self::GeminiCli => "Gemini CLI",
+        }
+    }
+
+    /// Locates the CLI binary for this client, if it uses one.
+    pub fn binary(self) -> Option<PathBuf> {
+        match self {
+            Self::ClaudeDesktop => None,
+            Self::ClaudeCode => crate::ai_tools::find("claude"),
+            Self::Codex => crate::ai_tools::find("codex"),
+            Self::Antigravity => {
+                let app = PathBuf::from("/Applications/Gemini.app/Contents/Helpers/agy");
+                if app.is_file() {
+                    Some(app)
+                } else {
+                    crate::ai_tools::find("agy")
+                }
+            }
+            Self::GeminiCli => crate::ai_tools::find("gemini"),
+        }
+    }
+
+    /// Whether the client application or CLI is installed on this computer.
+    pub fn is_installed(self) -> bool {
+        match self {
+            Self::ClaudeDesktop => {
+                Path::new("/Applications/Claude.app").exists()
+                    || claude_desktop_config()
+                        .is_some_and(|path| path.parent().is_some_and(Path::exists))
+            }
+            _ => self.binary().is_some(),
+        }
+    }
+
+    /// Exact command-line arguments passed to the CLI binary to register `whats-pro`.
+    pub fn mcp_add_args(self, executable: &Path) -> Option<Vec<String>> {
+        let exe = executable.to_string_lossy().into_owned();
+        match self {
+            Self::ClaudeDesktop => None,
+            Self::ClaudeCode => Some(vec![
+                "mcp".into(),
+                "add".into(),
+                "--scope".into(),
+                "user".into(),
+                SERVER_NAME.into(),
+                "--".into(),
+                exe,
+                "mcp".into(),
+            ]),
+            Self::Codex => Some(vec![
+                "mcp".into(),
+                "add".into(),
+                SERVER_NAME.into(),
+                "--".into(),
+                exe,
+                "mcp".into(),
+            ]),
+            Self::Antigravity | Self::GeminiCli => Some(vec![
+                "mcp".into(),
+                "add".into(),
+                SERVER_NAME.into(),
+                exe,
+                "mcp".into(),
+            ]),
+        }
+    }
+}
+
+fn has_json_mcp_server(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|json| json["mcpServers"][SERVER_NAME].is_object())
+}
+
+/// Checks whether `whats-pro` is present in `client`'s configuration files under `home`.
+pub fn config_has_server(client: Client, home: &Path, claude_desktop_path: Option<&Path>) -> bool {
+    match client {
+        Client::ClaudeDesktop => claude_desktop_path.is_some_and(has_json_mcp_server),
+        Client::ClaudeCode => has_json_mcp_server(&home.join(".claude.json")),
+        Client::Codex => std::fs::read_to_string(home.join(".codex/config.toml"))
+            .is_ok_and(|text| text.contains(SERVER_NAME)),
+        Client::Antigravity => {
+            has_json_mcp_server(&home.join(".gemini/antigravity/mcp_config.json"))
+                || has_json_mcp_server(&home.join(".gemini/antigravity-cli/mcp_config.json"))
+        }
+        Client::GeminiCli => has_json_mcp_server(&home.join(".gemini/settings.json")),
+    }
+}
+
+fn connected_overrides() -> &'static std::sync::Mutex<HashSet<Client>> {
+    static CONNECTED: std::sync::OnceLock<std::sync::Mutex<HashSet<Client>>> =
+        std::sync::OnceLock::new();
+    CONNECTED.get_or_init(Default::default)
+}
+
+/// Whether `whats-pro` is already connected in `client`.
+pub fn is_connected(client: Client) -> bool {
+    if connected_overrides()
+        .lock()
+        .is_ok_and(|set| set.contains(&client))
+    {
+        return true;
+    }
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return false;
+    };
+    let desktop = claude_desktop_config();
+    config_has_server(client, &home, desktop.as_deref())
+}
+
+#[derive(Default)]
+struct StatusCache {
+    updated: Option<std::time::Instant>,
+    states: std::collections::HashMap<Client, (bool, bool)>,
+}
+
+fn status_cache() -> &'static std::sync::Mutex<StatusCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<StatusCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Returns `(installed, connected)` for `client`, cached briefly so drawing
+/// the Settings page never hits disk on every frame.
+pub fn client_status(client: Client) -> (bool, bool) {
+    let mut cache = status_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fresh = cache
+        .updated
+        .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(5));
+    if !fresh {
+        cache.states.clear();
+        for item in Client::ALL {
+            cache
+                .states
+                .insert(item, (item.is_installed(), is_connected(item)));
+        }
+        cache.updated = Some(std::time::Instant::now());
+    }
+    let (_, mut connected) = cache.states.get(&client).copied().unwrap_or((false, false));
+    if connected_overrides()
+        .lock()
+        .is_ok_and(|set| set.contains(&client))
+    {
+        connected = true;
+    }
+    let installed = cache.states.get(&client).is_some_and(|(inst, _)| *inst);
+    (installed, connected)
+}
+
+fn mark_connected(client: Client) {
+    if let Ok(mut set) = connected_overrides().lock() {
+        set.insert(client);
+    }
+    if let Ok(mut cache) = status_cache().lock() {
+        cache.updated = None;
+    }
+}
+
+/// Registers Whats Pro as the `whats-pro` MCP server in `client`.
+pub fn connect_client(client: Client) -> Result<(), String> {
+    if client == Client::ClaudeDesktop {
+        connect_claude_desktop()?;
+        mark_connected(client);
+        return Ok(());
+    }
+    let binary = client
+        .binary()
+        .ok_or_else(|| format!("{} is not installed on this computer.", client.label()))?;
+    let executable =
+        std::env::current_exe().map_err(|error| format!("Could not locate this app: {error}"))?;
+    let args = client
+        .mcp_add_args(&executable)
+        .expect("CLI client has mcp add args");
+    let output = std::process::Command::new(&binary)
+        .args(&args)
+        .env("PATH", crate::ai_tools::path())
+        .output()
+        .map_err(|error| format!("Could not run {}: {error}", client.label()))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !output.status.success()
+        && !stderr.to_lowercase().contains("already exists")
+        && !stdout.to_lowercase().contains("already exists")
+    {
+        let detail = stderr.trim();
+        let detail = if detail.is_empty() {
+            stdout.trim()
+        } else {
+            detail
+        };
+        return Err(format!("Could not connect {}: {detail}", client.label()));
+    }
+    mark_connected(client);
+    Ok(())
+}
+
+/// Standard `mcpServers` JSON block for Cursor, Windsurf or any other MCP client.
+pub fn standard_config_json(executable: &Path) -> String {
+    let command = serde_json::to_string(&executable.to_string_lossy()).expect("string serializes");
+    format!(r#"{{"mcpServers":{{"{SERVER_NAME}":{{"command":{command},"args":["mcp"]}}}}}}"#)
+}
+
+/// Friendly display name for a client recorded in `mcp-log.jsonl`.
+pub fn friendly_client_name(raw: &str) -> &str {
+    let lower = raw.trim().to_lowercase();
+    if lower.contains("claude-code") {
+        "Claude Code"
+    } else if lower.contains("claude") {
+        "Claude"
+    } else if lower.contains("codex") {
+        "Codex"
+    } else if lower.contains("antigravity") || lower == "agy" {
+        "Antigravity"
+    } else if lower.contains("gemini") {
+        "Gemini"
+    } else if lower.is_empty() || lower == "unknown" {
+        "MCP"
+    } else {
+        raw.trim()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2011,5 +2260,118 @@ mod tests {
         std::fs::write(&path, "{ not json").unwrap();
         assert!(connect_at(&path, Path::new("/x")).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn client_args_status_and_standard_config_json() {
+        let exe = Path::new("/Applications/Whats Pro.app/Contents/MacOS/zapfast");
+        assert_eq!(Client::ClaudeDesktop.mcp_add_args(exe), None);
+        assert_eq!(
+            Client::ClaudeCode.mcp_add_args(exe).unwrap(),
+            [
+                "mcp",
+                "add",
+                "--scope",
+                "user",
+                "whats-pro",
+                "--",
+                "/Applications/Whats Pro.app/Contents/MacOS/zapfast",
+                "mcp"
+            ]
+        );
+        assert_eq!(
+            Client::Codex.mcp_add_args(exe).unwrap(),
+            [
+                "mcp",
+                "add",
+                "whats-pro",
+                "--",
+                "/Applications/Whats Pro.app/Contents/MacOS/zapfast",
+                "mcp"
+            ]
+        );
+        assert_eq!(
+            Client::Antigravity.mcp_add_args(exe).unwrap(),
+            [
+                "mcp",
+                "add",
+                "whats-pro",
+                "/Applications/Whats Pro.app/Contents/MacOS/zapfast",
+                "mcp"
+            ]
+        );
+        assert_eq!(
+            Client::GeminiCli.mcp_add_args(exe).unwrap(),
+            [
+                "mcp",
+                "add",
+                "whats-pro",
+                "/Applications/Whats Pro.app/Contents/MacOS/zapfast",
+                "mcp"
+            ]
+        );
+
+        let snippet = standard_config_json(exe);
+        assert_eq!(
+            snippet,
+            r#"{"mcpServers":{"whats-pro":{"command":"/Applications/Whats Pro.app/Contents/MacOS/zapfast","args":["mcp"]}}}"#
+        );
+
+        let home = tempfile::tempdir().unwrap();
+        let desktop = home.path().join("claude_desktop_config.json");
+        for client in Client::ALL {
+            assert!(!config_has_server(client, home.path(), Some(&desktop)));
+        }
+
+        connect_at(&desktop, exe).unwrap();
+        assert!(config_has_server(
+            Client::ClaudeDesktop,
+            home.path(),
+            Some(&desktop)
+        ));
+
+        std::fs::write(home.path().join(".claude.json"), &snippet).unwrap();
+        assert!(config_has_server(
+            Client::ClaudeCode,
+            home.path(),
+            Some(&desktop)
+        ));
+
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(
+            home.path().join(".codex/config.toml"),
+            "[mcp_servers.whats-pro]\ncommand = \"zapfast\"\n",
+        )
+        .unwrap();
+        assert!(config_has_server(
+            Client::Codex,
+            home.path(),
+            Some(&desktop)
+        ));
+
+        std::fs::create_dir_all(home.path().join(".gemini/antigravity")).unwrap();
+        std::fs::write(
+            home.path().join(".gemini/antigravity/mcp_config.json"),
+            &snippet,
+        )
+        .unwrap();
+        assert!(config_has_server(
+            Client::Antigravity,
+            home.path(),
+            Some(&desktop)
+        ));
+
+        std::fs::write(home.path().join(".gemini/settings.json"), &snippet).unwrap();
+        assert!(config_has_server(
+            Client::GeminiCli,
+            home.path(),
+            Some(&desktop)
+        ));
+
+        assert_eq!(friendly_client_name("claude-code"), "Claude Code");
+        assert_eq!(friendly_client_name("claude-ai"), "Claude");
+        assert_eq!(friendly_client_name("codex-cli"), "Codex");
+        assert_eq!(friendly_client_name("antigravity"), "Antigravity");
+        assert_eq!(friendly_client_name("gemini-cli"), "Gemini");
     }
 }

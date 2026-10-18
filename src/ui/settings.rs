@@ -951,27 +951,7 @@ fn sections(app: &App) -> Vec<Section> {
         },
     );
 
-    let mut integrations = Section::new(translated(locale, "Integrations"));
-    integrations.row(
-        "Claude Desktop",
-        translated(
-            locale,
-            "Lets Claude read your chats to summarize them and find pending items. Read-only: it cannot send anything. Keep Whats Pro open while you use it.",
-        ),
-        move |ui, app| {
-            if theme::soft_button(
-                ui,
-                &palette,
-                Some(Icon::Link),
-                &crate::i18n::gettext(app.locale, "Connect"),
-                false,
-            )
-            .clicked()
-            {
-                app.actions.push(Action::ConnectClaudeDesktop);
-            }
-        },
-    );
+    let integrations = integrations_section(app);
 
     let mut reading = Section::new(translated(locale, "Transcription"));
     for speech in [true, false] {
@@ -2467,6 +2447,191 @@ fn engine_controls(ui: &mut egui::Ui, app: &mut App, speech: bool) {
     });
 }
 
+/// The "Connect with AI" section: master and per-scope MCP switches,
+/// one-click connection rows for each AI client, standard JSON copy, and
+/// the five most recent tool accesses from `mcp-log.jsonl`.
+fn integrations_section(app: &App) -> Section {
+    let locale = app.locale;
+    let palette = app.palette;
+    let permissions = crate::mcp::Permissions::load(&app.dirs.config);
+    let enabled = permissions.enabled;
+
+    let mut section = Section::new(translated(locale, "Connect with AI"));
+    section.row(
+        translated(locale, "Allow other AIs to read Whats Pro"),
+        translated(
+            locale,
+            "Lets Claude, Codex, Antigravity or Gemini read your Whats Pro data on this computer.",
+        ),
+        move |ui, app| {
+            let label = crate::i18n::gettext(app.locale, "Allow other AIs to read Whats Pro");
+            mcp_switch(ui, app, true, &label, |p| &mut p.enabled);
+        },
+    );
+
+    type McpField = fn(&mut crate::mcp::Permissions) -> &mut bool;
+    let scopes: [(&str, &str, McpField); 5] = [
+        (
+            "Chats",
+            "WhatsApp chats and messages while Whats Pro is open.",
+            |p| &mut p.chats,
+        ),
+        (
+            "Projects and notes",
+            "Projects, summaries, pending items and notes.",
+            |p| &mut p.projects,
+        ),
+        (
+            "Calls (summaries)",
+            "Recorded and uploaded call summaries, decisions, commitments and tasks.",
+            |p| &mut p.calls,
+        ),
+        ("Call transcripts", "Full text of transcribed calls.", |p| {
+            &mut p.call_transcripts
+        }),
+        (
+            "Leads",
+            "Sales leads, stages, amounts, next actions and history.",
+            |p| &mut p.leads,
+        ),
+    ];
+    for (title, description, field) in scopes {
+        section.row(
+            translated(locale, title),
+            translated(locale, description),
+            move |ui, app| {
+                let label = crate::i18n::gettext(app.locale, title);
+                mcp_switch(ui, app, enabled, &label, field);
+            },
+        );
+    }
+
+    section.block(
+        vec![translated(
+            locale,
+            "Locked chats and private calls are never shared. Read-only: no AI can send or delete anything.",
+        )],
+        move |ui, app| {
+            ui.add_space(2.0);
+            theme::paragraph(
+                ui,
+                crate::i18n::gettext(
+                    app.locale,
+                    "Locked chats and private calls are never shared. Read-only: no AI can send or delete anything.",
+                ),
+                theme::regular(12.5),
+                app.palette.secondary,
+            );
+            ui.add_space(6.0);
+        },
+    );
+
+    for client in crate::mcp::Client::ALL {
+        let (installed, connected) = crate::mcp::client_status(client);
+        let status = match (installed, connected) {
+            (_, true) => translated(locale, "Connected"),
+            (true, false) => translated(locale, "Installed · Not connected"),
+            (false, false) => translated(locale, "Not installed on this computer"),
+        };
+        section.row(client.label(), status, move |ui, app| {
+            let can_connect = installed || client == crate::mcp::Client::ClaudeDesktop;
+            let button_label =
+                crate::i18n::gettext(app.locale, if connected { "Reconnect" } else { "Connect" });
+            ui.add_enabled_ui(can_connect, |ui| {
+                if theme::soft_button(ui, &palette, Some(Icon::Link), &button_label, false)
+                    .clicked()
+                {
+                    app.actions.push(Action::ConnectMcpClient(client));
+                }
+            });
+        });
+    }
+
+    section.row(
+        translated(locale, "Copy configuration"),
+        translated(locale, "For Cursor, Windsurf or any other MCP client."),
+        move |ui, app| {
+            if theme::soft_button(
+                ui,
+                &palette,
+                Some(Icon::Copy),
+                &crate::i18n::gettext(app.locale, "Copy"),
+                false,
+            )
+            .clicked()
+            {
+                let exe =
+                    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("zapfast"));
+                ui.ctx().copy_text(crate::mcp::standard_config_json(&exe));
+                app.toast(crate::i18n::gettext(
+                    app.locale,
+                    "Configuration copied to clipboard.",
+                ));
+            }
+        },
+    );
+
+    let entries = crate::mcp::recent_log(&app.dirs.config, 5);
+    let now = jiff::Timestamp::now().as_second();
+    let log_text: Text = if entries.is_empty() {
+        translated(locale, "No AI has queried Whats Pro yet")
+    } else {
+        entries
+            .iter()
+            .map(|entry| mcp_log_line(locale, entry, now))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into()
+    };
+    section.row(translated(locale, "Recent access"), log_text, |_, _| {});
+
+    section
+}
+
+fn mcp_switch(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    enabled: bool,
+    label: &str,
+    field: fn(&mut crate::mcp::Permissions) -> &mut bool,
+) {
+    let palette = app.palette;
+    let mut permissions = crate::mcp::Permissions::load(&app.dirs.config);
+    let mut value = *field(&mut permissions);
+    let mut changed = false;
+    ui.add_enabled_ui(enabled, |ui| {
+        let response = widgets::switch(ui, &palette, &mut value);
+        theme::reveal_focus(&response);
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), value, label)
+        });
+        changed = response.changed();
+    });
+    if changed {
+        *field(&mut permissions) = value;
+        if let Err(error) = permissions.save(&app.dirs.config) {
+            app.toast_error(error.to_string());
+        }
+    }
+}
+
+fn mcp_log_line(locale: Locale, entry: &crate::mcp::LogEntry, now: i64) -> String {
+    let client = crate::mcp::friendly_client_name(&entry.client);
+    let diff = (now - entry.at).max(0);
+    let when = if diff < 60 {
+        crate::i18n::gettext(locale, "just now").into_owned()
+    } else if diff < 3600 {
+        crate::i18n::gettext(locale, "{count} min ago")
+            .replace("{count}", &(diff / 60).max(1).to_string())
+    } else if diff < 86_400 {
+        crate::i18n::gettext(locale, "{count} h ago").replace("{count}", &(diff / 3600).to_string())
+    } else {
+        crate::i18n::gettext(locale, "{count} d ago")
+            .replace("{count}", &(diff / 86_400).to_string())
+    };
+    format!("{client} · {} · {when}", entry.tool)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2542,5 +2707,19 @@ mod tests {
         let mut account = Section::new(translated(Locale::English, "Account"));
         account.block(Vec::new(), |_, _| {});
         assert!(account.visible(&Filter::new("unlink")).1.is_empty());
+    }
+
+    #[test]
+    fn mcp_log_line_formats_client_tool_and_elapsed_time() {
+        let entry = crate::mcp::LogEntry {
+            at: 1_760_000_000,
+            tool: "list_projects".into(),
+            scope: "projects".into(),
+            client: "claude-ai".into(),
+        };
+        assert_eq!(
+            mcp_log_line(Locale::Spanish, &entry, 1_760_000_180),
+            "Claude · list_projects · hace 3 min"
+        );
     }
 }
