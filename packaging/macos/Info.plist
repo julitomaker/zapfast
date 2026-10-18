@@ -17,6 +17,6 @@
     <key>NSHighResolutionCapable</key><true/>
     <key>NSMicrophoneUsageDescription</key><string>Whats Pro uses the microphone for calls, for the voice messages you choose to send, and to record the calls you choose to record.</string>
     <key>NSCameraUsageDescription</key><string>Whats Pro uses the camera for the video calls you make and answer.</string>
-    <key>NSHumanReadableCopyright</key><string>© 2026 Carmine Paolino. Not affiliated with WhatsApp or Meta.</string>
+    <key>NSHumanReadableCopyright</key><string>© 2026 JulitoMaker. Hecho con cariño por JulitoMaker. No afiliado a WhatsApp ni a Meta.</string>
 </dict>
 </plist>
