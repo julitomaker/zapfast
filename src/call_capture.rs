@@ -994,7 +994,11 @@ mod tests {
         assert_eq!(calls.len(), 1);
         // The lead's note: the call's length, then its summary.
         assert!(calls[0].text.starts_with('('), "{}", calls[0].text);
-        assert!(calls[0].text.ends_with("Updated summary"), "{}", calls[0].text);
+        assert!(
+            calls[0].text.ends_with("Updated summary"),
+            "{}",
+            calls[0].text
+        );
         assert_eq!(calls[0].transcript.as_deref(), Some("Fixture transcript"));
     }
 

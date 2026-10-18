@@ -5103,3 +5103,18 @@ msgstr "Guarda el archivo de audio donde elijas"
 
 msgid "Playback speed"
 msgstr "Velocidad de reproducción"
+
+msgid "ElevaLeads · {brand}"
+msgstr "ElevaLeads · {brand}"
+
+msgid "could not be read"
+msgstr "no se pudo leer"
+
+msgid "{n} situations"
+msgstr "{n} situaciones"
+
+msgid "{n} in the agenda"
+msgstr "{n} en la agenda"
+
+msgid "nothing waiting"
+msgstr "nada esperando"

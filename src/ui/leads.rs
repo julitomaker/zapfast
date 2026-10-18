@@ -86,8 +86,6 @@ struct State {
     template: String,
     show_customers: bool,
     show_lost: bool,
-    /// The panel's inbox card, open in full.
-    inbox_open: bool,
     last_push: Option<Instant>,
     notice: Option<(String, Instant)>,
     /// The project's sales settings being edited: buying cycle, cadence and
@@ -191,7 +189,6 @@ impl Default for State {
             template: String::new(),
             show_customers: false,
             show_lost: false,
-            inbox_open: false,
             last_push: None,
             notice: None,
             settings_draft: None,
@@ -3791,11 +3788,71 @@ pub fn panel_cards(app: &mut App, ui: &mut egui::Ui, project: &Project) -> Optio
         sales_card(app, ui, &leads, project, &mut event);
         ui.add_space(12.0);
     }
-    if let Some(brand) = leads.brands.get(&project.id) {
-        inbox_card(app, ui, &leads, project, brand, &mut event);
-        ui.add_space(12.0);
-    }
     event
+}
+
+/// ElevaLeads in the project panel: one quiet line with what waits in the
+/// brand's inbox and a link to it. Its inbox lives in ElevaLeads; here it
+/// only adds context to what happens in these chats.
+pub fn eleva_strip(app: &App, ui: &mut egui::Ui, project: &Project) {
+    let palette = app.palette;
+    let locale = app.locale;
+    let leads = Store::open(&app.dirs.config).clone();
+    let Some(brand) = leads.brands.get(&project.id) else {
+        return;
+    };
+    let inbox = eleva::inbox(ui.ctx(), &brand.slug, false);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        theme::icon(ui, Icon::MessageCircle, 14.0, palette.dim);
+        theme::text(
+            ui,
+            gettext(locale, "ElevaLeads · {brand}").replace("{brand}", &brand.name),
+            theme::medium(12.5),
+            palette.secondary,
+        );
+        match &inbox {
+            Some(inbox) if inbox.error.is_some() => {
+                theme::text(
+                    ui,
+                    gettext(locale, "could not be read"),
+                    theme::regular(12.5),
+                    palette.dim,
+                );
+            }
+            Some(inbox) => {
+                let parts = [
+                    (inbox.total, gettext(locale, "{n} waiting")),
+                    (inbox.alerts.len(), gettext(locale, "{n} situations")),
+                    (inbox.agenda.len(), gettext(locale, "{n} in the agenda")),
+                ];
+                let text = parts
+                    .iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, label)| label.replace("{n}", &n.to_string()))
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                let text = if text.is_empty() {
+                    gettext(locale, "nothing waiting").into_owned()
+                } else {
+                    text
+                };
+                theme::text(ui, &text, theme::regular(12.5), palette.dim);
+            }
+            None => {}
+        }
+        if theme::link(
+            ui,
+            gettext(locale, "Open in ElevaLeads"),
+            theme::regular(12.5),
+            palette.link,
+        )
+        .clicked()
+        {
+            ui.ctx()
+                .open_url(egui::OpenUrl::new_tab(eleva::inbox_url(&brand.slug, None)));
+        }
+    });
 }
 
 fn sales_card(
@@ -3912,370 +3969,6 @@ fn sales_card(
             *event = Some(PanelEvent::OpenLeads(Some(id)));
         }
     });
-}
-
-/// The brand's WhatsApp inbox: who waits for a person, the alerts to attend
-/// and the agenda, each with a way to open it in ElevaLeads and, with a
-/// token that writes, to mark it attended.
-fn inbox_card(
-    app: &App,
-    ui: &mut egui::Ui,
-    leads: &Leads,
-    project: &Project,
-    brand: &Brand,
-    event: &mut Option<PanelEvent>,
-) {
-    let palette = app.palette;
-    let locale = app.locale;
-    let shared = state(ui.ctx());
-    let mut state = shared.lock().unwrap_or_else(|p| p.into_inner());
-    let mut force = false;
-    let inbox = eleva::inbox(ui.ctx(), &brand.slug, false);
-    let reading = eleva::reading(&brand.slug);
-    let open = state.inbox_open;
-    card_frame(&palette).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            theme::icon(ui, Icon::MessageCircle, 16.0, palette.accent);
-            theme::text(
-                ui,
-                gettext(locale, "WhatsApp {brand} (company)").replace("{brand}", &brand.name),
-                theme::semibold(14.5),
-                palette.text,
-            );
-            if let Some(inbox) = &inbox
-                && inbox.total > 0
-            {
-                chip(
-                    ui,
-                    &gettext(locale, "{n} waiting").replace("{n}", &inbox.total.to_string()),
-                    palette.warning,
-                );
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                if reading {
-                    ui.add(egui::Spinner::new().size(15.0).color(palette.accent));
-                } else if theme::icon_button(
-                    ui,
-                    Icon::Refresh,
-                    15.0,
-                    palette.secondary,
-                    palette.text,
-                    &gettext(locale, "Read again"),
-                )
-                .clicked()
-                {
-                    force = true;
-                }
-                if let Some(inbox) = &inbox {
-                    theme::text(
-                        ui,
-                        gettext(locale, "read {when} ago")
-                            .replace("{when}", &ago(locale, inbox.read_at)),
-                        theme::regular(11.5),
-                        palette.dim,
-                    );
-                }
-            });
-        });
-        let Some(inbox) = inbox else {
-            ui.add_space(6.0);
-            theme::text(
-                ui,
-                gettext(locale, "Reading the brand's inbox…").as_ref(),
-                theme::regular(13.0),
-                palette.secondary,
-            );
-            return;
-        };
-        if let Some(error) = &inbox.error {
-            ui.add_space(4.0);
-            wrapped(
-                ui,
-                &error_text(locale, error),
-                theme::regular(12.5),
-                palette.danger,
-            );
-        }
-        let limit = |n: usize| if open { usize::MAX } else { n };
-        let sections: [(&str, Color32, usize); 3] = [
-            ("waiting", palette.warning, inbox.waiting.len()),
-            ("alerts", palette.danger, inbox.alerts.len()),
-            ("agenda", palette.link, inbox.agenda.len()),
-        ];
-        if sections.iter().all(|(_, _, n)| *n == 0) && inbox.error.is_none() {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                theme::icon(ui, Icon::CircleCheck, 14.0, palette.dim);
-                theme::text(
-                    ui,
-                    gettext(locale, "Nobody is waiting for a person.").as_ref(),
-                    theme::regular(13.0),
-                    palette.dim,
-                );
-            });
-        }
-        let mut hidden = 0;
-        if !inbox.waiting.is_empty() {
-            section(ui, &palette, &gettext(locale, "Waiting for a person"));
-            hidden += inbox.waiting.len().saturating_sub(limit(5));
-            for item in inbox.waiting.iter().take(limit(5)) {
-                let lead = item
-                    .phone
-                    .as_deref()
-                    .and_then(|p| leads.by_phone(&project.id, p));
-                inbox_row(
-                    app,
-                    ui,
-                    brand,
-                    &item.id,
-                    false,
-                    &item.reason,
-                    &item.who,
-                    (!item.ago.is_empty())
-                        .then(|| gettext(locale, "{when} ago").replace("{when}", &item.ago))
-                        .as_deref(),
-                    item.detail.as_deref(),
-                    lead,
-                    palette.warning,
-                    event,
-                );
-            }
-        }
-        if !inbox.alerts.is_empty() {
-            section(ui, &palette, &gettext(locale, "To attend"));
-            hidden += inbox.alerts.len().saturating_sub(limit(4));
-            for item in inbox.alerts.iter().take(limit(4)) {
-                let lead = item
-                    .phone
-                    .as_deref()
-                    .and_then(|p| leads.by_phone(&project.id, p));
-                let who = item.who.clone().unwrap_or_default();
-                inbox_row(
-                    app,
-                    ui,
-                    brand,
-                    &item.id,
-                    true,
-                    &item.title,
-                    &who,
-                    None,
-                    item.excerpt.as_deref(),
-                    lead,
-                    palette.danger,
-                    event,
-                );
-            }
-        }
-        if !inbox.agenda.is_empty() {
-            section(ui, &palette, &gettext(locale, "Agenda"));
-            hidden += inbox.agenda.len().saturating_sub(limit(3));
-            for item in inbox.agenda.iter().take(limit(3)) {
-                let lead = item
-                    .phone
-                    .as_deref()
-                    .and_then(|p| leads.by_phone(&project.id, p));
-                let who = item.who.clone().unwrap_or_default();
-                let when = item.when.as_deref().map(|w| format!("⏰ {w}"));
-                inbox_row(
-                    app,
-                    ui,
-                    brand,
-                    &item.id,
-                    true,
-                    &item.title,
-                    &who,
-                    when.as_deref(),
-                    item.excerpt.as_deref(),
-                    lead,
-                    palette.link,
-                    event,
-                );
-            }
-        }
-        ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if hidden > 0 || open {
-                let label = if open {
-                    gettext(locale, "Show less").into_owned()
-                } else {
-                    gettext(locale, "Show {n} more").replace("{n}", &hidden.to_string())
-                };
-                if button(ui, &palette, &label, false).clicked() {
-                    state.inbox_open = !open;
-                }
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(
-                    ui,
-                    &palette,
-                    gettext(locale, "Open the inbox in ElevaLeads").as_ref(),
-                    false,
-                )
-                .clicked()
-                {
-                    ui.ctx()
-                        .open_url(egui::OpenUrl::new_tab(eleva::inbox_url(&brand.slug, None)));
-                }
-                if !inbox.alerts.is_empty()
-                    && button(ui, &palette, gettext(locale, "Situations").as_ref(), false).clicked()
-                {
-                    ui.ctx()
-                        .open_url(egui::OpenUrl::new_tab(eleva::situations_url(&brand.slug)));
-                }
-            });
-        });
-    });
-    drop(state);
-    if force {
-        eleva::inbox(ui.ctx(), &brand.slug, true);
-    }
-}
-
-fn section(ui: &mut egui::Ui, palette: &theme::Palette, label: &str) {
-    ui.add_space(8.0);
-    theme::text(ui, label.to_uppercase(), theme::semibold(11.0), palette.dim);
-    ui.add_space(2.0);
-}
-
-/// One item of the brand's inbox.
-#[allow(clippy::too_many_arguments)]
-fn inbox_row(
-    app: &App,
-    ui: &mut egui::Ui,
-    brand: &Brand,
-    id: &str,
-    situation: bool,
-    title: &str,
-    who: &str,
-    when: Option<&str>,
-    detail: Option<&str>,
-    lead: Option<&Lead>,
-    color: Color32,
-    event: &mut Option<PanelEvent>,
-) {
-    let palette = app.palette;
-    let locale = app.locale;
-    let answer = eleva::resolved(id);
-    let row_id = ui.id().with(("inbox-row", id));
-    if let Some(Err(error)) = &answer {
-        ui.ctx()
-            .data_mut(|data| data.insert_temp(row_id.with("error"), error.clone()));
-    }
-    let error: Option<String> = ui.ctx().data(|data| data.get_temp(row_id.with("error")));
-    let previous = ui.ctx().data(|data| data.get_temp::<egui::Rect>(row_id));
-    let hovered = previous.is_some_and(|rect| ui.rect_contains_pointer(rect));
-    if let Some(rect) = previous
-        && hovered
-    {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::same(theme::RADIUS + 2),
-            palette.tint(0.04),
-        );
-    }
-    let row = Frame::new()
-        .inner_margin(Margin::symmetric(6, 5))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (dot, _) = ui.allocate_exact_size(vec2(8.0, 18.0), Sense::hover());
-                ui.painter().circle_filled(dot.center(), 3.5, color);
-                ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = 2.0;
-                    ui.set_max_width((ui.available_width() - 64.0).max(120.0));
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
-                        theme::text(ui, title, theme::medium(13.5), palette.text);
-                        if !who.is_empty() {
-                            theme::text(ui, who, theme::regular(13.0), palette.secondary);
-                        }
-                        if let Some(when) = when {
-                            theme::text(ui, when, theme::regular(12.0), palette.dim);
-                        }
-                        if let Some(lead) = lead {
-                            chip(
-                                ui,
-                                &gettext(locale, "your lead · {stage}")
-                                    .replace("{stage}", &stage_label(locale, lead.stage)),
-                                stage_color(&palette, lead.stage),
-                            );
-                        }
-                    });
-                    if let Some(detail) = detail {
-                        theme::text(ui, detail, theme::regular(12.0), palette.dim);
-                    }
-                    if let Some(error) = &error {
-                        theme::text(
-                            ui,
-                            error_text(locale, error),
-                            theme::regular(12.0),
-                            palette.danger,
-                        );
-                    }
-                });
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    if !hovered {
-                        return;
-                    }
-                    if brand.write
-                        && theme::icon_button(
-                            ui,
-                            Icon::Check,
-                            14.0,
-                            palette.accent,
-                            palette.accent_hover,
-                            &gettext(
-                                locale,
-                                "Mark as attended in ElevaLeads (sends nothing to the customer)",
-                            ),
-                        )
-                        .clicked()
-                    {
-                        ui.ctx()
-                            .data_mut(|data| data.remove::<String>(row_id.with("error")));
-                        eleva::start_resolve(ui.ctx(), &brand.slug, id, situation);
-                    }
-                    let url = if situation {
-                        eleva::situations_url(&brand.slug)
-                    } else {
-                        eleva::inbox_url(&brand.slug, Some(id))
-                    };
-                    if theme::icon_button(
-                        ui,
-                        Icon::ExternalLink,
-                        14.0,
-                        palette.dim,
-                        palette.text,
-                        &gettext(locale, "Open in ElevaLeads"),
-                    )
-                    .clicked()
-                    {
-                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                    }
-                    if let Some(lead) = lead
-                        && theme::icon_button(
-                            ui,
-                            Icon::User,
-                            14.0,
-                            palette.dim,
-                            palette.text,
-                            &gettext(locale, "See the lead"),
-                        )
-                        .clicked()
-                    {
-                        *event = Some(PanelEvent::OpenLeads(Some(lead.id.clone())));
-                    }
-                });
-            });
-        });
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(row_id, row.response.rect));
 }
 
 /// A project to open from outside the page (the demo), on its Leads tab or

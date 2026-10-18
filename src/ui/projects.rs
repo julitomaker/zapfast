@@ -1496,6 +1496,7 @@ fn panel(
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             sales_cards(app, ui, state, project);
+                            super::leads::eleva_strip(app, ui, project);
                         });
                     no_analysis(app, ui, state, project);
                 });
@@ -1603,6 +1604,8 @@ fn panel(
                         theme::regular(12.0),
                         palette.dim,
                     );
+                    ui.add_space(10.0);
+                    super::leads::eleva_strip(app, ui, project);
                 });
         });
     state.period = period;
