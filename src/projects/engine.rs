@@ -470,6 +470,7 @@ fn prompt(
     map: &ProjectMap,
     project: &super::Project,
     messages: &[&FeedMessage],
+    all: &[FeedMessage],
     journal: &super::Journal,
     ticks: &super::Ticks,
     now: i64,
@@ -563,11 +564,13 @@ fn prompt(
             text.push_str("\n\n");
         }
     }
-    // What was filed by hand teaches what this project is about.
+    // What was filed by hand teaches what this project is about, including
+    // messages marked "not this project" that are left out of `messages`.
     let mut examples = Vec::new();
-    let by_id: HashMap<(&str, &str), &FeedMessage> = messages
+    let by_id: HashMap<(&str, &str), &FeedMessage> = all
         .iter()
-        .map(|m| ((m.chat.as_str(), m.id.as_str()), *m))
+        .chain(messages.iter().copied())
+        .map(|m| ((m.chat.as_str(), m.id.as_str()), m))
         .collect();
     for pick in map
         .picks
@@ -745,15 +748,14 @@ fn json_object(text: &str) -> Option<&str> {
     (end > start).then(|| &text[start..=end])
 }
 
-fn analyze(
-    config: &Path,
-    settings: &EngineConfig,
+/// Messages of `all` that enter `project`'s numbered feed: messages marked
+/// "not this project" stay out, and a `Selected` source brings only what was
+/// picked by hand.
+fn feed_messages<'a>(
     map: &ProjectMap,
     project: &super::Project,
-    all: &[FeedMessage],
-    now: i64,
-) -> anyhow::Result<Analysis> {
-    // Messages kept out by hand never reach the model.
+    all: &'a [FeedMessage],
+) -> Vec<&'a FeedMessage> {
     let messages: Vec<&FeedMessage> = all
         .iter()
         .filter(|m| map.picked(&m.chat, &m.id, &project.id) != Some(false))
@@ -764,7 +766,20 @@ fn analyze(
                 || map.picked(&m.chat, &m.id, &project.id) == Some(true)
         })
         .collect();
-    let messages = &messages[messages.len().saturating_sub(MAX_MESSAGES)..];
+    let start = messages.len().saturating_sub(MAX_MESSAGES);
+    messages[start..].to_vec()
+}
+
+fn analyze(
+    config: &Path,
+    settings: &EngineConfig,
+    map: &ProjectMap,
+    project: &super::Project,
+    all: &[FeedMessage],
+    now: i64,
+) -> anyhow::Result<Analysis> {
+    let messages = feed_messages(map, project, all);
+    let messages = messages.as_slice();
     let reply = complete(
         config,
         settings,
@@ -773,6 +788,7 @@ fn analyze(
             map,
             project,
             messages,
+            all,
             &super::Journal::load(config, &project.id),
             &super::Ticks::load(config, &project.id),
             now,
@@ -1340,10 +1356,13 @@ mod tests {
         let project = map.project(&id).unwrap().clone();
         let mut journal = super::super::Journal::default();
         journal.add("Ya mandé la cotización", false);
+        let all = [a, b, c];
+        let messages = feed_messages(&map, &project, &all);
         let text = prompt(
             &map,
             &project,
-            &[&a, &b, &c],
+            &messages,
+            &all,
             &journal,
             &Default::default(),
             jiff::Timestamp::now().as_second(),
@@ -1356,6 +1375,45 @@ mod tests {
             "a picked message is not asked about"
         );
         assert!(text.contains("SÍ va: \"las prendas\""));
+    }
+
+    #[test]
+    fn negative_hand_picks_teach_the_prompt_without_entering_the_feed() {
+        let mut map = ProjectMap::default();
+        let id = map.add("JAS");
+        map.add_source(&id, "p@s.whatsapp.net", Mode::Smart);
+        map.pick("p@s.whatsapp.net", "yes", &id, true);
+        map.pick("p@s.whatsapp.net", "no", &id, false);
+        let yes = message("p@s.whatsapp.net", "yes", 100, "las gorras bordadas");
+        let no = message("p@s.whatsapp.net", "no", 200, "partido del domingo");
+        let maybe = message("p@s.whatsapp.net", "maybe", 300, "el hilo rojo");
+        let all = [yes, no, maybe];
+        let project = map.project(&id).unwrap().clone();
+        let messages = feed_messages(&map, &project, &all);
+        assert_eq!(messages.len(), 2, "negative pick stays out of the feed");
+        assert!(messages.iter().all(|m| m.id != "no"));
+        let text = prompt(
+            &map,
+            &project,
+            &messages,
+            &all,
+            &Default::default(),
+            &Default::default(),
+            jiff::Timestamp::now().as_second(),
+        );
+        assert!(
+            text.contains("SÍ va: \"las gorras bordadas\""),
+            "positive pick is shown as SÍ va: {text}"
+        );
+        assert!(
+            text.contains("NO va: \"partido del domingo\""),
+            "negative pick is shown as NO va even though it is filtered out of messages: {text}"
+        );
+        let feed_section = text.split("Mensajes (~ = chat mixto").nth(1).unwrap_or("");
+        assert!(
+            !feed_section.contains("partido del domingo"),
+            "negative pick must not appear in the numbered messages section: {feed_section}"
+        );
     }
 
     #[test]
