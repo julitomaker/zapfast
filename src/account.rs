@@ -251,6 +251,9 @@ impl Account {
         };
         resolve_wallpaper_path(&dirs, &mut settings);
         let backend = Backend::spawn(dirs.clone(), waker.clone());
+        // The bridge (and through it the MCP tools) may ask for an
+        // attachment that was never opened here.
+        crate::bridge::register_backend(id.as_str(), backend.sender());
         Ok(Self::new(id, dirs, settings, backend))
     }
 

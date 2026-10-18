@@ -31,6 +31,39 @@ use tiny_http::{Header, Method, Request, Response, Server};
 use crate::archive::Archive;
 
 pub const DEFAULT_PORT: u16 = 47120;
+/// The largest attachment `/media` serves.
+const MEDIA_LIMIT: u64 = 40 * 1024 * 1024;
+/// How long `/media` waits for an attachment it asked WhatsApp for.
+const MEDIA_WAIT: std::time::Duration = std::time::Duration::from_secs(40);
+
+/// How long `/transcript` waits for a transcription it asked for.
+const TRANSCRIPT_WAIT: std::time::Duration = std::time::Duration::from_secs(150);
+
+type Commands = tokio::sync::mpsc::UnboundedSender<crate::backend::Command>;
+
+/// Per account, the app's command channel: how `/media` asks for a download
+/// and `/transcript` for a transcription, as opening the chat would.
+fn backends() -> &'static std::sync::Mutex<HashMap<String, Commands>> {
+    static BACKENDS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Commands>>> =
+        std::sync::OnceLock::new();
+    BACKENDS.get_or_init(Default::default)
+}
+
+/// Lets the bridge ask `account`'s backend to download or transcribe.
+pub fn register_backend(account: &str, commands: Commands) {
+    backends()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(account.to_owned(), commands);
+}
+
+fn send(account: &str, command: crate::backend::Command) -> bool {
+    backends()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get(account)
+        .is_some_and(|commands| commands.send(command).is_ok())
+}
 const DEFAULT_LIMIT: usize = 200;
 const MAX_LIMIT: usize = 5000;
 
@@ -107,6 +140,7 @@ pub fn start(config_dir: &Path, state_dir: &Path) {
         token: config.token,
         port: config.port,
         accounts_dir: state_dir.join("accounts"),
+        config_dir: config_dir.to_path_buf(),
         open: HashMap::new(),
     };
     let spawned = std::thread::Builder::new()
@@ -121,6 +155,8 @@ struct Bridge {
     token: String,
     port: u16,
     accounts_dir: PathBuf,
+    /// Where settings.json says which engine transcribes.
+    config_dir: PathBuf,
     open: HashMap<String, Archive>,
 }
 
@@ -133,6 +169,32 @@ fn error(status: u16, message: &str) -> Reply {
 impl Bridge {
     fn serve(mut self, server: Server) {
         for request in server.incoming_requests() {
+            if request.url().split('?').next() == Some("/media") {
+                let response = match self.media(&request) {
+                    Ok((bytes, mime)) => Response::from_data(bytes)
+                        .with_header(
+                            Header::from_bytes("Content-Type", mime.as_bytes()).unwrap_or_else(
+                                |_| {
+                                    Header::from_bytes("Content-Type", "application/octet-stream")
+                                        .expect("static header")
+                                },
+                            ),
+                        )
+                        .with_header(
+                            Header::from_bytes("Cache-Control", "no-store").expect("static header"),
+                        ),
+                    Err((status, body)) => Response::from_data(body.to_string().into_bytes())
+                        .with_status_code(status)
+                        .with_header(
+                            Header::from_bytes("Content-Type", "application/json; charset=utf-8")
+                                .expect("static header"),
+                        ),
+                };
+                if let Err(error) = request.respond(response) {
+                    log::debug!("bridge: could not answer: {error}");
+                }
+                continue;
+            }
             let (status, body) = self.answer(&request);
             let response = Response::from_string(body.to_string())
                 .with_status_code(status)
@@ -175,15 +237,144 @@ impl Bridge {
         })
     }
 
-    fn answer(&mut self, request: &Request) -> Reply {
+    /// Method, host and token, as every route checks them.
+    fn refuse(&self, request: &Request) -> Option<Reply> {
         if *request.method() != Method::Get {
-            return error(405, "only GET is supported");
+            return Some(error(405, "only GET is supported"));
         }
         if !self.local_host(request) {
-            return error(403, "unexpected Host");
+            return Some(error(403, "unexpected Host"));
         }
         if !self.authorized(request) {
-            return error(401, "missing or wrong bearer token");
+            return Some(error(401, "missing or wrong bearer token"));
+        }
+        None
+    }
+
+    /// `/media?account=&chat=&id=`: a message's attachment as its bytes,
+    /// downloaded from WhatsApp first when it is not on this computer.
+    fn media(&mut self, request: &Request) -> Result<(Vec<u8>, String), Reply> {
+        if let Some(refused) = self.refuse(request) {
+            return Err(refused);
+        }
+        let query: HashMap<String, String> = form_urlencoded::parse(
+            request
+                .url()
+                .split_once('?')
+                .map_or("", |(_, q)| q)
+                .as_bytes(),
+        )
+        .into_owned()
+        .collect();
+        let account = query.get("account").map_or("1", String::as_str).to_owned();
+        let (Some(chat), Some(id)) = (query.get("chat"), query.get("id")) else {
+            return Err(error(400, "chat and id are required"));
+        };
+        let lookup = |bridge: &mut Self| -> Result<crate::archive::BridgeMedia, Reply> {
+            bridge
+                .archive(&account)?
+                .bridge_media(chat, id)
+                .map_err(|failure| {
+                    log::warn!("bridge: media lookup failed: {failure}");
+                    error(500, "query failed")
+                })?
+                .ok_or_else(|| error(404, "no such message with an attachment"))
+        };
+        let mut found = lookup(self)?;
+        if found.size > MEDIA_LIMIT {
+            return Err(error(413, "the attachment is too large to serve"));
+        }
+        if found.path.is_none() {
+            let asked = send(
+                &account,
+                crate::backend::Command::Download {
+                    manual: true,
+                    card: None,
+                    chat: chat.clone(),
+                    message: id.clone(),
+                },
+            );
+            if !asked {
+                return Err(error(503, "Whats Pro cannot download it right now"));
+            }
+            let started = std::time::Instant::now();
+            while found.path.is_none() && started.elapsed() < MEDIA_WAIT {
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                found = lookup(self)?;
+            }
+        }
+        let Some(path) = found.path else {
+            return Err(error(
+                504,
+                "WhatsApp did not deliver the attachment in time (the phone may need to be online); try again",
+            ));
+        };
+        let bytes = fs::read(&path).map_err(|_| error(500, "the file could not be read"))?;
+        let mime = if found.mime.is_empty() {
+            "application/octet-stream".to_owned()
+        } else {
+            found.mime
+        };
+        Ok((bytes, mime))
+    }
+
+    /// `/transcript?account=&chat=&id=`: what a voice message, audio or video
+    /// says. Transcribed now with the engine chosen in Settings (and kept)
+    /// when it never was.
+    fn transcript(&mut self, query: &HashMap<String, String>) -> Reply {
+        let account = query.get("account").map_or("1", String::as_str).to_owned();
+        let (Some(chat), Some(id)) = (query.get("chat"), query.get("id")) else {
+            return error(400, "chat and id are required");
+        };
+        let archive = match self.archive(&account) {
+            Ok(archive) => archive,
+            Err(reply) => return reply,
+        };
+        let media = match archive.bridge_media(chat, id) {
+            Ok(Some(media)) => media,
+            Ok(None) => return error(404, "no such message with an attachment"),
+            Err(_) => return error(500, "query failed"),
+        };
+        if !matches!(media.kind.as_str(), "audio" | "video") {
+            return error(
+                400,
+                "only voice messages, audio and videos have speech to transcribe",
+            );
+        }
+        let reply = |text: String| (200, serde_json::json!({ "kind": media.kind, "text": text }));
+        if let Ok(Some(text)) = archive.bridge_transcript(chat, id) {
+            return reply(text);
+        }
+        let engines =
+            crate::settings::Settings::load(&self.config_dir.join("settings.json")).media_engines;
+        let asked = send(
+            &account,
+            crate::backend::Command::Transcribe {
+                chat: chat.clone(),
+                id: id.clone(),
+                engines,
+            },
+        );
+        if !asked {
+            return error(503, "Whats Pro cannot transcribe right now");
+        }
+        let started = std::time::Instant::now();
+        while started.elapsed() < TRANSCRIPT_WAIT {
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            let archive = match self.archive(&account) {
+                Ok(archive) => archive,
+                Err(reply) => return reply,
+            };
+            if let Ok(Some(text)) = archive.bridge_transcript(chat, id) {
+                return reply(text);
+            }
+        }
+        error(504, "still transcribing; ask again in a minute")
+    }
+
+    fn answer(&mut self, request: &Request) -> Reply {
+        if let Some(refused) = self.refuse(request) {
+            return refused;
         }
         let (path, query) = request.url().split_once('?').unwrap_or((request.url(), ""));
         let query: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
@@ -196,6 +387,7 @@ impl Bridge {
             ),
             "/accounts" => (200, serde_json::json!(self.accounts())),
             "/chats" | "/messages" | "/search" => self.archive_route(path, &query),
+            "/transcript" => self.transcript(&query),
             _ => error(404, "unknown route"),
         }
     }

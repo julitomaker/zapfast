@@ -15,6 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -197,7 +198,8 @@ impl Permissions {
 /// The scope a tool belongs to.
 fn tool_scope(name: &str) -> Option<Scope> {
     match name {
-        "list_chats" | "read_chat" | "recent_activity" | "search_messages" => Some(Scope::Chats),
+        "list_chats" | "read_chat" | "recent_activity" | "search_messages" | "list_media"
+        | "get_media" => Some(Scope::Chats),
         "list_projects" | "project_overview" | "project_notes" => Some(Scope::Projects),
         "list_calls" | "read_call" => Some(Scope::Calls),
         "list_leads" | "read_lead" => Some(Scope::Leads),
@@ -208,6 +210,34 @@ fn tool_scope(name: &str) -> Option<Scope> {
 /// All tools with their JSON schemas.
 fn all_tools() -> Vec<Value> {
     vec![
+        json!({
+            "name": "list_media",
+            "description": "List the photos, videos, voice messages, audio files, documents and stickers of one WhatsApp chat, newest last, with each message's id for get_media.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "kind": {"type": "string", "enum": ["all", "image", "video", "audio", "document", "sticker"], "description": "Only this kind (default all)."},
+                    "since_hours": {"type": "number", "description": "Only from the last N hours."},
+                    "limit": {"type": "number", "description": "At most this many (default 50)."}
+                },
+                "required": ["chat"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "get_media",
+            "description": "Open the attachment of one WhatsApp message (id from read_chat or list_media). Photos and stickers come back as images you can see. Voice messages, audio and videos come back transcribed: if they never were, Whats Pro transcribes them now with the engine chosen in its Settings (this can take up to a couple of minutes for long ones) and keeps the text. Documents come back as their type. Whats Pro downloads the file from WhatsApp if it was never opened.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "message_id": {"type": "string", "description": "The message id."}
+                },
+                "required": ["chat", "message_id"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
         json!({
             "name": "list_chats",
             "description": "List WhatsApp chats (groups and people) from Whats Pro, most recent activity first, with unread counts. Use it to find a chat's exact name or id.",
@@ -515,6 +545,14 @@ fn line(message: &Value, with_chat: bool) -> String {
     }
     if let Some(reply) = message["reply_to"]["text"].as_str() {
         text = format!("(replying to \"{reply}\") {text}");
+    }
+    if let Some(kind) = message["kind"].as_str()
+        && matches!(kind, "image" | "video" | "audio" | "document" | "sticker")
+    {
+        text = format!(
+            "{text} ({kind}, id {} — open it with get_media)",
+            message["id"].as_str().unwrap_or("")
+        );
     }
     let chat = if with_chat {
         format!(" [{}]", message["chat_name"].as_str().unwrap_or(""))
@@ -1204,6 +1242,97 @@ impl Bridge {
         Ok(out.trim_end().to_owned())
     }
 
+    /// A message's attachment as MCP content: an image the client can see,
+    /// or a short text for anything else.
+    fn media(&self, arguments: &Value) -> Result<Vec<Value>, String> {
+        let permissions = self.permissions();
+        permissions.check(Scope::Chats)?;
+        let _ = append_log(
+            &self.config_dir,
+            &LogEntry {
+                at: now(),
+                tool: "get_media".to_owned(),
+                scope: Scope::Chats.as_str().to_owned(),
+                client: self.client_name(),
+            },
+        );
+        let excluded = self.excluded_chats(&permissions);
+        let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
+        let message = text(arguments, "message_id").ok_or("`message_id` is required.")?;
+        let (chat, chat_name) = self.resolve(&wanted, &excluded)?;
+        let (bytes, mime) = self.get_bytes(&format!(
+            "/media?{}",
+            query(&[("chat", chat), ("id", message.clone())])
+        ))?;
+        let size = bytes.len();
+        if matches!(
+            mime.as_str(),
+            "image/jpeg" | "image/png" | "image/gif" | "image/webp"
+        ) {
+            return Ok(vec![
+                json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&bytes), "mimeType": mime}),
+                json!({"type": "text", "text": format!("Picture from {chat_name}, message {message} ({} KB).", size / 1024)}),
+            ]);
+        }
+        if mime.starts_with("audio/") || mime.starts_with("video/") {
+            let (chat, _) = self.resolve(&wanted, &excluded)?;
+            let answer = self.get(&format!(
+                "/transcript?{}",
+                query(&[("chat", chat), ("id", message.clone())])
+            ))?;
+            let said = answer["text"].as_str().unwrap_or("").trim();
+            let what = if mime.starts_with("video/") {
+                "Video"
+            } else {
+                "Voice message or audio"
+            };
+            return Ok(vec![json!({"type": "text", "text": if said.is_empty() {
+                format!("{what} from {chat_name}, message {message}: nothing was said in it.")
+            } else {
+                format!("{what} from {chat_name}, message {message}, transcribed: {said}")
+            }})]);
+        }
+        Ok(vec![json!({"type": "text", "text": format!(
+            "Attachment from {chat_name}, message {message}: {mime}, {} KB. It is a document, not a picture or speech, so it cannot be shown here.",
+            size / 1024
+        )})])
+    }
+
+    /// A bridge route that answers with a file: its bytes and type.
+    fn get_bytes(&self, path: &str) -> Result<(Vec<u8>, String), String> {
+        let config = crate::bridge::config(&self.config_dir)
+            .map_err(|error| format!("Could not read Whats Pro's bridge settings: {error}"))?;
+        if !config.enabled {
+            return Err("The Whats Pro bridge is turned off in bridge.json.".into());
+        }
+        let url = format!("http://127.0.0.1:{}{path}", config.port);
+        let mut response = ureq::get(&url)
+            .header("Authorization", &format!("Bearer {}", config.token))
+            .config()
+            .timeout_global(Some(std::time::Duration::from_secs(60)))
+            .build()
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::StatusCode(404) => "That message has no attachment, or its chat is not shared.".to_owned(),
+                ureq::Error::StatusCode(504) => "WhatsApp did not deliver the file in time; the phone may need to be online. Try again.".to_owned(),
+                ureq::Error::StatusCode(status) => format!("Whats Pro answered {status}."),
+                _ => "Whats Pro is not open. Open the app and try again.".to_owned(),
+            })?;
+        let mime = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_owned();
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024 * 1024)
+            .read_to_vec()
+            .map_err(|error| format!("Could not read the file: {error}"))?;
+        Ok((bytes, mime))
+    }
+
     fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
         let Some(scope) = tool_scope(name) else {
             return Err(format!("Unknown tool {name}."));
@@ -1268,6 +1397,39 @@ impl Bridge {
                 } else {
                     format!(
                         "name | kind | id | unread | last activity | messages\n{}",
+                        lines.join("\n")
+                    )
+                })
+            }
+            "list_media" => {
+                let excluded = self.excluded_chats(&permissions);
+                let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
+                let (id, chat_name) = self.resolve(&wanted, &excluded)?;
+                let kind = text(arguments, "kind").filter(|k| k != "all");
+                let limit = number(arguments, "limit").unwrap_or(50.0).clamp(1.0, 500.0) as usize;
+                let mut pairs = vec![("chat", id), ("limit", "2000".to_owned())];
+                if let Some(hours) = number(arguments, "since_hours") {
+                    pairs.push(("since", (now() - (hours * 3600.0) as i64).to_string()));
+                }
+                let messages = self.get(&format!("/messages?{}", query(&pairs)))?;
+                let media: Vec<&Value> = messages
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|m| {
+                        let k = m["kind"].as_str().unwrap_or("");
+                        matches!(k, "image" | "video" | "audio" | "document" | "sticker")
+                            && kind.as_deref().is_none_or(|wanted| wanted == k)
+                    })
+                    .collect();
+                let start = media.len().saturating_sub(limit);
+                let lines: Vec<String> = media[start..].iter().map(|m| line(m, false)).collect();
+                Ok(if lines.is_empty() {
+                    format!("No attachments in {chat_name}.")
+                } else {
+                    format!(
+                        "{chat_name}: {} attachments\n{}",
+                        lines.len(),
                         lines.join("\n")
                     )
                 })
@@ -1409,6 +1571,15 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
                 .get("arguments")
                 .cloned()
                 .unwrap_or(json!({}));
+            if name == "get_media" {
+                return Some(json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": match bridge.media(&arguments) {
+                        Ok(content) => json!({"content": content}),
+                        Err(error) => json!({"content": [{"type": "text", "text": error}], "isError": true}),
+                    }
+                }));
+            }
             match bridge.call(name, &arguments) {
                 Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                 Err(error) => {
@@ -1796,6 +1967,8 @@ mod tests {
         assert_eq!(
             names,
             [
+                "list_media",
+                "get_media",
                 "list_chats",
                 "read_chat",
                 "recent_activity",

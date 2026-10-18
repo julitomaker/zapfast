@@ -1404,6 +1404,12 @@ pub struct Backend {
 }
 
 impl Backend {
+    /// A handle that sends commands from another thread, such as the
+    /// bridge asking for an attachment to be downloaded.
+    pub fn sender(&self) -> mpsc::UnboundedSender<Command> {
+        self.commands.clone()
+    }
+
     pub fn spawn(dirs: AccountDirs, waker: Waker) -> Self {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
         let (event_tx, event_rx) = std::sync::mpsc::channel();

@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::model::{Chat, ChatKind, Contact, Content, Delivery, LastMessage, MediaItem, Message};
 
 mod bridge;
-pub use bridge::{BridgeChat, BridgeMessage, BridgeQuote};
+pub use bridge::{BridgeChat, BridgeMedia, BridgeMessage, BridgeQuote};
 mod calls;
 pub use calls::CALL_LOG_LIMIT;
 mod drafts;

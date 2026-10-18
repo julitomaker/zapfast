@@ -186,6 +186,69 @@ impl Archive {
     }
 }
 
+/// A message's attachment as the bridge reports it.
+#[derive(Debug, Serialize)]
+pub struct BridgeMedia {
+    pub kind: String,
+    pub mime: String,
+    pub size: u64,
+    /// The downloaded file, when it is on this computer.
+    pub path: Option<std::path::PathBuf>,
+    pub caption: Option<String>,
+}
+
+impl Archive {
+    /// What was read out of one message of an unlocked chat, if anything.
+    pub fn bridge_transcript(&self, chat: &str, id: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        self.connection
+            .query_row(
+                "SELECT t.text FROM transcripts t JOIN chats c ON c.id = t.chat
+                 WHERE c.locked = 0 AND t.chat = ?1 AND t.id = ?2",
+                params![chat, id],
+                |row| row.get(0),
+            )
+            .optional()
+    }
+
+    /// The attachment of one message of an unlocked chat, if it has one.
+    pub fn bridge_media(&self, chat: &str, id: &str) -> Result<Option<BridgeMedia>> {
+        use rusqlite::OptionalExtension;
+        let content: Option<String> = self
+            .connection
+            .query_row(
+                "SELECT m.content FROM messages m JOIN chats c ON c.id = m.chat
+                 WHERE c.locked = 0 AND m.chat = ?1 AND m.id = ?2",
+                params![chat, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(content) = content else {
+            return Ok(None);
+        };
+        let kind = serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|value| value.get("kind")?.as_str().map(str::to_owned))
+            .unwrap_or_default();
+        let Ok(parsed) = serde_json::from_str::<Content>(&content) else {
+            return Ok(None);
+        };
+        let caption = match &parsed {
+            Content::Image { caption, .. }
+            | Content::Video { caption, .. }
+            | Content::Document { caption, .. } => caption.clone(),
+            _ => None,
+        };
+        Ok(parsed.media().map(|media| BridgeMedia {
+            kind,
+            mime: media.mime.clone(),
+            size: media.size,
+            path: media.path.clone().filter(|path| path.is_file()),
+            caption,
+        }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
