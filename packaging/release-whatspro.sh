@@ -33,7 +33,8 @@ if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
 fi
 
 current="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-sed -i '' "1,/^version = \"$current\"$/s//version = \"$version\"/" Cargo.toml
+# Only the package's own version: the first `version = ` line.
+CURRENT="$current" VERSION="$version" perl -0pi -e 's/^version = "\Q$ENV{CURRENT}\E"$/version = "$ENV{VERSION}"/m' Cargo.toml
 export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
 cargo update -q -p zapfast --precise "$version" 2>/dev/null || cargo check -q --locked 2>/dev/null || cargo check -q
 
