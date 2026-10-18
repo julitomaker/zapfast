@@ -4996,8 +4996,18 @@ msgstr "Detalles"
 msgid "No summary yet. Turn on the analysis, or use Redo the summary."
 msgstr "Todavía no hay resumen. Activá el análisis o usá Rehacer el resumen."
 
+#: src/ui/leads.rs
 msgid "Back to the leads"
 msgstr "Volver a los leads"
+
+#: src/ui/projects.rs
+msgid "Group"
+msgstr "Grupo"
+
+#: src/ui/projects.rs
+msgctxt "noun"
+msgid "Chat"
+msgstr "Chat"
 
 msgid "With {names}"
 msgstr "Con {names}"

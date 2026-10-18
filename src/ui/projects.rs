@@ -27,7 +27,7 @@ use std::{
 use egui::{Align, Color32, CornerRadius, Frame, Layout, Margin, Rect, Sense, Vec2, pos2, vec2};
 
 use crate::app::App;
-use crate::i18n::gettext;
+use crate::i18n::{gettext, pgettext};
 use crate::model::{Action, ChatKind, Page};
 use crate::projects::engine::{self, EngineConfig, Provider};
 use crate::projects::{
@@ -4083,7 +4083,7 @@ fn source_row(
                     let kind = if ChatKind::from_id(chat) == ChatKind::Group {
                         gettext(locale, "Group")
                     } else {
-                        gettext(locale, "Chat")
+                        pgettext(locale, "noun", "Chat")
                     };
                     theme::text(ui, kind, theme::regular(12.0), palette.dim);
                 }
@@ -4287,7 +4287,7 @@ fn chat_row(app: &mut App, ui: &mut egui::Ui, map: &ProjectMap, id: &str) -> Opt
         let kind = if group {
             gettext(locale, "Group")
         } else {
-            gettext(locale, "Chat")
+            pgettext(locale, "noun", "Chat")
         };
         widgets::line(
             ui,
