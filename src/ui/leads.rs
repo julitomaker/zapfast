@@ -3758,7 +3758,12 @@ fn summary(
             text.trim()
         ));
     }
-    let text = crate::projects::engine::ask(config, SUMMARY_PROMPT, &transcript)?;
+    let text = crate::projects::engine::ask(
+        config,
+        SUMMARY_PROMPT,
+        &transcript,
+        crate::projects::engine::Answer::Text,
+    )?;
     let text = text.trim();
     if text.is_empty() {
         anyhow::bail!("the model answered nothing");

@@ -589,7 +589,13 @@ pub fn analyze(
         call.seconds / 60,
         call.seconds % 60
     );
-    let reply = crate::projects::engine::ask(config, ANALYSIS, &user).map_err(|e| e.to_string())?;
+    let reply = crate::projects::engine::ask(
+        config,
+        ANALYSIS,
+        &user,
+        crate::projects::engine::Answer::Json,
+    )
+    .map_err(|e| e.to_string())?;
     let start = reply.find('{').ok_or("The engine answered without JSON")?;
     let end = reply.rfind('}').ok_or("The engine answered without JSON")?;
     let mut analysis: CallAnalysis =

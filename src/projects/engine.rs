@@ -777,6 +777,7 @@ fn analyze(
             &super::Ticks::load(config, &project.id),
             now,
         ),
+        Answer::Json,
     )?;
     let reply: Reply = serde_json::from_str(
         json_object(&reply).ok_or_else(|| anyhow::anyhow!("the model answered without JSON"))?,
@@ -845,6 +846,13 @@ fn analyze(
 
 // -------------------------------------------------------------- providers
 
+/// What shape of answer a prompt asks the model for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Json,
+    Text,
+}
+
 fn http() -> anyhow::Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(600))
@@ -854,8 +862,49 @@ fn http() -> anyhow::Result<reqwest::blocking::Client> {
 /// One question to the analysis's provider and model, for pages other
 /// than the analysis (the Leads tab's chat summary). Blocks: call it off
 /// the interface thread.
-pub fn ask(config: &Path, system: &str, user: &str) -> anyhow::Result<String> {
-    complete(config, &EngineConfig::load(config), system, user)
+pub fn ask(config: &Path, system: &str, user: &str, answer: Answer) -> anyhow::Result<String> {
+    complete(config, &EngineConfig::load(config), system, user, answer)
+}
+
+fn request_body(
+    provider: Provider,
+    model: &str,
+    system: &str,
+    user: &str,
+    answer: Answer,
+) -> serde_json::Value {
+    match provider {
+        Provider::Anthropic => serde_json::json!({
+            "model": model,
+            "max_tokens": 16000,
+            "system": system,
+            "messages": [{"role": "user", "content": user}],
+        }),
+        Provider::GeminiApi => {
+            let mut body = serde_json::json!({
+                "system_instruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+            });
+            if answer == Answer::Json {
+                body["generationConfig"] =
+                    serde_json::json!({"responseMimeType": "application/json"});
+            }
+            body
+        }
+        _ => {
+            let mut body = serde_json::json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            });
+            if answer == Answer::Json {
+                body["response_format"] = serde_json::json!({"type": "json_object"});
+            }
+            body
+        }
+    }
 }
 
 fn complete(
@@ -863,6 +912,7 @@ fn complete(
     settings: &EngineConfig,
     system: &str,
     user: &str,
+    answer: Answer,
 ) -> anyhow::Result<String> {
     let model = settings.model();
     match settings.provider {
@@ -873,12 +923,7 @@ fn complete(
         Provider::Anthropic => {
             let key = key(Provider::Anthropic)
                 .ok_or_else(|| anyhow::anyhow!("Add your Anthropic API key"))?;
-            let body = serde_json::json!({
-                "model": model,
-                "max_tokens": 16000,
-                "system": system,
-                "messages": [{"role": "user", "content": user}],
-            });
+            let body = request_body(Provider::Anthropic, &model, system, user, answer);
             let response = http()?
                 .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", key)
@@ -909,11 +954,7 @@ fn complete(
         Provider::GeminiApi => {
             let key = key(Provider::GeminiApi)
                 .ok_or_else(|| anyhow::anyhow!("Add your Gemini API key"))?;
-            let body = serde_json::json!({
-                "system_instruction": {"parts": [{"text": system}]},
-                "contents": [{"role": "user", "parts": [{"text": user}]}],
-                "generationConfig": {"responseMimeType": "application/json"},
-            });
+            let body = request_body(Provider::GeminiApi, &model, system, user, answer);
             let response = http()?
                 .post(format!(
                     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -950,14 +991,7 @@ fn complete(
             } else {
                 "https://openrouter.ai/api/v1/chat/completions"
             };
-            let body = serde_json::json!({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "response_format": {"type": "json_object"},
-            });
+            let body = request_body(provider, &model, system, user, answer);
             let response = http()?
                 .post(url)
                 .bearer_auth(key)
@@ -1113,6 +1147,7 @@ pub fn test(ctx: &egui::Context, config: &Path, settings: &EngineConfig) {
                 &settings,
                 "Answer with the single word OK.",
                 "Say OK.",
+                Answer::Text,
             )
             .map_err(|e| e.to_string())
             .and_then(|answer| {
@@ -1366,5 +1401,40 @@ mod tests {
         assert_eq!(Provider::Anthropic.default_model(), "claude-opus-5-5");
         assert_eq!(Provider::ClaudeCode.default_model(), "opus");
         assert_eq!(Provider::CodexCli.default_model(), "");
+    }
+
+    #[test]
+    fn json_format_is_only_requested_for_json_answers() {
+        for provider in [Provider::OpenAi, Provider::OpenRouter] {
+            let json = request_body(provider, "gpt-5", "sys", "usr", Answer::Json);
+            assert_eq!(
+                json["response_format"],
+                serde_json::json!({"type": "json_object"})
+            );
+            let text = request_body(provider, "gpt-5", "sys", "usr", Answer::Text);
+            assert!(
+                text.get("response_format").is_none(),
+                "plain-text prompts must not ask {provider:?} for json_object: {text}"
+            );
+        }
+        let gemini_json = request_body(
+            Provider::GeminiApi,
+            "gemini-2.5-pro",
+            "sys",
+            "usr",
+            Answer::Json,
+        );
+        assert_eq!(
+            gemini_json["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        let gemini_text = request_body(
+            Provider::GeminiApi,
+            "gemini-2.5-pro",
+            "sys",
+            "usr",
+            Answer::Text,
+        );
+        assert!(gemini_text.get("generationConfig").is_none());
     }
 }
