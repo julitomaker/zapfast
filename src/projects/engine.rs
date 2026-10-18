@@ -22,12 +22,16 @@ use super::{Analysis, FeedMessage, Finding, Mode, ProjectMap};
 
 /// How far back an analysis reads.
 const WINDOW: i64 = 7 * 86_400;
+/// How far back recorded calls of the project are read into the prompt.
+const CALL_WINDOW: i64 = 14 * 86_400;
 /// The most messages one analysis reads, newest kept.
 const MAX_MESSAGES: usize = 900;
 /// The longest a message is quoted.
 const MAX_CHARS: usize = 600;
 /// The most relevant message ids kept per smart source across runs.
 const MAX_RELEVANT: usize = 1000;
+/// The largest prompt sent to the model (in bytes), oldest items dropped first.
+const PROMPT_BUDGET: usize = 64_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -346,6 +350,17 @@ fn set_status(ctx: &egui::Context, change: impl FnOnce(&mut Status)) {
     ctx.request_repaint();
 }
 
+/// The app's state folder from an account's `archive.db` path.
+fn state_dir(archive: &Path) -> &Path {
+    let dir = archive.parent().unwrap_or(archive);
+    match dir.parent() {
+        Some(accounts) if accounts.file_name().and_then(|n| n.to_str()) == Some("accounts") => {
+            accounts.parent().unwrap_or(dir)
+        }
+        _ => dir,
+    }
+}
+
 /// Analyzes every project with messages newer than its last analysis.
 fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConfig) {
     let map = ProjectMap::load(config);
@@ -355,6 +370,7 @@ fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConf
         .force
         .clone();
     let now = jiff::Timestamp::now().as_second();
+    let state = state_dir(archive);
     let mut error = None;
     for project in &map.projects {
         if project.sources.is_empty() {
@@ -377,7 +393,7 @@ fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConf
         }
         set_status(ctx, |status| status.running = Some(project.name.clone()));
         let result = analyze(
-            config,
+            (config, state),
             settings,
             &map,
             project,
@@ -412,7 +428,7 @@ fn run(ctx: &egui::Context, config: &Path, archive: &Path, settings: &EngineConf
 // -------------------------------------------------------------- the prompt
 
 const SYSTEM: &str = "Sos el asistente de operaciones de una persona que lleva varios proyectos por WhatsApp. \
-Leés los mensajes recientes de un proyecto (de varios chats y grupos mezclados) y armás un tablero claro y accionable, en español rioplatense, breve y concreto. \
+Leés todo el cuadro de un proyecto junto (chats y grupos, notas de bitácora, llamadas grabadas, leads del proyecto y el contexto secundario del CRM de la empresa) y armás un tablero claro y accionable, en español rioplatense, breve y concreto. \
 \"Yo\" es el dueño del tablero: sus mensajes vienen marcados como \"Yo\". \
 Respondé SOLO con un objeto JSON válido, sin texto antes ni después, con esta forma:\n\
 {\"summaries\":{\"today\":\"\",\"yesterday\":\"\",\"week\":\"\"},\
@@ -437,10 +453,15 @@ Reglas:\n\
 Solo clientes o posibles clientes: no proveedores, ni compañeros, ni integrantes del proyecto. Máximo 8.\n\
 - ref es el número entre corchetes del mensaje que lo origina.\n\
 - relevant: los números de los mensajes marcados con ~ (chats mixtos) que SÍ tratan sobre este proyecto. Los demás mensajes ~ no van.\n\
-- No inventes nada que no esté en los mensajes. Si algo ya se resolvió en un mensaje posterior, no lo pongas.\n\
+- No inventes nada que no esté en las fuentes del proyecto. Si algo ya se resolvió en un mensaje o nota posterior, no lo pongas.\n\
 - Máximo 8 elementos por lista, los más importantes primero.\n\
 - Usá el contexto y los integrantes para entender quién es quién, qué rol tiene cada uno y cómo se organiza el proyecto.\n\
 - Las notas del dueño son lo más confiable sobre lo que ya pasó: si una nota dice que algo se resolvió o se hizo, sacalo de todas las listas; si trae un compromiso, una tarea, una llamada o una necesidad nueva, sumalo a la lista que corresponda (con ref null).\n\
+- Cruzá todas las fuentes entre sí:\n\
+  * Compromiso o próximo paso en una llamada sin seguimiento ni confirmación en el chat → sumalo en follow_up o leaks (con ref null o el mensaje relacionado).\n\
+  * Lead del proyecto sin próxima acción definida (o con próxima acción vencida sin avance en el chat) → sumalo en follow_up.\n\
+  * Algo prometido o acordado en el chat (precio, pago, pedido, entrega o reclamo) que no está reflejado en el CRM o en el lead → señalalo como nota en todo o needs.\n\
+  * El bloque de ElevaLeads (\"del CRM de la empresa\") es solo contexto secundario de referencia: nunca uses sus ítems por sí solos como hallazgos primarios si no se cruzan con los chats, llamadas, notas o leads del proyecto.\n\
 - No vuelvas a poner lo que el dueño marcó como hecho o descartado, salvo que un mensaje posterior lo reabra.\n\
 - Evitá recomendaciones parecidas a las que el dueño marcó como malas; las marcadas como buenas muestran qué le sirve.";
 
@@ -474,18 +495,198 @@ fn stamp(seconds: i64) -> String {
         .unwrap_or_default()
 }
 
-/// The user prompt: the project, how its sources are taken, what was picked
-/// by hand, and the numbered messages.
+/// Everything outside the message feed that gives the prompt one picture of
+/// the project: notes, verdicts, recorded calls, leads and the brand's CRM.
+#[derive(Default)]
+struct PromptContext<'a> {
+    journal: Option<&'a super::Journal>,
+    ticks: Option<&'a super::Ticks>,
+    calls: &'a [crate::call_library::Call],
+    leads: &'a [crate::leads::Lead],
+    crm: Option<(&'a crate::leads::Brand, &'a crate::eleva::Inbox)>,
+}
+
+/// Formats one recorded call of the project on a single compact line.
+fn format_call_line(call: &crate::call_library::Call) -> String {
+    let mut line = format!("- {} · {}", stamp(call.when()), clip(call.title.trim()));
+    if let Some(analysis) = &call.analysis {
+        if !analysis.summary.trim().is_empty() {
+            line.push_str(&format!(": {}", clip(analysis.summary.trim())));
+        }
+        let commitments: Vec<String> = analysis
+            .commitments
+            .iter()
+            .filter(|c| !c.what.trim().is_empty())
+            .map(|c| {
+                let who = c.who.trim();
+                let mut item = if who.is_empty() {
+                    clip(c.what.trim())
+                } else {
+                    format!("{who}: {}", clip(c.what.trim()))
+                };
+                if let Some(due) = c.due.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                    item.push_str(&format!(" (para {due})"));
+                }
+                item
+            })
+            .collect();
+        if !commitments.is_empty() {
+            line.push_str(&format!(" | Compromisos: {}", commitments.join("; ")));
+        }
+        let steps: Vec<String> = analysis
+            .next_steps
+            .iter()
+            .chain(analysis.tasks.iter())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(clip)
+            .collect();
+        if !steps.is_empty() {
+            line.push_str(&format!(" | Próximos pasos: {}", steps.join("; ")));
+        }
+    } else if let Some(transcript) = call.transcript()
+        && !transcript.text.trim().is_empty()
+    {
+        line.push_str(&format!(": {}", clip(transcript.text.trim())));
+    }
+    line
+}
+
+/// Formats one lead's current state on a single compact line.
+fn format_lead_line(lead: &crate::leads::Lead) -> String {
+    let who = match lead
+        .phone
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(phone) => format!("{} ({phone})", lead.name.trim()),
+        None => lead.name.trim().to_owned(),
+    };
+    let stage = match lead.stage {
+        crate::leads::Stage::New => "nuevo",
+        crate::leads::Stage::Contacted => "contactado",
+        crate::leads::Stage::Quoted => "cotizado",
+        crate::leads::Stage::Customer => "cliente",
+        crate::leads::Stage::Lost => "perdido",
+    };
+    let amount = lead
+        .value
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(|v| format!(" · monto: {v}"))
+        .unwrap_or_default();
+    let next = match &lead.next {
+        Some(next) if !next.text.trim().is_empty() => {
+            match next.due.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                Some(due) => format!(
+                    " · próxima acción: {} (vence {due})",
+                    clip(next.text.trim())
+                ),
+                None => format!(" · próxima acción: {}", clip(next.text.trim())),
+            }
+        }
+        _ if lead.stage.open() => " · sin próxima acción".to_owned(),
+        _ => String::new(),
+    };
+    let mut entries: Vec<String> = lead
+        .entries
+        .iter()
+        .rev()
+        .filter(|e| e.kind != crate::leads::Kind::Stage && !e.text.trim().is_empty())
+        .take(3)
+        .map(|e| format!("[{}] {}", stamp(e.at), clip(e.text.trim())))
+        .collect();
+    entries.reverse();
+    let history = if entries.is_empty() {
+        String::new()
+    } else {
+        format!(" · últimas entradas: {}", entries.join("; "))
+    };
+    format!("- {who} · etapa: {stage}{amount}{next}{history}")
+}
+
+/// Formats the brand's cached ElevaLeads inbox as secondary context only.
+fn format_crm_block(brand: &crate::leads::Brand, inbox: &crate::eleva::Inbox) -> String {
+    if inbox.read_at == 0
+        && inbox.total == 0
+        && inbox.waiting.is_empty()
+        && inbox.alerts.is_empty()
+        && inbox.agenda.is_empty()
+    {
+        return String::new();
+    }
+    let waiting_count = inbox.total.max(inbox.waiting.len());
+    let mut block = format!(
+        "Contexto secundario del CRM de la empresa (ElevaLeads · {} — del CRM de la empresa, solo contexto secundario, nunca usar como hallazgos primarios):\n\
+         Totales en CRM: {} esperando respuesta, {} alertas de atención, {} en agenda.\n",
+        brand.name,
+        waiting_count,
+        inbox.alerts.len(),
+        inbox.agenda.len(),
+    );
+    for item in inbox.waiting.iter().take(6) {
+        let detail = item
+            .detail
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| format!(": {}", clip(d)))
+            .unwrap_or_default();
+        block.push_str(&format!(
+            "- Esperando en CRM: {} ({}, {}){detail}\n",
+            item.who, item.reason, item.ago
+        ));
+    }
+    for alert in inbox.alerts.iter().take(6) {
+        let who = alert.who.as_deref().unwrap_or("sin nombre");
+        let when = alert
+            .when
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(|w| format!(" ({w})"))
+            .unwrap_or_default();
+        let excerpt = alert
+            .excerpt
+            .as_deref()
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(|e| format!(": {}", clip(e)))
+            .unwrap_or_default();
+        block.push_str(&format!(
+            "- Alerta en CRM: {} · {who}{when}{excerpt}\n",
+            alert.title
+        ));
+    }
+    for item in inbox.agenda.iter().take(4) {
+        let who = item.who.as_deref().unwrap_or("sin nombre");
+        let when = item
+            .when
+            .as_deref()
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .map(|w| format!(" ({w})"))
+            .unwrap_or_default();
+        block.push_str(&format!("- Agenda en CRM: {} · {who}{when}\n", item.title));
+    }
+    block.push('\n');
+    block
+}
+
+/// The user prompt: the project, its notes, recent recorded calls, leads,
+/// secondary CRM context, hand-picked examples, and the numbered messages,
+/// kept within `PROMPT_BUDGET` by dropping the oldest items first.
 fn prompt(
     map: &ProjectMap,
     project: &super::Project,
     messages: &[&FeedMessage],
     all: &[FeedMessage],
-    journal: &super::Journal,
-    ticks: &super::Ticks,
+    ctx: PromptContext<'_>,
     now: i64,
 ) -> String {
-    let mut text = format!(
+    let mut header = format!(
         "Proyecto: {}\nAhora: {}\nOtros proyectos: {}\n\n",
         project.name,
         stamp(now),
@@ -497,13 +698,13 @@ fn prompt(
             .join(", ")
     );
     if !project.context.trim().is_empty() {
-        text.push_str(&format!(
+        header.push_str(&format!(
             "Contexto del proyecto (escrito por el dueño):\n{}\n\n",
             project.context.trim()
         ));
     }
     if !project.members.is_empty() {
-        text.push_str("Integrantes:\n");
+        header.push_str("Integrantes:\n");
         for member in &project.members {
             let phone = member.id.split('@').next().unwrap_or("");
             let mut line = format!("- {}", member.name);
@@ -514,64 +715,119 @@ fn prompt(
             if !member.about.trim().is_empty() {
                 line.push_str(&format!(". {}", clip(member.about.trim())));
             }
-            text.push_str(&line);
-            text.push('\n');
+            header.push_str(&line);
+            header.push('\n');
         }
-        text.push('\n');
+        header.push('\n');
     }
-    let recent: Vec<&super::Note> = journal
-        .notes
+
+    let note_lines: Vec<String> = ctx
+        .journal
+        .map(|journal| {
+            let recent: Vec<&super::Note> = journal
+                .notes
+                .iter()
+                .filter(|note| now - note.at < 30 * 86_400)
+                .collect();
+            recent
+                .into_iter()
+                .rev()
+                .take(40)
+                .rev()
+                .map(|note| {
+                    let kind = match note.kind {
+                        super::NoteKind::Log => "pasó",
+                        super::NoteKind::Memo => "apunte",
+                    };
+                    format!("- {} ({kind}): {}", stamp(note.at), clip(&note.text))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut project_calls: Vec<&crate::call_library::Call> = ctx
+        .calls
         .iter()
-        .filter(|note| now - note.at < 30 * 86_400)
+        .filter(|call| !call.private && now - call.when() < CALL_WINDOW)
+        .filter(|call| {
+            call.project.as_deref() == Some(project.id.as_str())
+                || call
+                    .chat
+                    .as_deref()
+                    .is_some_and(|chat| project.source(chat).is_some())
+                || call.lead.as_deref().is_some_and(|lead_id| {
+                    ctx.leads
+                        .iter()
+                        .any(|l| l.project == project.id && l.id == lead_id)
+                })
+        })
         .collect();
-    if !recent.is_empty() {
-        text.push_str("Notas del dueño (bitácora y apuntes, la más nueva al final):\n");
-        for note in recent.iter().rev().take(40).rev() {
-            let kind = match note.kind {
-                super::NoteKind::Log => "pasó",
-                super::NoteKind::Memo => "apunte",
-            };
-            text.push_str(&format!(
-                "- {} ({kind}): {}\n",
-                stamp(note.at),
-                clip(&note.text)
-            ));
-        }
-        text.push('\n');
-    }
-    let verdicts = |verdicts: &[super::Verdict]| -> Vec<String> {
-        ticks
-            .feedback
-            .iter()
-            .rev()
-            .filter(|f| verdicts.contains(&f.verdict))
-            .take(40)
-            .map(|f| match &f.note {
-                Some(note) => format!("- {} (cómo se resolvió: {})", clip(&f.text), clip(note)),
-                None => format!("- {}", clip(&f.text)),
-            })
-            .collect()
-    };
-    for (title, kinds) in [
-        (
-            "Ya hecho o descartado por el dueño (no repetir):",
-            &[super::Verdict::Done, super::Verdict::Dismissed][..],
-        ),
-        (
-            "Recomendaciones que el dueño marcó como malas:",
-            &[super::Verdict::Bad][..],
-        ),
-        (
-            "Recomendaciones que el dueño marcó como buenas:",
-            &[super::Verdict::Good][..],
-        ),
-    ] {
-        let lines = verdicts(kinds);
-        if !lines.is_empty() {
-            text.push_str(title);
-            text.push('\n');
-            text.push_str(&lines.join("\n"));
-            text.push_str("\n\n");
+    project_calls.sort_by_key(|call| call.when());
+    let call_lines: Vec<String> = project_calls
+        .into_iter()
+        .rev()
+        .take(20)
+        .rev()
+        .map(format_call_line)
+        .collect();
+
+    let mut project_leads: Vec<&crate::leads::Lead> = ctx
+        .leads
+        .iter()
+        .filter(|lead| lead.project == project.id)
+        .collect();
+    project_leads.sort_by_key(|lead| lead.updated);
+    let lead_lines: Vec<String> = project_leads
+        .into_iter()
+        .rev()
+        .take(40)
+        .rev()
+        .map(format_lead_line)
+        .collect();
+
+    let crm_block = ctx
+        .crm
+        .map(|(brand, inbox)| format_crm_block(brand, inbox))
+        .unwrap_or_default();
+
+    let mut verdicts_and_examples = String::new();
+    if let Some(ticks) = ctx.ticks {
+        let verdicts = |verdicts: &[super::Verdict]| -> Vec<String> {
+            ticks
+                .feedback
+                .iter()
+                .rev()
+                .filter(|f| verdicts.contains(&f.verdict))
+                .take(40)
+                .map(|f| match &f.note {
+                    Some(note) => {
+                        format!("- {} (cómo se resolvió: {})", clip(&f.text), clip(note))
+                    }
+                    None => format!("- {}", clip(&f.text)),
+                })
+                .collect()
+        };
+        for (title, kinds) in [
+            (
+                "Ya hecho o descartado por el dueño (no repetir):",
+                &[super::Verdict::Done, super::Verdict::Dismissed][..],
+            ),
+            (
+                "Recomendaciones que el dueño marcó como malas:",
+                &[super::Verdict::Bad][..],
+            ),
+            (
+                "Recomendaciones que el dueño marcó como buenas:",
+                &[super::Verdict::Good][..],
+            ),
+        ] {
+            let lines = verdicts(kinds);
+            if !lines.is_empty() {
+                verdicts_and_examples.push_str(title);
+                verdicts_and_examples.push('\n');
+                verdicts_and_examples.push_str(&lines.join("\n"));
+                verdicts_and_examples.push_str("\n\n");
+            }
         }
     }
     // What was filed by hand teaches what this project is about, including
@@ -598,42 +854,107 @@ fn prompt(
         }
     }
     if !examples.is_empty() {
-        text.push_str("Ejemplos elegidos a mano para este proyecto:\n");
-        text.push_str(&examples.join("\n"));
-        text.push_str("\n\n");
+        verdicts_and_examples.push_str("Ejemplos elegidos a mano para este proyecto:\n");
+        verdicts_and_examples.push_str(&examples.join("\n"));
+        verdicts_and_examples.push_str("\n\n");
     }
-    text.push_str("Mensajes (~ = chat mixto, decidir si va):\n");
-    for (index, message) in messages.iter().enumerate() {
-        let smart = project
-            .source(&message.chat)
-            .is_some_and(|source| source.mode == Mode::Smart)
-            && map
-                .picked(&message.chat, &message.id, &project.id)
-                .is_none();
-        let phone = message.sender.split('@').next().unwrap_or("");
-        let member = project.members.iter().find(|m| {
-            m.id == message.sender || (!phone.is_empty() && m.id.split('@').next() == Some(phone))
-        });
-        let who = if message.from_me {
-            "Yo".to_owned()
-        } else if let Some(member) = member {
-            member.name.clone()
-        } else {
-            message
-                .sender_name
-                .clone()
-                .unwrap_or_else(|| phone.to_owned())
+
+    let message_lines: Vec<String> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| {
+            let smart = project
+                .source(&message.chat)
+                .is_some_and(|source| source.mode == Mode::Smart)
+                && map
+                    .picked(&message.chat, &message.id, &project.id)
+                    .is_none();
+            let phone = message.sender.split('@').next().unwrap_or("");
+            let member = project.members.iter().find(|m| {
+                m.id == message.sender
+                    || (!phone.is_empty() && m.id.split('@').next() == Some(phone))
+            });
+            let who = if message.from_me {
+                "Yo".to_owned()
+            } else if let Some(member) = member {
+                member.name.clone()
+            } else {
+                message
+                    .sender_name
+                    .clone()
+                    .unwrap_or_else(|| phone.to_owned())
+            };
+            format!(
+                "[{index}]{} {} | {} | {}: {}",
+                if smart { "~" } else { "" },
+                stamp(message.timestamp),
+                message.chat_name,
+                who,
+                clip(&said(message))
+            )
+        })
+        .collect();
+
+    let render =
+        |note_from: usize, call_from: usize, lead_from: usize, msg_from: usize| -> String {
+            let mut text = header.clone();
+            if note_from < note_lines.len() {
+                text.push_str("Notas del dueño (bitácora y apuntes, la más nueva al final):\n");
+                for line in &note_lines[note_from..] {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                text.push('\n');
+            }
+            if call_from < call_lines.len() {
+                text.push_str("Llamadas del proyecto (últimos 14 días, la más nueva al final):\n");
+                for line in &call_lines[call_from..] {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                text.push('\n');
+            }
+            if lead_from < lead_lines.len() {
+                text.push_str("Leads del proyecto (estado actual):\n");
+                for line in &lead_lines[lead_from..] {
+                    text.push_str(line);
+                    text.push('\n');
+                }
+                text.push('\n');
+            }
+            text.push_str(&crm_block);
+            text.push_str(&verdicts_and_examples);
+            text.push_str("Mensajes (~ = chat mixto, decidir si va):\n");
+            for line in &message_lines[msg_from..] {
+                text.push_str(line);
+                text.push('\n');
+            }
+            text
         };
-        text.push_str(&format!(
-            "[{index}]{} {} | {} | {}: {}\n",
-            if smart { "~" } else { "" },
-            stamp(message.timestamp),
-            message.chat_name,
-            who,
-            clip(&said(message))
-        ));
+
+    let full = render(0, 0, 0, 0);
+    if full.len() <= PROMPT_BUDGET {
+        return full;
     }
-    text
+    let mut over = full.len() - PROMPT_BUDGET;
+    let (mut note_from, mut call_from, mut lead_from, mut msg_from) = (0, 0, 0, 0);
+    while over > 0 && msg_from + 1 < message_lines.len() {
+        over = over.saturating_sub(message_lines[msg_from].len() + 1);
+        msg_from += 1;
+    }
+    while over > 0 && note_from + 1 < note_lines.len() {
+        over = over.saturating_sub(note_lines[note_from].len() + 1);
+        note_from += 1;
+    }
+    while over > 0 && call_from + 1 < call_lines.len() {
+        over = over.saturating_sub(call_lines[call_from].len() + 1);
+        call_from += 1;
+    }
+    while over > 0 && lead_from + 1 < lead_lines.len() {
+        over = over.saturating_sub(lead_lines[lead_from].len() + 1);
+        lead_from += 1;
+    }
+    render(note_from, call_from, lead_from, msg_from)
 }
 
 #[derive(Default, Deserialize)]
@@ -828,7 +1149,7 @@ fn merge_relevant(
 }
 
 fn analyze(
-    config: &Path,
+    (config, state): (&Path, &Path),
     settings: &EngineConfig,
     map: &ProjectMap,
     project: &super::Project,
@@ -838,19 +1159,24 @@ fn analyze(
 ) -> anyhow::Result<Analysis> {
     let messages = feed_messages(map, project, all);
     let messages = messages.as_slice();
+    let journal = super::Journal::load(config, &project.id);
+    let ticks = super::Ticks::load(config, &project.id);
+    let library = crate::call_library::Library::load(state);
+    let store = (*crate::leads::Store::open(config)).clone();
+    let brand = store.brands.get(&project.id);
+    let inbox = brand.and_then(|b| crate::eleva::cached_inbox(&b.slug));
+    let ctx = PromptContext {
+        journal: Some(&journal),
+        ticks: Some(&ticks),
+        calls: &library.calls,
+        leads: &store.leads,
+        crm: brand.zip(inbox.as_ref()),
+    };
     let reply = complete(
         config,
         settings,
         SYSTEM,
-        &prompt(
-            map,
-            project,
-            messages,
-            all,
-            &super::Journal::load(config, &project.id),
-            &super::Ticks::load(config, &project.id),
-            now,
-        ),
+        &prompt(map, project, messages, all, ctx, now),
         Answer::Json,
     )?;
     let reply: Reply = serde_json::from_str(
@@ -1423,8 +1749,10 @@ mod tests {
             &project,
             &messages,
             &all,
-            &journal,
-            &Default::default(),
+            PromptContext {
+                journal: Some(&journal),
+                ..Default::default()
+            },
             jiff::Timestamp::now().as_second(),
         );
         assert!(text.contains("Ya mandé la cotización"), "{text}");
@@ -1457,8 +1785,7 @@ mod tests {
             &project,
             &messages,
             &all,
-            &Default::default(),
-            &Default::default(),
+            PromptContext::default(),
             jiff::Timestamp::now().as_second(),
         );
         assert!(
@@ -1594,6 +1921,170 @@ mod tests {
             merged.get("p@s.whatsapp.net").map(Vec::as_slice),
             Some(&["old-2".to_owned(), "m1".to_owned(), "m2".to_owned()][..]),
             "earlier relevant ids stay, excluded ids drop, and the cap keeps the newest"
+        );
+    }
+
+    #[test]
+    fn the_prompt_unifies_all_sources_and_stays_under_budget() {
+        let now = jiff::Timestamp::now().as_second();
+        let mut map = ProjectMap::default();
+        let id = map.add("JAS");
+        map.add_source(&id, "g@g.us", Mode::All);
+        let project = map.project(&id).unwrap().clone();
+
+        let mut journal = super::super::Journal::default();
+        journal.add("Se aprobó el diseño de hebillas", false);
+
+        let call = crate::call_library::Call {
+            id: "call-1".into(),
+            title: "Revisión con taller".into(),
+            at: now - 2 * 86_400,
+            seconds: 420,
+            origin: crate::call_library::Origin::Recorded,
+            file: "call-1.wav".into(),
+            project: Some(id.clone()),
+            lead: None,
+            transcripts: Vec::new(),
+            analysis: Some(crate::call_library::CallAnalysis {
+                summary: "Acordaron entregar la tanda el jueves.".into(),
+                decisions: Vec::new(),
+                commitments: vec![crate::call_library::Commitment {
+                    who: "Martín".into(),
+                    what: "mandar remito".into(),
+                    due: Some("jueves".into()),
+                }],
+                tasks: Vec::new(),
+                next_steps: vec!["Confirmar transporte".into()],
+                at: now - 2 * 86_400,
+            }),
+            chat: None,
+            account: None,
+            started_at: now - 2 * 86_400,
+            video: false,
+            direction: None,
+            group: None,
+            participants: Vec::new(),
+            private: false,
+            notice_ms: None,
+            levels: None,
+            stereo: false,
+            recovered: false,
+            pending_read: false,
+            pending_review: false,
+        };
+
+        let mut lead = crate::leads::Lead::new(
+            &id,
+            "Lucía Gómez",
+            Some("5491133334444@s.whatsapp.net".into()),
+            Some("5491133334444".into()),
+        );
+        lead.set_stage(crate::leads::Stage::Quoted, None);
+        lead.value = Some("$ 180.000".into());
+        lead.set_next("Confirmar pago de seña", Some("2026-10-20".into()));
+        lead.add(crate::leads::Kind::Note, "Pidió 100 cinturones negros");
+
+        let brand = crate::leads::Brand {
+            slug: "jas".into(),
+            name: "JAS Marroquinería".into(),
+            write: true,
+        };
+        let inbox = crate::eleva::Inbox {
+            waiting: vec![crate::eleva::Waiting {
+                reason: "Reclamo".into(),
+                ago: "hace 2 días".into(),
+                who: "Carlos".into(),
+                phone: Some("5491199990000".into()),
+                detail: Some("Falta guía de correo".into()),
+                id: "w-1".into(),
+            }],
+            total: 3,
+            alerts: vec![crate::eleva::Situation {
+                key: "pago_informado".into(),
+                title: "Pago informado".into(),
+                when: Some("hoy".into()),
+                who: Some("Sofía".into()),
+                phone: None,
+                excerpt: Some("Adjuntó comprobante".into()),
+                working: false,
+                id: "s-1".into(),
+            }],
+            agenda: Vec::new(),
+            read_at: now,
+            error: None,
+        };
+
+        let filler = "x".repeat(450);
+        let mut all: Vec<FeedMessage> = (0..180)
+            .map(|i| {
+                message(
+                    "g@g.us",
+                    &format!("m-{i}"),
+                    now - (200 - i) * 60,
+                    &format!("mensaje-{i} {filler}"),
+                )
+            })
+            .collect();
+        all.push(message(
+            "g@g.us",
+            "m-newest",
+            now - 10,
+            "Último mensaje clave del taller",
+        ));
+        let messages = feed_messages(&map, &project, &all);
+
+        let text = prompt(
+            &map,
+            &project,
+            &messages,
+            &all,
+            PromptContext {
+                journal: Some(&journal),
+                ticks: None,
+                calls: std::slice::from_ref(&call),
+                leads: std::slice::from_ref(&lead),
+                crm: Some((&brand, &inbox)),
+            },
+            now,
+        );
+
+        assert!(
+            text.len() <= PROMPT_BUDGET,
+            "prompt must stay within PROMPT_BUDGET ({} > {PROMPT_BUDGET})",
+            text.len()
+        );
+        assert!(
+            text.contains("Se aprobó el diseño de hebillas"),
+            "journal note included"
+        );
+        assert!(
+            text.contains("Revisión con taller")
+                && text.contains("Martín: mandar remito (para jueves)")
+                && text.contains("Confirmar transporte"),
+            "recent call summary, commitments and next steps included: {text}"
+        );
+        assert!(
+            text.contains("Lucía Gómez")
+                && text.contains("etapa: cotizado")
+                && text.contains("monto: $ 180.000")
+                && text.contains("Confirmar pago de seña (vence 2026-10-20)")
+                && text.contains("Pidió 100 cinturones negros"),
+            "lead stage, amount, next action + due and recent entries included: {text}"
+        );
+        assert!(
+            text.contains("del CRM de la empresa")
+                && text.contains("3 esperando respuesta, 1 alertas de atención")
+                && text.contains("Carlos (Reclamo, hace 2 días)")
+                && text.contains("Pago informado · Sofía"),
+            "secondary ElevaLeads CRM context included: {text}"
+        );
+        assert!(
+            text.contains("Último mensaje clave del taller"),
+            "newest chat message kept"
+        );
+        assert!(
+            !text.contains("mensaje-0 "),
+            "oldest chat messages truncated first to fit budget"
         );
     }
 }

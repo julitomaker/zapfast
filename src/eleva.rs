@@ -372,6 +372,11 @@ pub fn preload(slug: &str, inbox: Inbox) {
     shared(|s| s.inboxes.insert(slug.to_owned(), inbox));
 }
 
+/// The brand's inbox as last read, without starting a network call.
+pub fn cached_inbox(slug: &str) -> Option<Inbox> {
+    shared(|s| s.inboxes.get(slug).cloned())
+}
+
 /// Whether the brand's inbox is being read right now.
 pub fn reading(slug: &str) -> bool {
     shared(|s| s.reading.contains_key(slug))
