@@ -209,7 +209,8 @@ fn run() -> eframe::Result<()> {
     // `mcp`: serve the Model Context Protocol on stdio for Claude Desktop and
     // exit, without a window, the instance lock or the account (src/mcp.rs).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
-        std::process::exit(zapfast::mcp::run(&paths::AppDirs::discover().config));
+        let dirs = paths::AppDirs::discover();
+        std::process::exit(zapfast::mcp::run(&dirs.config, &dirs.state));
     }
     // `record <seconds> [microphone|system|both]`: records a call to a WAV
     // and prints its path, for checking src/recorder.rs.

@@ -1,27 +1,168 @@
 //! A Model Context Protocol server over stdio, so Claude Desktop (or any MCP
-//! client) can read the chats: `<app binary> mcp`.
+//! client) can read the chats, projects, calls and leads: `<app binary> mcp`.
 //!
-//! It is a thin, read-only client of the local bridge (`crate::bridge`): it
-//! needs Whats Pro running, reads the bridge's port and token from
-//! `bridge.json`, and can never send, delete or mark anything read. Locked
-//! chats are never served by the bridge, so never reach the client.
+//! It is a read-only server: chats come from the local bridge (`crate::bridge`,
+//! which needs Whats Pro running and reads `bridge.json`), and projects, calls
+//! and leads are read straight from disk. Permissions live in `mcp.json` in
+//! the config folder and are read on every request so changes apply at once.
+//! Locked chats and private calls are never served.
 //!
 //! [`connect_claude_desktop`] adds this server to Claude Desktop's config.
 
 use std::{
+    collections::HashSet,
     io::{BufRead, Write},
     path::{Path, PathBuf},
 };
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 const PROTOCOL: &str = "2025-06-18";
 const SERVER_NAME: &str = "whats-pro";
 
-/// The tools offered, with their JSON schemas.
-fn tools() -> Value {
-    json!([
-        {
+fn default_true() -> bool {
+    true
+}
+
+/// Which group of data a tool reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    Chats,
+    Projects,
+    Calls,
+    Leads,
+}
+
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chats => "chats",
+            Self::Projects => "projects",
+            Self::Calls => "calls",
+            Self::Leads => "leads",
+        }
+    }
+
+    fn settings_label(self) -> &'static str {
+        match self {
+            Self::Chats => "Chats",
+            Self::Projects => "Proyectos y notas",
+            Self::Calls => "Llamadas (resúmenes)",
+            Self::Leads => "Leads",
+        }
+    }
+}
+
+/// What MCP clients are allowed to read, stored in `mcp.json` in the config
+/// folder and read on each request so changes apply live.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Permissions {
+    /// Master switch for all MCP access.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// WhatsApp chats and messages through the local bridge.
+    #[serde(default = "default_true")]
+    pub chats: bool,
+    /// Projects, analysis findings and notes.
+    #[serde(default = "default_true")]
+    pub projects: bool,
+    /// Recorded and uploaded call summaries, decisions, commitments and tasks.
+    #[serde(default = "default_true")]
+    pub calls: bool,
+    /// Full call transcripts (off by default).
+    #[serde(default)]
+    pub call_transcripts: bool,
+    /// Sales leads, stages, next actions and history.
+    #[serde(default = "default_true")]
+    pub leads: bool,
+    /// Never serve chats marked as Personal or Ignored in `projects.json`.
+    #[serde(default = "default_true")]
+    pub exclude_personal_and_ignored: bool,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            chats: true,
+            projects: true,
+            calls: true,
+            call_transcripts: false,
+            leads: true,
+            exclude_personal_and_ignored: true,
+        }
+    }
+}
+
+impl Permissions {
+    pub fn file(config_dir: &Path) -> PathBuf {
+        config_dir.join("mcp.json")
+    }
+
+    /// Reads `mcp.json`, or returns safe defaults when missing or unreadable.
+    pub fn load(config_dir: &Path) -> Self {
+        std::fs::read_to_string(Self::file(config_dir))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    /// Writes `mcp.json` atomically through a temporary file.
+    pub fn save(&self, config_dir: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(config_dir)?;
+        let path = Self::file(config_dir);
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(temporary, path)
+    }
+
+    /// Whether `scope` is enabled.
+    pub fn allows(&self, scope: Scope) -> bool {
+        self.enabled
+            && match scope {
+                Scope::Chats => self.chats,
+                Scope::Projects => self.projects,
+                Scope::Calls => self.calls,
+                Scope::Leads => self.leads,
+            }
+    }
+
+    /// Clear error explaining how to turn on a disabled scope in the app.
+    pub fn check(&self, scope: Scope) -> Result<(), String> {
+        if self.allows(scope) {
+            return Ok(());
+        }
+        if !self.enabled {
+            return Err(
+                "MCP access is turned off. Enable \"Permitir que otras IA lean Whats Pro\" in Whats Pro > Ajustes > Conectar con IA."
+                    .to_owned(),
+            );
+        }
+        Err(format!(
+            "Access to \"{}\" ({}) is turned off. Enable it in Whats Pro > Ajustes > Conectar con IA.",
+            scope.settings_label(),
+            scope.as_str(),
+        ))
+    }
+}
+
+/// The scope a tool belongs to.
+fn tool_scope(name: &str) -> Option<Scope> {
+    match name {
+        "list_chats" | "read_chat" | "recent_activity" | "search_messages" => Some(Scope::Chats),
+        "list_projects" | "project_overview" | "project_notes" => Some(Scope::Projects),
+        "list_calls" | "read_call" => Some(Scope::Calls),
+        "list_leads" | "read_lead" => Some(Scope::Leads),
+        _ => None,
+    }
+}
+
+/// All tools with their JSON schemas.
+fn all_tools() -> Vec<Value> {
+    vec![
+        json!({
             "name": "list_chats",
             "description": "List WhatsApp chats (groups and people) from Whats Pro, most recent activity first, with unread counts. Use it to find a chat's exact name or id.",
             "inputSchema": {
@@ -34,8 +175,8 @@ fn tools() -> Value {
                 }
             },
             "annotations": {"readOnlyHint": true}
-        },
-        {
+        }),
+        json!({
             "name": "read_chat",
             "description": "Read the messages of one WhatsApp chat, oldest first. `chat` is the chat's name (or part of it) or its id.",
             "inputSchema": {
@@ -48,8 +189,8 @@ fn tools() -> Value {
                 "required": ["chat"]
             },
             "annotations": {"readOnlyHint": true}
-        },
-        {
+        }),
+        json!({
             "name": "recent_activity",
             "description": "Everything said across all WhatsApp chats in the last hours, grouped by chat. Good for daily summaries, pending items and who owes what.",
             "inputSchema": {
@@ -61,8 +202,8 @@ fn tools() -> Value {
                 }
             },
             "annotations": {"readOnlyHint": true}
-        },
-        {
+        }),
+        json!({
             "name": "search_messages",
             "description": "Search WhatsApp messages by text, caption or file name, newest first.",
             "inputSchema": {
@@ -75,17 +216,47 @@ fn tools() -> Value {
                 "required": ["query"]
             },
             "annotations": {"readOnlyHint": true}
-        }
-    ])
+        }),
+    ]
 }
 
-/// The bridge's address and token, read on each call so a restarted app
-/// or a new token is picked up.
+/// The tools currently enabled by `permissions`.
+fn tools(permissions: &Permissions) -> Value {
+    let enabled: Vec<Value> = all_tools()
+        .into_iter()
+        .filter(|tool| {
+            tool["name"]
+                .as_str()
+                .and_then(tool_scope)
+                .is_some_and(|scope| permissions.allows(scope))
+        })
+        .collect();
+    Value::Array(enabled)
+}
+
+/// The bridge's address and token, plus the folders where projects, calls and
+/// leads live. Permissions are read on each request so changes apply live.
 struct Bridge {
     config_dir: PathBuf,
+    #[allow(dead_code)]
+    state_dir: PathBuf,
 }
 
 impl Bridge {
+    fn permissions(&self) -> Permissions {
+        Permissions::load(&self.config_dir)
+    }
+
+    /// Chat ids marked as Personal or Ignored in `projects.json`, when the
+    /// permission excludes them.
+    fn excluded_chats(&self, permissions: &Permissions) -> HashSet<String> {
+        if !permissions.exclude_personal_and_ignored {
+            return HashSet::new();
+        }
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+        map.personal.into_iter().chain(map.ignored).collect()
+    }
+
     fn get(&self, path: &str) -> Result<Value, String> {
         let config = crate::bridge::config(&self.config_dir)
             .map_err(|error| format!("Could not read Whats Pro's bridge settings: {error}"))?;
@@ -105,6 +276,20 @@ impl Bridge {
             .read_to_string()
             .map_err(|error| format!("Could not read Whats Pro's answer: {error}"))?;
         serde_json::from_str(&text).map_err(|error| format!("Unexpected answer: {error}"))
+    }
+
+    /// Visible chats from the bridge, excluding locked and (when configured)
+    /// personal or ignored chats.
+    fn chats(&self, excluded: &HashSet<String>) -> Result<Vec<Value>, String> {
+        let chats = self.get("/chats")?;
+        Ok(chats
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|chat| chat["locked"].as_bool() != Some(true))
+            .filter(|chat| chat["id"].as_str().is_none_or(|id| !excluded.contains(id)))
+            .collect())
     }
 }
 
@@ -190,9 +375,12 @@ fn line(message: &Value, with_chat: bool) -> String {
 
 impl Bridge {
     /// A chat id from an id, a name or part of a name.
-    fn resolve(&self, wanted: &str) -> Result<(String, String), String> {
-        let chats = self.get("/chats")?;
-        let chats = chats.as_array().cloned().unwrap_or_default();
+    fn resolve(
+        &self,
+        wanted: &str,
+        excluded: &HashSet<String>,
+    ) -> Result<(String, String), String> {
+        let chats = self.chats(excluded)?;
         if let Some(chat) = chats.iter().find(|chat| chat["id"] == wanted) {
             return Ok((
                 wanted.to_owned(),
@@ -235,18 +423,22 @@ impl Bridge {
     }
 
     fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
+        let Some(scope) = tool_scope(name) else {
+            return Err(format!("Unknown tool {name}."));
+        };
+        let permissions = self.permissions();
+        permissions.check(scope)?;
         match name {
             "list_chats" => {
+                let excluded = self.excluded_chats(&permissions);
                 let kind = text(arguments, "kind");
                 let since = number(arguments, "active_within_days")
                     .map(|days| now() - (days * 86_400.0) as i64);
                 let wanted = text(arguments, "query").map(|q| q.to_lowercase());
                 let limit = number(arguments, "limit").unwrap_or(100.0) as usize;
-                let chats = self.get("/chats")?;
+                let chats = self.chats(&excluded)?;
                 let lines: Vec<String> = chats
-                    .as_array()
-                    .into_iter()
-                    .flatten()
+                    .iter()
                     .filter(|chat| kind_matches(chat, kind.as_deref()))
                     .filter(|chat| {
                         since.is_none_or(|since| {
@@ -290,8 +482,9 @@ impl Bridge {
                 })
             }
             "read_chat" => {
+                let excluded = self.excluded_chats(&permissions);
                 let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
-                let (id, chat_name) = self.resolve(&wanted)?;
+                let (id, chat_name) = self.resolve(&wanted, &excluded)?;
                 let limit = number(arguments, "limit")
                     .unwrap_or(200.0)
                     .clamp(1.0, 2000.0) as usize;
@@ -313,6 +506,7 @@ impl Bridge {
                 ))
             }
             "recent_activity" => {
+                let excluded = self.excluded_chats(&permissions);
                 let hours = number(arguments, "hours").unwrap_or(24.0);
                 let limit = number(arguments, "limit")
                     .unwrap_or(1500.0)
@@ -320,10 +514,8 @@ impl Bridge {
                 let kind = text(arguments, "kind");
                 let since = now() - (hours * 3600.0) as i64;
                 let kinds: std::collections::HashMap<String, String> = self
-                    .get("/chats")?
-                    .as_array()
+                    .chats(&excluded)?
                     .into_iter()
-                    .flatten()
                     .map(|chat| {
                         (
                             chat["id"].as_str().unwrap_or("").to_owned(),
@@ -338,10 +530,13 @@ impl Bridge {
                 let mut by_chat: Vec<(String, Vec<String>)> = Vec::new();
                 for message in messages.as_array().into_iter().flatten() {
                     let chat = message["chat"].as_str().unwrap_or("");
+                    if excluded.contains(chat) {
+                        continue;
+                    }
                     let wanted = match kind.as_deref() {
                         Some("group") => kinds.get(chat).is_some_and(|k| k == "group"),
                         Some("direct") => kinds.get(chat).is_some_and(|k| k == "direct"),
-                        _ => true,
+                        _ => kinds.contains_key(chat) || !excluded.contains(chat),
                     };
                     if !wanted {
                         continue;
@@ -364,17 +559,23 @@ impl Bridge {
                     .join("\n\n"))
             }
             "search_messages" => {
+                let excluded = self.excluded_chats(&permissions);
                 let needle = text(arguments, "query").ok_or("`query` is required.")?;
                 let limit = number(arguments, "limit").unwrap_or(50.0).clamp(1.0, 500.0) as usize;
                 let mut pairs = vec![("q", needle), ("limit", limit.to_string())];
                 if let Some(wanted) = text(arguments, "chat") {
-                    pairs.push(("chat", self.resolve(&wanted)?.0));
+                    pairs.push(("chat", self.resolve(&wanted, &excluded)?.0));
                 }
                 let messages = self.get(&format!("/search?{}", query(&pairs)))?;
                 let lines: Vec<String> = messages
                     .as_array()
                     .into_iter()
                     .flatten()
+                    .filter(|message| {
+                        message["chat"]
+                            .as_str()
+                            .is_none_or(|chat| !excluded.contains(chat))
+                    })
                     .map(|message| line(message, true))
                     .collect();
                 Ok(if lines.is_empty() {
@@ -397,10 +598,10 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
             "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
             "capabilities": {"tools": {}},
             "serverInfo": {"name": SERVER_NAME, "title": "Whats Pro", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Read-only access to the user's WhatsApp chats through Whats Pro. Whats Pro must be open. Use list_chats to find chats, read_chat for one chat, recent_activity for summaries across chats, search_messages to find something."
+            "instructions": "Read-only access to the user's WhatsApp chats, projects, calls and leads in Whats Pro. Chat tools require Whats Pro to be open; projects, calls and leads work from disk."
         }),
         "ping" => json!({}),
-        "tools/list" => json!({"tools": tools()}),
+        "tools/list" => json!({"tools": tools(&bridge.permissions())}),
         "tools/call" => {
             let name = request["params"]["name"].as_str().unwrap_or("");
             let arguments = request["params"]
@@ -425,9 +626,10 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
 }
 
 /// Serves MCP on stdin and stdout until stdin closes.
-pub fn run(config_dir: &Path) -> i32 {
+pub fn run(config_dir: &Path, state_dir: &Path) -> i32 {
     let bridge = Bridge {
         config_dir: config_dir.to_path_buf(),
+        state_dir: state_dir.to_path_buf(),
     };
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
@@ -527,6 +729,7 @@ mod tests {
     fn initialize_and_list_tools() {
         let bridge = Bridge {
             config_dir: PathBuf::from("/nonexistent"),
+            state_dir: PathBuf::from("/nonexistent"),
         };
         let reply = answer(
             &bridge,
@@ -568,6 +771,60 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn permissions_have_safe_defaults_and_apply_live() {
+        let root = tempfile::tempdir().unwrap();
+        let bridge = Bridge {
+            config_dir: root.path().to_path_buf(),
+            state_dir: root.path().to_path_buf(),
+        };
+        let defaults = Permissions::load(root.path());
+        assert!(defaults.enabled);
+        assert!(defaults.chats);
+        assert!(defaults.projects);
+        assert!(defaults.calls);
+        assert!(!defaults.call_transcripts, "transcripts are off by default");
+        assert!(defaults.leads);
+        assert!(defaults.exclude_personal_and_ignored);
+
+        // Disabling the chats scope removes chat tools from tools/list and
+        // rejects calls with instructions to enable it in settings.
+        let mut permissions = defaults.clone();
+        permissions.chats = false;
+        permissions.save(root.path()).unwrap();
+        let listed = answer(
+            &bridge,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+        )
+        .unwrap();
+        let names: Vec<&str> = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert!(!names.contains(&"list_chats"));
+        let denied = answer(
+            &bridge,
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_chats"}}),
+        )
+        .unwrap();
+        assert_eq!(denied["result"]["isError"], true);
+        let message = denied["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(message.contains("Whats Pro > Ajustes > Conectar con IA"));
+
+        // Turning off the master switch hides every tool.
+        permissions.chats = true;
+        permissions.enabled = false;
+        permissions.save(root.path()).unwrap();
+        let listed = answer(
+            &bridge,
+            &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}),
+        )
+        .unwrap();
+        assert!(listed["result"]["tools"].as_array().unwrap().is_empty());
     }
 
     #[test]
