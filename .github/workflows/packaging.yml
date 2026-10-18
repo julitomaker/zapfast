@@ -1,11 +1,8 @@
 name: Packaging
 
+# Whats Pro: only on demand. On push it tested upstream ZapFast's published
+# packages, which this repository does not have.
 on:
-  push:
-    branches: [main, master]
-    paths: [native-packages.yaml, packaging/**, contrib/omarchy/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
-  pull_request:
-    paths: [native-packages.yaml, packaging/**, contrib/omarchy/**, .github/workflows/packaging.yml, .github/workflows/release.yml]
   workflow_dispatch:
     inputs:
       version:
