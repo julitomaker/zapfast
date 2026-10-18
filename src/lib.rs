@@ -26,6 +26,7 @@ pub mod capabilities;
 #[cfg(any(test, feature = "demo"))]
 pub mod demo;
 pub mod diagnostics;
+pub mod echo;
 pub mod eleva;
 pub mod emoji;
 pub mod geo;

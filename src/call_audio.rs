@@ -552,6 +552,17 @@ impl AudioInput {
         target: Option<String>,
         tape: Tape,
     ) -> (Self, async_channel::Receiver<Vec<i16>>) {
+        Self::spawn_echoed(target, tape, crate::echo::Echo::off())
+    }
+
+    /// Like [`spawn_tapped`](Self::spawn_tapped), with every frame cleaned by `echo` of what the
+    /// speaker played (the same canceller the call's [`AudioOutput`] feeds) before the engine and
+    /// the tape get it.
+    pub fn spawn_echoed(
+        target: Option<String>,
+        tape: Tape,
+        echo: crate::echo::Echo,
+    ) -> (Self, async_channel::Receiver<Vec<i16>>) {
         let (out, rx) = async_channel::bounded::<Vec<i16>>(4);
         // Unbounded so a device the user picks while the pump is busy is never dropped: a capacity
         // of one would silently discard the newer selection when two arrive before the pump reads
@@ -569,6 +580,7 @@ impl AudioInput {
             target.clone(),
             Arc::clone(&opens),
             tape,
+            echo,
         ));
         (
             Self {
@@ -600,6 +612,7 @@ async fn mic_pump(
     initial: Option<String>,
     opens: Arc<AtomicUsize>,
     tape: Tape,
+    echo: crate::echo::Echo,
 ) {
     let mut target = initial;
     loop {
@@ -634,6 +647,8 @@ async fn mic_pump(
                 frame = reader.frames.recv() => {
                     match frame {
                         Ok(mut frame) => {
+                            // The other side's voice, back from the speaker, comes out first.
+                            echo.heard(&mut frame);
                             // Before the engine gets it, so a notice the tape mixes in is what the
                             // other side hears and what the recording keeps.
                             tape.me(&mut frame);
@@ -819,6 +834,16 @@ impl AudioOutput {
         target: Option<String>,
         tape: Tape,
     ) -> (Self, async_channel::Sender<Vec<i16>>) {
+        Self::spawn_echoed(target, tape, crate::echo::Echo::off())
+    }
+
+    /// Like [`spawn_tapped`](Self::spawn_tapped), with every frame played also handed to `echo` as
+    /// the reference its microphone is cleaned against.
+    pub fn spawn_echoed(
+        target: Option<String>,
+        tape: Tape,
+        echo: crate::echo::Echo,
+    ) -> (Self, async_channel::Sender<Vec<i16>>) {
         let (tx, rx) = async_channel::bounded::<Vec<i16>>(SPEAKER_QUEUE);
         // Unbounded for the same reason the microphone's is: a newer device selection must not be
         // dropped because the previous one has not been read yet.
@@ -840,6 +865,7 @@ impl AudioOutput {
                 relink: Arc::clone(&relink),
             },
             tape,
+            echo,
         ));
         (
             Self {
@@ -915,6 +941,7 @@ async fn play_pump(
     initial: Option<String>,
     health: SpeakerHealth,
     tape: Tape,
+    echo: crate::echo::Echo,
 ) {
     let SpeakerHealth {
         opens,
@@ -959,6 +986,7 @@ async fn play_pump(
                     match frame {
                         Ok(frame) => {
                             tape.them(&frame);
+                            echo.played(&frame);
                             if writer.send(frame).await.is_err() {
                                 // The writer ended, either from a stall or from its device going away.
                                 break;

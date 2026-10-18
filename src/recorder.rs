@@ -69,7 +69,24 @@ struct Track {
     /// The source rate and how far into the next source sample resampling is.
     position: f64,
     last: f32,
+    /// With both sources, the computer's sound is the reference its echo in
+    /// the microphone is cleaned against (src/echo.rs).
+    echo: Option<(crate::echo::Echo, Role)>,
+    /// Samples waiting for a whole 10 ms piece, which is what the echo
+    /// canceller takes.
+    pending: Vec<i16>,
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// What the speakers play: the other side of the call.
+    Reference,
+    /// The microphone, which also picks up the speakers.
+    Cleaned,
+}
+
+/// 10 ms at 16 kHz.
+const PIECE: usize = (RATE / 100) as usize;
 
 impl Track {
     fn create(path: PathBuf) -> std::io::Result<Self> {
@@ -78,6 +95,8 @@ impl Track {
             path,
             position: 0.0,
             last: 0.0,
+            echo: None,
+            pending: Vec::new(),
         })
     }
 
@@ -87,7 +106,7 @@ impl Track {
             return;
         }
         let step = rate / f64::from(RATE);
-        let mut out = Vec::with_capacity((mono.len() as f64 / step) as usize + 2);
+        let mut out: Vec<i16> = Vec::with_capacity((mono.len() as f64 / step) as usize + 2);
         while self.position < mono.len() as f64 {
             let left = self.position.floor();
             let index = left as isize;
@@ -99,12 +118,34 @@ impl Track {
             };
             let b = mono.get((index + 1) as usize).copied().unwrap_or(a);
             let value = (a + (b - a) * t).clamp(-1.0, 1.0);
-            out.extend_from_slice(&((value * f32::from(i16::MAX)) as i16).to_le_bytes());
+            out.push((value * f32::from(i16::MAX)) as i16);
             self.position += step;
         }
         self.position -= mono.len() as f64;
         self.last = *mono.last().expect("not empty");
-        let _ = self.file.write_all(&out);
+        let Some((echo, role)) = &self.echo else {
+            self.write(&out);
+            return;
+        };
+        self.pending.extend_from_slice(&out);
+        let whole = self.pending.len() / PIECE * PIECE;
+        let mut ready: Vec<i16> = self.pending.drain(..whole).collect();
+        match role {
+            Role::Reference => echo.played(&ready),
+            Role::Cleaned => echo.heard(&mut ready),
+        }
+        self.write(&ready);
+    }
+
+    fn write(&mut self, samples: &[i16]) {
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let _ = self.file.write_all(&bytes);
+    }
+
+    /// Writes what is still waiting for a whole piece, as it is.
+    fn finish(&mut self) {
+        let rest = std::mem::take(&mut self.pending);
+        self.write(&rest);
     }
 }
 
@@ -163,11 +204,14 @@ impl Recording {
         let wants_system = matches!(source, Source::System | Source::Both);
         let wants_microphone = matches!(source, Source::Microphone | Source::Both);
         let mut microphone_in_capture = false;
+        // With both sources the microphone also hears the speakers: clean it
+        // against what the computer plays.
+        let echo = (wants_system && wants_microphone).then(crate::echo::Echo::new);
         if wants_system {
-            tracks.lock().unwrap_or_else(|p| p.into_inner()).system = Some(
-                Track::create(folder.join(format!("{stamp}-system.raw")))
-                    .map_err(|e| e.to_string())?,
-            );
+            let mut track = Track::create(folder.join(format!("{stamp}-system.raw")))
+                .map_err(|e| e.to_string())?;
+            track.echo = echo.clone().map(|echo| (echo, Role::Reference));
+            tracks.lock().unwrap_or_else(|p| p.into_inner()).system = Some(track);
             #[cfg(target_os = "macos")]
             {
                 let capture = macos::Capture::start(Arc::clone(&tracks), wants_microphone)?;
@@ -178,10 +222,10 @@ impl Recording {
             return Err("Recording the computer's sound is only available on macOS".into());
         }
         if wants_microphone {
-            tracks.lock().unwrap_or_else(|p| p.into_inner()).microphone = Some(
-                Track::create(folder.join(format!("{stamp}-microphone.raw")))
-                    .map_err(|e| e.to_string())?,
-            );
+            let mut track = Track::create(folder.join(format!("{stamp}-microphone.raw")))
+                .map_err(|e| e.to_string())?;
+            track.echo = echo.map(|echo| (echo, Role::Cleaned));
+            tracks.lock().unwrap_or_else(|p| p.into_inner()).microphone = Some(track);
             if !microphone_in_capture {
                 recording.microphone =
                     Some(spawn_microphone(Arc::clone(&tracks), Arc::clone(&stop))?);
@@ -211,6 +255,8 @@ impl Recording {
             .into_iter()
             .flatten()
         {
+            let mut track = track;
+            track.finish();
             let Track { mut file, path, .. } = track;
             file.flush().map_err(|e| e.to_string())?;
             drop(file);

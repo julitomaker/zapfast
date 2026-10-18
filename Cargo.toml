@@ -95,6 +95,8 @@ form_urlencoded = "1"
 subtle = "2"
 # Temporary files handed to AI command-line tools (src/media_ai.rs).
 tempfile = "3"
+# Echo cancellation for calls on a speaker (src/echo.rs): WebRTC AEC3 in pure Rust.
+sonora = "0.2"
 # Local speech-to-text (src/transcribe.rs): whisper.cpp, built from source.
 whisper-rs = "0.16"
 # Treats joined emoji as one grapheme. Already included through egui.

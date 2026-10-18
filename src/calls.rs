@@ -1709,8 +1709,10 @@ impl Call {
             return Err(Cancelled.into());
         }
         let tape = Tape::new(generation);
-        let (mic, mic_rx) = AudioInput::spawn_tapped(microphone.clone(), tape.clone());
-        let (output, output_tx) = AudioOutput::spawn_tapped(speaker.clone(), tape.clone());
+        let echo = crate::echo::Echo::new();
+        let (mic, mic_rx) =
+            AudioInput::spawn_echoed(microphone.clone(), tape.clone(), echo.clone());
+        let (output, output_tx) = AudioOutput::spawn_echoed(speaker.clone(), tape.clone(), echo);
 
         let voip = client.voip();
         let builder = voip.call(&peer).audio(mic_rx, output_tx);
@@ -1848,8 +1850,9 @@ impl Call {
             return Err(Cancelled.into());
         }
         let tape = Tape::new(generation);
-        let (mic, mic_rx) = AudioInput::spawn_tapped(None, tape.clone());
-        let (output, output_tx) = AudioOutput::spawn_tapped(None, tape.clone());
+        let echo = crate::echo::Echo::new();
+        let (mic, mic_rx) = AudioInput::spawn_echoed(None, tape.clone(), echo.clone());
+        let (output, output_tx) = AudioOutput::spawn_echoed(None, tape.clone(), echo);
         let endpoints = pipe
             .as_ref()
             .map(|(pipeline, _)| (pipeline.source(), pipeline.sink()));
@@ -2189,8 +2192,11 @@ impl Call {
             }
         }
         require_video(self.video, pipe.is_some())?;
-        let (mic, mic_rx) = AudioInput::spawn_tapped(microphone.clone(), self.tape.clone());
-        let (output, output_tx) = AudioOutput::spawn_tapped(speaker.clone(), self.tape.clone());
+        let echo = crate::echo::Echo::new();
+        let (mic, mic_rx) =
+            AudioInput::spawn_echoed(microphone.clone(), self.tape.clone(), echo.clone());
+        let (output, output_tx) =
+            AudioOutput::spawn_echoed(speaker.clone(), self.tape.clone(), echo);
 
         let voip = client.voip();
         // From here the library owns the answer: if it fails, its own guard ends the call with the
