@@ -88,6 +88,7 @@ struct State {
     draft: String,
     engine_draft: Option<EngineConfig>,
     key_draft: String,
+    key_error: Option<String>,
     model_search: String,
     /// In a narrow window, whether the project (or bucket) beside the list
     /// is on screen instead of the list.
@@ -204,6 +205,7 @@ impl Default for State {
             draft: String::new(),
             engine_draft: None,
             key_draft: String::new(),
+            key_error: None,
             model_search: String::new(),
             picked: false,
             note: String::new(),
@@ -4567,6 +4569,7 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                                     draft.provider = provider;
                                     draft.model = provider.default_model().to_owned();
                                     state.key_draft.clear();
+                                    state.key_error = None;
                                     state.model_search.clear();
                                 }
                             });
@@ -4639,6 +4642,9 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                                     save_key = true;
                                 }
                             });
+                            if let Some(error) = &state.key_error {
+                                wrapped(ui, error, theme::regular(12.5), palette.danger);
+                            }
                         }
                         if let Some(url) = key_page(draft.provider) {
                             ui.hyperlink_to(gettext(locale, "Get a key"), url);
@@ -4733,12 +4739,18 @@ fn engine_page(app: &mut App, ui: &mut egui::Ui, state: &mut State) {
                 });
         });
     if save_key {
-        if let Err(error) = engine::set_key(draft.provider, &state.key_draft) {
-            log::warn!("analysis: the key could not be saved: {error}");
+        match engine::set_key(draft.provider, &state.key_draft) {
+            Ok(()) => {
+                state.key_error = None;
+                state.key_draft.clear();
+                // The list of models needs the key.
+                let _ = engine::models(&ctx, draft.provider, true);
+            }
+            Err(error) => {
+                log::warn!("analysis: the key could not be saved: {error}");
+                state.key_error = Some(error.to_string());
+            }
         }
-        state.key_draft.clear();
-        // The list of models needs the key.
-        let _ = engine::models(&ctx, draft.provider, true);
     }
     // Every choice is kept as it is made.
     if draft != saved
