@@ -217,6 +217,89 @@ fn all_tools() -> Vec<Value> {
             },
             "annotations": {"readOnlyHint": true}
         }),
+        json!({
+            "name": "list_projects",
+            "description": "List all projects in Whats Pro with their id, name, source chat count, last analysis time, and open item counts per section (to-dos, follow-ups, slipping, needs, highlights).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {}
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "project_overview",
+            "description": "Read a project's full panel by name or id: summaries (today, yesterday, week), open to-dos, follow-ups, slipping items, needs, highlights (excluding done or dismissed items), members and context.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project name, part of it, or id."}
+                },
+                "required": ["project"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "project_notes",
+            "description": "Read the journal notes and memos of a project, optionally limited to the last N days.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project name, part of it, or id."},
+                    "days": {"type": "number", "description": "Only notes from the last N days."}
+                },
+                "required": ["project"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "list_calls",
+            "description": "List recorded and uploaded calls from Whats Pro (newest first) with title, date, duration, project, lead and summary. Private calls are never included.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Only calls in this project (name or id)."},
+                    "days": {"type": "number", "description": "Only calls from the last N days."},
+                    "limit": {"type": "number", "description": "At most this many calls (default 50, max 500)."}
+                }
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "read_call",
+            "description": "Read one call by id or title: date, duration, project, lead, summary, decisions, commitments, tasks, next steps, and (when the call_transcripts permission is enabled) the full transcript.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "call": {"type": "string", "description": "Call id, title, or part of its title."}
+                },
+                "required": ["call"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "list_leads",
+            "description": "List sales leads from Whats Pro with stage, amount, next action and due date, optionally filtered by project or stage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Only leads in this project (name or id)."},
+                    "stage": {"type": "string", "enum": ["new", "contacted", "quoted", "customer", "lost"], "description": "Only leads in this stage."}
+                }
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "read_lead",
+            "description": "Read one sales lead by id, name or phone: stage, amount, next action with due date, sales, and full history entries.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "lead": {"type": "string", "description": "Lead id, name, part of name, or phone number."}
+                },
+                "required": ["lead"]
+            },
+            "annotations": {"readOnlyHint": true}
+        }),
     ]
 }
 
@@ -238,7 +321,6 @@ fn tools(permissions: &Permissions) -> Value {
 /// leads live. Permissions are read on each request so changes apply live.
 struct Bridge {
     config_dir: PathBuf,
-    #[allow(dead_code)]
     state_dir: PathBuf,
 }
 
@@ -373,6 +455,59 @@ fn line(message: &Value, with_chat: bool) -> String {
     )
 }
 
+fn format_finding(finding: &crate::projects::Finding) -> String {
+    let mut details = Vec::new();
+    if let Some(who) = finding.who.as_deref().filter(|w| !w.trim().is_empty()) {
+        details.push(format!("who: {who}"));
+    }
+    if let Some(due) = finding.due.as_deref().filter(|d| !d.trim().is_empty()) {
+        details.push(format!("due: {due}"));
+    }
+    if let Some(since) = finding.since.filter(|&s| s > 0) {
+        details.push(format!("since: {}", when(since)));
+    }
+    if let Some(chat) = finding.chat.as_deref().filter(|c| !c.trim().is_empty()) {
+        details.push(format!("chat: {chat}"));
+    }
+    if details.is_empty() {
+        format!("- {}", finding.text)
+    } else {
+        format!("- {} ({})", finding.text, details.join(", "))
+    }
+}
+
+fn stage_slug(stage: crate::leads::Stage) -> &'static str {
+    match stage {
+        crate::leads::Stage::New => "new",
+        crate::leads::Stage::Contacted => "contacted",
+        crate::leads::Stage::Quoted => "quoted",
+        crate::leads::Stage::Customer => "customer",
+        crate::leads::Stage::Lost => "lost",
+    }
+}
+
+fn parse_stage(value: &str) -> Option<crate::leads::Stage> {
+    match value.trim().to_lowercase().as_str() {
+        "new" | "nuevo" => Some(crate::leads::Stage::New),
+        "contacted" | "contactado" => Some(crate::leads::Stage::Contacted),
+        "quoted" | "cotizado" => Some(crate::leads::Stage::Quoted),
+        "customer" | "cliente" => Some(crate::leads::Stage::Customer),
+        "lost" | "perdido" => Some(crate::leads::Stage::Lost),
+        _ => None,
+    }
+}
+
+fn entry_kind_label(kind: crate::leads::Kind) -> &'static str {
+    match kind {
+        crate::leads::Kind::Note => "note",
+        crate::leads::Kind::Call => "call",
+        crate::leads::Kind::FollowUp => "follow_up",
+        crate::leads::Kind::Summary => "summary",
+        crate::leads::Kind::Stage => "stage",
+        crate::leads::Kind::Task => "task",
+    }
+}
+
 impl Bridge {
     /// A chat id from an id, a name or part of a name.
     fn resolve(
@@ -420,6 +555,581 @@ impl Bridge {
                     .join("; ")
             )),
         }
+    }
+
+    /// Finds a project by id, exact name, or substring of its name.
+    fn resolve_project<'a>(
+        &self,
+        map: &'a crate::projects::ProjectMap,
+        wanted: &str,
+    ) -> Result<&'a crate::projects::Project, String> {
+        if let Some(project) = map.project(wanted) {
+            return Ok(project);
+        }
+        let needle = wanted.trim().to_lowercase();
+        let exact: Vec<&crate::projects::Project> = map
+            .projects
+            .iter()
+            .filter(|p| p.name.to_lowercase() == needle || p.id.to_lowercase() == needle)
+            .collect();
+        let found = if exact.is_empty() {
+            map.projects
+                .iter()
+                .filter(|p| p.name.to_lowercase().contains(&needle))
+                .collect()
+        } else {
+            exact
+        };
+        match found.as_slice() {
+            [] => Err(format!(
+                "No project is called \"{wanted}\". Use list_projects to find it."
+            )),
+            [project] => Ok(project),
+            several => Err(format!(
+                "Several projects match \"{wanted}\": {}. Ask again with the exact name or id.",
+                several
+                    .iter()
+                    .map(|p| format!("{} ({})", p.name, p.id))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )),
+        }
+    }
+
+    fn list_projects(&self) -> Result<String, String> {
+        use crate::projects::{Analysis, ProjectMap, Ticks};
+        let map = ProjectMap::load(&self.config_dir);
+        if map.projects.is_empty() {
+            return Ok("No projects yet.".into());
+        }
+        let mut lines = Vec::with_capacity(map.projects.len());
+        for project in &map.projects {
+            let analysis = Analysis::load(&self.config_dir, &project.id).unwrap_or_default();
+            let ticks = Ticks::load(&self.config_dir, &project.id);
+            let open = |items: &[crate::projects::Finding]| {
+                items.iter().filter(|f| ticks.open(&f.id)).count()
+            };
+            let updated = if analysis.updated > 0 {
+                when(analysis.updated)
+            } else {
+                "never".to_owned()
+            };
+            lines.push(format!(
+                "{} | {} | {} sources | last analysis: {} | todo: {} | follow_up: {} | slipping: {} | needs: {} | highlights: {}",
+                project.name,
+                project.id,
+                project.sources.len(),
+                updated,
+                open(&analysis.todo),
+                open(&analysis.follow_up),
+                open(&analysis.leaks),
+                open(&analysis.needs),
+                open(&analysis.highlights),
+            ));
+        }
+        Ok(format!(
+            "name | id | sources | last analysis | todo | follow_up | slipping | needs | highlights\n{}",
+            lines.join("\n")
+        ))
+    }
+
+    fn project_overview(&self, arguments: &Value) -> Result<String, String> {
+        use crate::projects::{Analysis, ProjectMap, Ticks};
+        let wanted = text(arguments, "project").ok_or("`project` is required.")?;
+        let map = ProjectMap::load(&self.config_dir);
+        let project = self.resolve_project(&map, &wanted)?;
+        let analysis = Analysis::load(&self.config_dir, &project.id).unwrap_or_default();
+        let ticks = Ticks::load(&self.config_dir, &project.id);
+        let updated = if analysis.updated > 0 {
+            when(analysis.updated)
+        } else {
+            "not analyzed yet".to_owned()
+        };
+
+        let mut out = format!(
+            "# {} ({})\nSources: {} chats | Last analysis: {}\n",
+            project.name,
+            project.id,
+            project.sources.len(),
+            updated
+        );
+
+        if !project.context.trim().is_empty() {
+            out.push_str(&format!("\n## Context\n{}\n", project.context.trim()));
+        }
+
+        if !project.members.is_empty() {
+            out.push_str("\n## Members\n");
+            for member in &project.members {
+                let mut line = format!("- {} ({})", member.name, member.id);
+                if !member.role.trim().is_empty() {
+                    line.push_str(&format!(" - {}", member.role.trim()));
+                }
+                if !member.about.trim().is_empty() {
+                    line.push_str(&format!(": {}", member.about.trim()));
+                }
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+
+        out.push_str("\n## Summaries\n");
+        for (key, label) in [
+            ("today", "Today"),
+            ("yesterday", "Yesterday"),
+            ("week", "Week"),
+        ] {
+            let summary = analysis
+                .summaries
+                .get(key)
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .unwrap_or("(none)");
+            out.push_str(&format!("- {label}: {summary}\n"));
+        }
+
+        let sections = [
+            ("Open to-dos", &analysis.todo),
+            ("Follow-ups", &analysis.follow_up),
+            ("Slipping", &analysis.leaks),
+            ("Needs", &analysis.needs),
+            ("Highlights", &analysis.highlights),
+        ];
+        for (heading, items) in sections {
+            let open: Vec<String> = items
+                .iter()
+                .filter(|f| ticks.open(&f.id))
+                .map(format_finding)
+                .collect();
+            out.push_str(&format!("\n## {heading} ({})\n", open.len()));
+            if open.is_empty() {
+                out.push_str("(none)\n");
+            } else {
+                out.push_str(&open.join("\n"));
+                out.push('\n');
+            }
+        }
+
+        Ok(out.trim_end().to_owned())
+    }
+
+    fn project_notes(&self, arguments: &Value) -> Result<String, String> {
+        use crate::projects::{Journal, NoteKind, ProjectMap};
+        let wanted = text(arguments, "project").ok_or("`project` is required.")?;
+        let map = ProjectMap::load(&self.config_dir);
+        let project = self.resolve_project(&map, &wanted)?;
+        let since = number(arguments, "days").map(|days| now() - (days * 86_400.0) as i64);
+        let journal = Journal::load(&self.config_dir, &project.id);
+        let notes: Vec<String> = journal
+            .notes
+            .iter()
+            .filter(|note| since.is_none_or(|since| note.at >= since))
+            .map(|note| {
+                let kind = match note.kind {
+                    NoteKind::Log => "log",
+                    NoteKind::Memo => "memo",
+                };
+                let spoken = if note.spoken { ", spoken" } else { "" };
+                format!("[{}] ({kind}{spoken}) {}", when(note.at), note.text)
+            })
+            .collect();
+        if notes.is_empty() {
+            return Ok(format!("No notes for {}.", project.name));
+        }
+        Ok(format!(
+            "# Notes: {} ({})\n{}",
+            project.name,
+            notes.len(),
+            notes.join("\n")
+        ))
+    }
+
+    fn list_calls(&self, arguments: &Value) -> Result<String, String> {
+        let library = crate::call_library::Library::load(&self.state_dir);
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+        let leads = crate::leads::Leads::load(&self.config_dir);
+        let project_filter = text(arguments, "project").map(|wanted| {
+            self.resolve_project(&map, &wanted)
+                .map(|p| p.id.clone())
+                .unwrap_or(wanted)
+        });
+        let since = number(arguments, "days").map(|days| now() - (days * 86_400.0) as i64);
+        let limit = number(arguments, "limit").unwrap_or(50.0).clamp(1.0, 500.0) as usize;
+
+        let mut calls: Vec<&crate::call_library::Call> = library
+            .calls
+            .iter()
+            .filter(|call| !call.private)
+            .filter(|call| {
+                project_filter.as_ref().is_none_or(|wanted| {
+                    call.project
+                        .as_deref()
+                        .is_some_and(|p| p.eq_ignore_ascii_case(wanted))
+                })
+            })
+            .filter(|call| since.is_none_or(|since| call.when() >= since))
+            .collect();
+        calls.sort_by_key(|call| std::cmp::Reverse(call.when()));
+
+        let lines: Vec<String> = calls
+            .into_iter()
+            .take(limit)
+            .map(|call| {
+                let project = call
+                    .project
+                    .as_deref()
+                    .map(|id| {
+                        map.project(id)
+                            .map(|p| format!("{} ({})", p.name, p.id))
+                            .unwrap_or_else(|| id.to_owned())
+                    })
+                    .unwrap_or_else(|| "-".to_owned());
+                let lead = call
+                    .lead
+                    .as_deref()
+                    .map(|id| {
+                        leads
+                            .get(id)
+                            .map(|l| format!("{} ({})", l.name, l.id))
+                            .unwrap_or_else(|| id.to_owned())
+                    })
+                    .unwrap_or_else(|| "-".to_owned());
+                let summary = call
+                    .analysis
+                    .as_ref()
+                    .map(|a| a.summary.trim())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("(no summary)");
+                format!(
+                    "{} | {} | {} | {}:{:02} | project: {} | lead: {} | {}",
+                    call.id,
+                    call.title,
+                    when(call.when()),
+                    call.seconds / 60,
+                    call.seconds % 60,
+                    project,
+                    lead,
+                    summary,
+                )
+            })
+            .collect();
+
+        if lines.is_empty() {
+            return Ok("No calls match.".into());
+        }
+        Ok(format!(
+            "id | title | date | duration | project | lead | summary\n{}",
+            lines.join("\n")
+        ))
+    }
+
+    fn read_call(&self, arguments: &Value, permissions: &Permissions) -> Result<String, String> {
+        let wanted = text(arguments, "call").ok_or("`call` is required.")?;
+        let library = crate::call_library::Library::load(&self.state_dir);
+        let visible: Vec<&crate::call_library::Call> =
+            library.calls.iter().filter(|call| !call.private).collect();
+
+        let call = if let Some(call) = visible.iter().find(|c| c.id == wanted).copied() {
+            call
+        } else {
+            let needle = wanted.to_lowercase();
+            let exact: Vec<&crate::call_library::Call> = visible
+                .iter()
+                .copied()
+                .filter(|c| c.title.to_lowercase() == needle)
+                .collect();
+            let found = if exact.is_empty() {
+                visible
+                    .iter()
+                    .copied()
+                    .filter(|c| c.title.to_lowercase().contains(&needle))
+                    .collect()
+            } else {
+                exact
+            };
+            match found.as_slice() {
+                [] => {
+                    return Err(format!(
+                        "No call matches \"{wanted}\". Use list_calls to find it."
+                    ));
+                }
+                [call] => *call,
+                several => {
+                    return Err(format!(
+                        "Several calls match \"{wanted}\": {}. Ask again with the exact id.",
+                        several
+                            .iter()
+                            .take(15)
+                            .map(|c| format!("{} ({})", c.title, c.id))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                }
+            }
+        };
+
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+        let leads = crate::leads::Leads::load(&self.config_dir);
+        let project = call
+            .project
+            .as_deref()
+            .map(|id| {
+                map.project(id)
+                    .map(|p| format!("{} ({})", p.name, p.id))
+                    .unwrap_or_else(|| id.to_owned())
+            })
+            .unwrap_or_else(|| "-".to_owned());
+        let lead = call
+            .lead
+            .as_deref()
+            .map(|id| {
+                leads
+                    .get(id)
+                    .map(|l| format!("{} ({})", l.name, l.id))
+                    .unwrap_or_else(|| id.to_owned())
+            })
+            .unwrap_or_else(|| "-".to_owned());
+
+        let mut out = format!(
+            "# {} ({})\n- Date: {}\n- Duration: {}:{:02}\n- Project: {}\n- Lead: {}\n",
+            call.title,
+            call.id,
+            when(call.when()),
+            call.seconds / 60,
+            call.seconds % 60,
+            project,
+            lead,
+        );
+
+        if let Some(analysis) = &call.analysis {
+            if !analysis.summary.trim().is_empty() {
+                out.push_str(&format!("\n## Summary\n{}\n", analysis.summary.trim()));
+            }
+            if !analysis.decisions.is_empty() {
+                out.push_str("\n## Decisions\n");
+                for decision in &analysis.decisions {
+                    out.push_str(&format!("- {decision}\n"));
+                }
+            }
+            if !analysis.commitments.is_empty() {
+                out.push_str("\n## Commitments\n");
+                for commitment in &analysis.commitments {
+                    let due = commitment
+                        .due
+                        .as_deref()
+                        .filter(|d| !d.trim().is_empty())
+                        .map(|d| format!(" (due {d})"))
+                        .unwrap_or_default();
+                    out.push_str(&format!(
+                        "- {}: {}{due}\n",
+                        commitment.who.trim(),
+                        commitment.what.trim()
+                    ));
+                }
+            }
+            if !analysis.tasks.is_empty() {
+                out.push_str("\n## Tasks\n");
+                for task in &analysis.tasks {
+                    out.push_str(&format!("- {task}\n"));
+                }
+            }
+            if !analysis.next_steps.is_empty() {
+                out.push_str("\n## Next steps\n");
+                for step in &analysis.next_steps {
+                    out.push_str(&format!("- {step}\n"));
+                }
+            }
+        } else {
+            out.push_str("\n(No analysis yet)\n");
+        }
+
+        if permissions.call_transcripts
+            && let Some(transcript) = call.transcript()
+        {
+            out.push_str(&format!(
+                "\n## Transcript ({})\n{}\n",
+                transcript.engine,
+                transcript.text.trim()
+            ));
+        }
+
+        Ok(out.trim_end().to_owned())
+    }
+
+    fn list_leads(&self, arguments: &Value) -> Result<String, String> {
+        let leads = crate::leads::Leads::load(&self.config_dir);
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+        let project_filter = text(arguments, "project").map(|wanted| {
+            self.resolve_project(&map, &wanted)
+                .map(|p| p.id.clone())
+                .unwrap_or(wanted)
+        });
+        let stage_filter = match text(arguments, "stage") {
+            Some(stage) => Some(parse_stage(&stage).ok_or_else(|| {
+                format!(
+                    "Unknown stage \"{stage}\". Expected one of: new, contacted, quoted, customer, lost."
+                )
+            })?),
+            None => None,
+        };
+
+        let lines: Vec<String> = leads
+            .leads
+            .iter()
+            .filter(|lead| {
+                project_filter
+                    .as_ref()
+                    .is_none_or(|wanted| lead.project.eq_ignore_ascii_case(wanted))
+            })
+            .filter(|lead| stage_filter.is_none_or(|stage| lead.stage == stage))
+            .map(|lead| {
+                let project = map
+                    .project(&lead.project)
+                    .map(|p| format!("{} ({})", p.name, p.id))
+                    .unwrap_or_else(|| lead.project.clone());
+                let amount = lead.value.as_deref().unwrap_or("-");
+                let next_action = lead
+                    .next
+                    .as_ref()
+                    .map(|n| n.text.as_str())
+                    .unwrap_or("-");
+                let due = lead
+                    .next
+                    .as_ref()
+                    .and_then(|n| n.due.as_deref())
+                    .unwrap_or("-");
+                let phone = lead.phone.as_deref().unwrap_or("-");
+                format!(
+                    "{} | {} | project: {} | stage: {} | amount: {} | next: {} | due: {} | phone: {}",
+                    lead.id,
+                    lead.name,
+                    project,
+                    stage_slug(lead.stage),
+                    amount,
+                    next_action,
+                    due,
+                    phone,
+                )
+            })
+            .collect();
+
+        if lines.is_empty() {
+            return Ok("No leads match.".into());
+        }
+        Ok(format!(
+            "id | name | project | stage | amount | next | due | phone\n{}",
+            lines.join("\n")
+        ))
+    }
+
+    fn read_lead(&self, arguments: &Value, permissions: &Permissions) -> Result<String, String> {
+        let wanted = text(arguments, "lead").ok_or("`lead` is required.")?;
+        let leads = crate::leads::Leads::load(&self.config_dir);
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+
+        let lead = if let Some(lead) = leads.get(&wanted) {
+            lead
+        } else {
+            let needle = wanted.to_lowercase();
+            let wanted_digits = crate::leads::digits(&wanted);
+            let exact: Vec<&crate::leads::Lead> = leads
+                .leads
+                .iter()
+                .filter(|l| l.name.to_lowercase() == needle)
+                .collect();
+            let found = if exact.is_empty() {
+                leads
+                    .leads
+                    .iter()
+                    .filter(|l| {
+                        l.name.to_lowercase().contains(&needle)
+                            || (!wanted_digits.is_empty()
+                                && l.phone.as_deref().is_some_and(|p| {
+                                    crate::leads::digits(p).contains(&wanted_digits)
+                                }))
+                    })
+                    .collect()
+            } else {
+                exact
+            };
+            match found.as_slice() {
+                [] => {
+                    return Err(format!(
+                        "No lead matches \"{wanted}\". Use list_leads to find it."
+                    ));
+                }
+                [lead] => *lead,
+                several => {
+                    return Err(format!(
+                        "Several leads match \"{wanted}\": {}. Ask again with the exact id.",
+                        several
+                            .iter()
+                            .take(15)
+                            .map(|l| format!("{} ({})", l.name, l.id))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ));
+                }
+            }
+        };
+
+        let project = map
+            .project(&lead.project)
+            .map(|p| format!("{} ({})", p.name, p.id))
+            .unwrap_or_else(|| lead.project.clone());
+        let mut stage_line = stage_slug(lead.stage).to_owned();
+        if let Some(reason) = lead.lost_reason.as_deref().filter(|r| !r.is_empty()) {
+            stage_line.push_str(&format!(" (reason: {reason})"));
+        }
+        let amount = lead.value.as_deref().unwrap_or("-");
+        let phone = lead.phone.as_deref().unwrap_or("-");
+        let chat = lead.chat.as_deref().unwrap_or("-");
+        let next = match &lead.next {
+            Some(next) => match &next.due {
+                Some(due) => format!("{} (due {due})", next.text),
+                None => next.text.clone(),
+            },
+            None => "(none)".to_owned(),
+        };
+
+        let mut out = format!(
+            "# {} ({})\n- Project: {}\n- Stage: {}\n- Amount: {}\n- Next action: {}\n- Phone: {}\n- Chat: {}\n",
+            lead.name, lead.id, project, stage_line, amount, next, phone, chat,
+        );
+
+        if !lead.sales.is_empty() {
+            out.push_str("\n## Sales\n");
+            for sale in &lead.sales {
+                out.push_str(&format!(
+                    "- [{}] {} - total: {} ({})\n",
+                    when(sale.at),
+                    sale.summary,
+                    sale.total,
+                    sale.payment
+                ));
+            }
+        }
+
+        out.push_str(&format!("\n## History ({} entries)\n", lead.entries.len()));
+        if lead.entries.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for entry in &lead.entries {
+                out.push_str(&format!(
+                    "- [{}] ({}) {}\n",
+                    when(entry.at),
+                    entry_kind_label(entry.kind),
+                    entry.text
+                ));
+                if permissions.call_transcripts
+                    && let Some(transcript) = entry.transcript.as_deref().filter(|t| !t.is_empty())
+                {
+                    out.push_str(&format!("  Transcript: {transcript}\n"));
+                }
+            }
+        }
+
+        Ok(out.trim_end().to_owned())
     }
 
     fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
@@ -584,6 +1294,13 @@ impl Bridge {
                     lines.join("\n")
                 })
             }
+            "list_projects" => self.list_projects(),
+            "project_overview" => self.project_overview(arguments),
+            "project_notes" => self.project_notes(arguments),
+            "list_calls" => self.list_calls(arguments),
+            "read_call" => self.read_call(arguments, &permissions),
+            "list_leads" => self.list_leads(arguments),
+            "read_lead" => self.read_lead(arguments, &permissions),
             _ => Err(format!("Unknown tool {name}.")),
         }
     }
@@ -755,7 +1472,14 @@ mod tests {
                 "list_chats",
                 "read_chat",
                 "recent_activity",
-                "search_messages"
+                "search_messages",
+                "list_projects",
+                "project_overview",
+                "project_notes",
+                "list_calls",
+                "read_call",
+                "list_leads",
+                "read_lead",
             ]
         );
         assert!(
@@ -789,34 +1513,46 @@ mod tests {
         assert!(defaults.leads);
         assert!(defaults.exclude_personal_and_ignored);
 
-        // Disabling the chats scope removes chat tools from tools/list and
-        // rejects calls with instructions to enable it in settings.
-        let mut permissions = defaults.clone();
-        permissions.chats = false;
-        permissions.save(root.path()).unwrap();
-        let listed = answer(
-            &bridge,
-            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
-        )
-        .unwrap();
-        let names: Vec<&str> = listed["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|tool| tool["name"].as_str().unwrap())
-            .collect();
-        assert!(!names.contains(&"list_chats"));
-        let denied = answer(
-            &bridge,
-            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "list_chats"}}),
-        )
-        .unwrap();
-        assert_eq!(denied["result"]["isError"], true);
-        let message = denied["result"]["content"][0]["text"].as_str().unwrap();
-        assert!(message.contains("Whats Pro > Ajustes > Conectar con IA"));
+        for (tool, disable) in [
+            (
+                "list_chats",
+                (|p: &mut Permissions| p.chats = false) as fn(&mut Permissions),
+            ),
+            ("list_projects", |p| p.projects = false),
+            ("project_overview", |p| p.projects = false),
+            ("project_notes", |p| p.projects = false),
+            ("list_calls", |p| p.calls = false),
+            ("read_call", |p| p.calls = false),
+            ("list_leads", |p| p.leads = false),
+            ("read_lead", |p| p.leads = false),
+        ] {
+            let mut permissions = defaults.clone();
+            disable(&mut permissions);
+            permissions.save(root.path()).unwrap();
+            let listed = answer(
+                &bridge,
+                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            )
+            .unwrap();
+            let names: Vec<&str> = listed["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap())
+                .collect();
+            assert!(!names.contains(&tool), "{tool} should be hidden");
+            let denied = answer(
+                &bridge,
+                &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool}}),
+            )
+            .unwrap();
+            assert_eq!(denied["result"]["isError"], true);
+            let message = denied["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(message.contains("Whats Pro > Ajustes > Conectar con IA"));
+        }
 
         // Turning off the master switch hides every tool.
-        permissions.chats = true;
+        let mut permissions = defaults;
         permissions.enabled = false;
         permissions.save(root.path()).unwrap();
         let listed = answer(
@@ -825,6 +1561,304 @@ mod tests {
         )
         .unwrap();
         assert!(listed["result"]["tools"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn project_tools_read_overview_ticks_and_notes_from_disk() {
+        use crate::projects::{
+            Analysis, Finding, Journal, Member, Mode, NoteKind, Project, ProjectMap, Source, Ticks,
+            Verdict,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path();
+        let mut map = ProjectMap::default();
+        map.projects.push(Project {
+            id: "bordados-jas".into(),
+            name: "Bordados Jas".into(),
+            color: "#25d366".into(),
+            sources: vec![Source {
+                chat: "123@g.us".into(),
+                mode: Mode::All,
+            }],
+            chats: Vec::new(),
+            context: "Fábrica de guardapolvos y bordados.".into(),
+            members: vec![Member {
+                id: "5491100001111@s.whatsapp.net".into(),
+                name: "Diego".into(),
+                role: "Taller".into(),
+                about: "Entrega los viernes".into(),
+            }],
+        });
+        map.save(config).unwrap();
+
+        let done_finding = Finding {
+            id: "todo-done".into(),
+            text: "Mandar matriz vieja".into(),
+            ..Finding::default()
+        };
+        let open_finding = Finding {
+            id: "todo-open".into(),
+            text: "Confirmar 500 guardapolvos".into(),
+            who: Some("Diego".into()),
+            due: Some("viernes".into()),
+            ..Finding::default()
+        };
+        let mut analysis = Analysis {
+            updated: 1_760_000_000,
+            todo: vec![done_finding.clone(), open_finding],
+            follow_up: vec![Finding {
+                id: "fu-1".into(),
+                text: "Respuesta por hilo azul".into(),
+                who: Some("Proveedor".into()),
+                ..Finding::default()
+            }],
+            leaks: vec![Finding {
+                id: "leak-1".into(),
+                text: "Pedido sin cotizar".into(),
+                ..Finding::default()
+            }],
+            needs: vec![Finding {
+                id: "need-1".into(),
+                text: "Comprar entretela".into(),
+                ..Finding::default()
+            }],
+            highlights: vec![Finding {
+                id: "hi-1".into(),
+                text: "Cerramos entrega mensual".into(),
+                ..Finding::default()
+            }],
+            ..Analysis::default()
+        };
+        analysis
+            .summaries
+            .insert("today".into(), "Se avanzó con el taller.".into());
+        analysis
+            .summaries
+            .insert("week".into(), "Semana de entregas.".into());
+        analysis.save(config, "bordados-jas").unwrap();
+
+        let mut ticks = Ticks::default();
+        ticks.judge(&done_finding, Verdict::Done);
+        ticks.save(config, "bordados-jas").unwrap();
+
+        let mut journal = Journal::default();
+        journal.add_kind("Hablé con Diego por los talles", true, NoteKind::Log);
+        journal.save(config, "bordados-jas").unwrap();
+
+        let bridge = Bridge {
+            config_dir: config.to_path_buf(),
+            state_dir: config.to_path_buf(),
+        };
+
+        let list = bridge.call("list_projects", &json!({})).unwrap();
+        assert!(list.contains("Bordados Jas | bordados-jas | 1 sources"));
+        assert!(list.contains("todo: 1 | follow_up: 1 | slipping: 1 | needs: 1 | highlights: 1"));
+
+        let overview = bridge
+            .call("project_overview", &json!({"project": "Bordados"}))
+            .unwrap();
+        assert!(overview.contains("# Bordados Jas (bordados-jas)"));
+        assert!(overview.contains("Fábrica de guardapolvos y bordados."));
+        assert!(
+            overview.contains("Diego (5491100001111@s.whatsapp.net) - Taller: Entrega los viernes")
+        );
+        assert!(overview.contains("- Today: Se avanzó con el taller."));
+        assert!(overview.contains("- Week: Semana de entregas."));
+        assert!(overview.contains("Confirmar 500 guardapolvos (who: Diego, due: viernes)"));
+        assert!(
+            !overview.contains("Mandar matriz vieja"),
+            "done findings are skipped"
+        );
+
+        let notes = bridge
+            .call(
+                "project_notes",
+                &json!({"project": "bordados-jas", "days": 7}),
+            )
+            .unwrap();
+        assert!(notes.contains("Hablé con Diego por los talles"));
+        assert!(notes.contains("(log, spoken)"));
+    }
+
+    #[test]
+    fn call_tools_hide_private_calls_and_gate_transcripts_by_permission() {
+        use crate::call_library::{Call, CallAnalysis, Commitment, Library, Origin, Transcript};
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("config");
+        let state = root.path().join("state");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+
+        let now = now();
+        let library = Library {
+            calls: vec![
+                Call {
+                    id: "call-1".into(),
+                    title: "Llamada con Diego".into(),
+                    at: now - 600,
+                    seconds: 185,
+                    origin: Origin::Recorded,
+                    file: "call-1.wav".into(),
+                    project: Some("bordados-jas".into()),
+                    lead: Some("lead-1".into()),
+                    transcripts: vec![Transcript {
+                        engine: "Whisper".into(),
+                        text: "Hola Diego, necesitamos 500 unidades para el viernes.".into(),
+                        at: now - 500,
+                    }],
+                    analysis: Some(CallAnalysis {
+                        summary: "Acordamos 500 unidades para el viernes.".into(),
+                        decisions: vec!["Usar tela arciel".into()],
+                        commitments: vec![Commitment {
+                            who: "Diego".into(),
+                            what: "Entregar el viernes".into(),
+                            due: Some("2026-10-23".into()),
+                        }],
+                        tasks: vec!["Mandar orden de compra".into()],
+                        next_steps: vec!["Revisar muestras el miércoles".into()],
+                        at: now - 400,
+                    }),
+                    chat: None,
+                    account: None,
+                    started_at: now - 600,
+                    video: false,
+                    direction: None,
+                    group: None,
+                    participants: Vec::new(),
+                    private: false,
+                    notice_ms: None,
+                    levels: None,
+                    stereo: false,
+                    recovered: false,
+                    pending_read: false,
+                    pending_review: false,
+                },
+                Call {
+                    id: "call-private".into(),
+                    title: "Llamada secreta".into(),
+                    at: now - 300,
+                    seconds: 60,
+                    origin: Origin::Recorded,
+                    file: "call-private.wav".into(),
+                    project: None,
+                    lead: None,
+                    transcripts: Vec::new(),
+                    analysis: None,
+                    chat: None,
+                    account: None,
+                    started_at: now - 300,
+                    video: false,
+                    direction: None,
+                    group: None,
+                    participants: Vec::new(),
+                    private: true,
+                    notice_ms: None,
+                    levels: None,
+                    stereo: false,
+                    recovered: false,
+                    pending_read: false,
+                    pending_review: false,
+                },
+            ],
+        };
+        library.save(&state).unwrap();
+
+        let bridge = Bridge {
+            config_dir: config.clone(),
+            state_dir: state,
+        };
+
+        let list = bridge.call("list_calls", &json!({"days": 7})).unwrap();
+        assert!(list.contains("call-1 | Llamada con Diego"));
+        assert!(list.contains("3:05"));
+        assert!(list.contains("Acordamos 500 unidades para el viernes."));
+        assert!(
+            !list.contains("call-private") && !list.contains("Llamada secreta"),
+            "private calls are never listed"
+        );
+        assert!(
+            bridge
+                .call("read_call", &json!({"call": "call-private"}))
+                .is_err(),
+            "private calls can never be read"
+        );
+
+        // By default call_transcripts is false: summary and commitments show, transcript does not.
+        let detail = bridge
+            .call("read_call", &json!({"call": "Llamada con Diego"}))
+            .unwrap();
+        assert!(detail.contains("Acordamos 500 unidades para el viernes."));
+        assert!(detail.contains("Usar tela arciel"));
+        assert!(detail.contains("Diego: Entregar el viernes (due 2026-10-23)"));
+        assert!(detail.contains("Mandar orden de compra"));
+        assert!(detail.contains("Revisar muestras el miércoles"));
+        assert!(
+            !detail.contains("Hola Diego, necesitamos 500 unidades"),
+            "transcript is omitted when call_transcripts is off"
+        );
+
+        // Enabling call_transcripts includes the transcript live.
+        let mut permissions = Permissions::load(&config);
+        permissions.call_transcripts = true;
+        permissions.save(&config).unwrap();
+        let with_transcript = bridge
+            .call("read_call", &json!({"call": "call-1"}))
+            .unwrap();
+        assert!(with_transcript.contains("## Transcript (Whisper)"));
+        assert!(with_transcript.contains("Hola Diego, necesitamos 500 unidades para el viernes."));
+    }
+
+    #[test]
+    fn lead_tools_list_and_read_stage_amount_next_action_and_history() {
+        use crate::leads::{Kind, Lead, Leads, Stage};
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path();
+
+        let mut lead = Lead::new(
+            "bordados-jas",
+            "Farmacia Sur",
+            Some("5491122334455@s.whatsapp.net".into()),
+            Some("5491122334455".into()),
+        );
+        lead.id = "lead-sur".into();
+        lead.set_stage(Stage::Quoted, None);
+        lead.value = Some("$ 450.000".into());
+        lead.set_next("Confirmar talles", Some("2026-10-22".into()));
+        lead.add(Kind::Note, "Pidieron muestra de guardapolvo");
+
+        let mut leads = Leads::default();
+        leads.leads.push(lead);
+        leads.save(config).unwrap();
+
+        let bridge = Bridge {
+            config_dir: config.to_path_buf(),
+            state_dir: config.to_path_buf(),
+        };
+
+        let listed = bridge
+            .call(
+                "list_leads",
+                &json!({"project": "bordados-jas", "stage": "quoted"}),
+            )
+            .unwrap();
+        assert!(listed.contains("lead-sur | Farmacia Sur"));
+        assert!(listed.contains("stage: quoted"));
+        assert!(listed.contains("amount: $ 450.000"));
+        assert!(listed.contains("next: Confirmar talles | due: 2026-10-22"));
+
+        let empty = bridge
+            .call("list_leads", &json!({"stage": "customer"}))
+            .unwrap();
+        assert_eq!(empty, "No leads match.");
+
+        let detail = bridge
+            .call("read_lead", &json!({"lead": "Farmacia Sur"}))
+            .unwrap();
+        assert!(detail.contains("# Farmacia Sur (lead-sur)"));
+        assert!(detail.contains("- Stage: quoted"));
+        assert!(detail.contains("- Amount: $ 450.000"));
+        assert!(detail.contains("- Next action: Confirmar talles (due 2026-10-22)"));
+        assert!(detail.contains("Pidieron muestra de guardapolvo"));
     }
 
     #[test]
