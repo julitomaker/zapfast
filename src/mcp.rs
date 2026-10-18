@@ -55,6 +55,52 @@ impl Scope {
     }
 }
 
+const LOG_LIMIT: usize = 1000;
+
+/// One MCP tool call recorded in `mcp-log.jsonl` in the config folder.
+/// Never records tool arguments, results, or message bodies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogEntry {
+    pub at: i64,
+    pub tool: String,
+    pub scope: String,
+    pub client: String,
+}
+
+/// Path to `mcp-log.jsonl` inside the config folder.
+pub fn log_file(config_dir: &Path) -> PathBuf {
+    config_dir.join("mcp-log.jsonl")
+}
+
+fn append_log(config_dir: &Path, entry: &LogEntry) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir)?;
+    let path = log_file(config_dir);
+    let mut lines: Vec<String> = std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(str::to_owned)
+        .collect();
+    lines.push(serde_json::to_string(entry)?);
+    let start = lines.len().saturating_sub(LOG_LIMIT);
+    let mut text = lines[start..].join("\n");
+    text.push('\n');
+    let temporary = path.with_extension("jsonl.tmp");
+    std::fs::write(&temporary, text)?;
+    std::fs::rename(temporary, path)
+}
+
+/// Returns the most recent MCP access log entries (newest first), up to `limit`.
+pub fn recent_log(config_dir: &Path, limit: usize) -> Vec<LogEntry> {
+    std::fs::read_to_string(log_file(config_dir))
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .filter_map(|line| serde_json::from_str::<LogEntry>(line).ok())
+        .take(limit)
+        .collect()
+}
+
 /// What MCP clients are allowed to read, stored in `mcp.json` in the config
 /// folder and read on each request so changes apply live.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,9 +368,35 @@ fn tools(permissions: &Permissions) -> Value {
 struct Bridge {
     config_dir: PathBuf,
     state_dir: PathBuf,
+    client: std::sync::Mutex<String>,
 }
 
 impl Bridge {
+    fn new(config_dir: impl Into<PathBuf>, state_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            config_dir: config_dir.into(),
+            state_dir: state_dir.into(),
+            client: std::sync::Mutex::new("unknown".to_owned()),
+        }
+    }
+
+    fn set_client(&self, name: Option<&str>) {
+        let name = name
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("unknown");
+        if let Ok(mut client) = self.client.lock() {
+            *client = name.to_owned();
+        }
+    }
+
+    fn client_name(&self) -> String {
+        self.client
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| "unknown".to_owned())
+    }
+
     fn permissions(&self) -> Permissions {
         Permissions::load(&self.config_dir)
     }
@@ -1138,6 +1210,15 @@ impl Bridge {
         };
         let permissions = self.permissions();
         permissions.check(scope)?;
+        let _ = append_log(
+            &self.config_dir,
+            &LogEntry {
+                at: now(),
+                tool: name.to_owned(),
+                scope: scope.as_str().to_owned(),
+                client: self.client_name(),
+            },
+        );
         match name {
             "list_chats" => {
                 let excluded = self.excluded_chats(&permissions);
@@ -1311,12 +1392,15 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
     let id = request.get("id")?.clone();
     let method = request["method"].as_str().unwrap_or("");
     let result = match method {
-        "initialize" => json!({
-            "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": SERVER_NAME, "title": "Whats Pro", "version": env!("CARGO_PKG_VERSION")},
-            "instructions": "Read-only access to the user's WhatsApp chats, projects, calls and leads in Whats Pro. Chat tools require Whats Pro to be open; projects, calls and leads work from disk."
-        }),
+        "initialize" => {
+            bridge.set_client(request["params"]["clientInfo"]["name"].as_str());
+            json!({
+                "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": SERVER_NAME, "title": "Whats Pro", "version": env!("CARGO_PKG_VERSION")},
+                "instructions": "Read-only access to the user's WhatsApp chats, projects, calls and leads in Whats Pro. Chat tools require Whats Pro to be open; projects, calls and leads work from disk."
+            })
+        }
         "ping" => json!({}),
         "tools/list" => json!({"tools": tools(&bridge.permissions())}),
         "tools/call" => {
@@ -1344,10 +1428,7 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
 
 /// Serves MCP on stdin and stdout until stdin closes.
 pub fn run(config_dir: &Path, state_dir: &Path) -> i32 {
-    let bridge = Bridge {
-        config_dir: config_dir.to_path_buf(),
-        state_dir: state_dir.to_path_buf(),
-    };
+    let bridge = Bridge::new(config_dir, state_dir);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     for line in stdin.lock().lines() {
@@ -1444,10 +1525,7 @@ mod tests {
 
     #[test]
     fn initialize_and_list_tools() {
-        let bridge = Bridge {
-            config_dir: PathBuf::from("/nonexistent"),
-            state_dir: PathBuf::from("/nonexistent"),
-        };
+        let bridge = Bridge::new("/nonexistent", "/nonexistent");
         let reply = answer(
             &bridge,
             &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}),
@@ -1500,10 +1578,7 @@ mod tests {
     #[test]
     fn permissions_have_safe_defaults_and_apply_live() {
         let root = tempfile::tempdir().unwrap();
-        let bridge = Bridge {
-            config_dir: root.path().to_path_buf(),
-            state_dir: root.path().to_path_buf(),
-        };
+        let bridge = Bridge::new(root.path(), root.path());
         let defaults = Permissions::load(root.path());
         assert!(defaults.enabled);
         assert!(defaults.chats);
@@ -1645,10 +1720,7 @@ mod tests {
         journal.add_kind("Hablé con Diego por los talles", true, NoteKind::Log);
         journal.save(config, "bordados-jas").unwrap();
 
-        let bridge = Bridge {
-            config_dir: config.to_path_buf(),
-            state_dir: config.to_path_buf(),
-        };
+        let bridge = Bridge::new(config, config);
 
         let list = bridge.call("list_projects", &json!({})).unwrap();
         assert!(list.contains("Bordados Jas | bordados-jas | 1 sources"));
@@ -1763,10 +1835,7 @@ mod tests {
         };
         library.save(&state).unwrap();
 
-        let bridge = Bridge {
-            config_dir: config.clone(),
-            state_dir: state,
-        };
+        let bridge = Bridge::new(&config, &state);
 
         let list = bridge.call("list_calls", &json!({"days": 7})).unwrap();
         assert!(list.contains("call-1 | Llamada con Diego"));
@@ -1830,10 +1899,7 @@ mod tests {
         leads.leads.push(lead);
         leads.save(config).unwrap();
 
-        let bridge = Bridge {
-            config_dir: config.to_path_buf(),
-            state_dir: config.to_path_buf(),
-        };
+        let bridge = Bridge::new(config, config);
 
         let listed = bridge
             .call(
@@ -1859,6 +1925,67 @@ mod tests {
         assert!(detail.contains("- Amount: $ 450.000"));
         assert!(detail.contains("- Next action: Confirmar talles (due 2026-10-22)"));
         assert!(detail.contains("Pidieron muestra de guardapolvo"));
+    }
+
+    #[test]
+    fn access_log_records_client_and_caps_at_thousand_lines() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path();
+        let bridge = Bridge::new(config, config);
+
+        // Before initialize, client defaults to "unknown".
+        let _ = answer(
+            &bridge,
+            &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "list_projects"}}),
+        )
+        .unwrap();
+
+        // After initialize with clientInfo.name, tool calls record that client.
+        let _ = answer(
+            &bridge,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "claude-code", "version": "1.0.0"}}
+            }),
+        )
+        .unwrap();
+        let _ = answer(
+            &bridge,
+            &json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "list_leads"}}),
+        )
+        .unwrap();
+
+        let recent = recent_log(config, 5);
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].tool, "list_leads");
+        assert_eq!(recent[0].scope, "leads");
+        assert_eq!(recent[0].client, "claude-code");
+        assert_eq!(recent[1].tool, "list_projects");
+        assert_eq!(recent[1].scope, "projects");
+        assert_eq!(recent[1].client, "unknown");
+
+        // Cap at 1,000 lines, trimming the oldest entries.
+        for index in 0..1005 {
+            append_log(
+                config,
+                &LogEntry {
+                    at: 1_760_000_000 + index,
+                    tool: format!("tool-{index}"),
+                    scope: "projects".into(),
+                    client: "claude-code".into(),
+                },
+            )
+            .unwrap();
+        }
+        let raw = std::fs::read_to_string(log_file(config)).unwrap();
+        let lines: Vec<&str> = raw.lines().collect();
+        assert_eq!(lines.len(), 1000);
+        let newest = recent_log(config, 1);
+        assert_eq!(newest[0].tool, "tool-1004");
+        let oldest: LogEntry = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(oldest.tool, "tool-5");
     }
 
     #[test]
