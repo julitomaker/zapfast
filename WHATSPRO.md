@@ -215,7 +215,7 @@ firmada con la clave de Whats Pro nunca se instala.
 
 ```bash
 packaging/release-whatspro.sh 0.20.0 "Qué cambia en esta versión"
-git push origin main v0.20.0
+git push origin HEAD:main v0.20.0
 ```
 
 GitHub arma los instaladores de Mac y Windows, firma las actualizaciones y

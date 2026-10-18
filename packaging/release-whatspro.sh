@@ -50,4 +50,4 @@ git tag -a "v$version" -m "Whats Pro $version"
 
 echo "Listo: Whats Pro $version (antes $current), commit y tag v$version."
 echo "Para publicarla:"
-echo "  git push origin main v$version"
+echo "  git push origin HEAD:main v$version"
