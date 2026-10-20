@@ -89,6 +89,18 @@ pub fn apply(
     args: &Value,
     client: &str,
 ) -> Result<String, String> {
+    // Also the names the project tools use: `value` and `next`.
+    let mut args = args.clone();
+    if let Some(object) = args.as_object_mut() {
+        for (alias, name) in [("value", "amount"), ("next", "next_action")] {
+            if !object.contains_key(name)
+                && let Some(value) = object.remove(alias)
+            {
+                object.insert(name.to_owned(), value);
+            }
+        }
+    }
+    let args = &args;
     let client = if client.trim().is_empty() {
         "IA"
     } else {
@@ -595,6 +607,17 @@ mod tests {
             .unwrap_err()
             .contains("not a chat id")
         );
+        apply(
+            &mut leads,
+            &map,
+            "update_lead",
+            &json!({"lead": "Ana", "value": "$ 10", "next": "Llamar"}),
+            "c",
+        )
+        .unwrap();
+        let ana = leads.leads.iter().find(|l| l.name == "Ana").unwrap();
+        assert_eq!(ana.value.as_deref(), Some("$ 10"));
+        assert_eq!(ana.next.as_ref().unwrap().text, "Llamar");
         assert!(handles("update_lead") && !handles("list_leads"));
         assert_eq!(tools().len(), 4);
     }
