@@ -214,9 +214,8 @@ fn tool_scope(name: &str) -> Option<Scope> {
         "list_calls" | "read_call" => Some(Scope::Calls),
         "list_leads" | "read_lead" => Some(Scope::Leads),
         "create_project" | "update_project" | "add_note" | "add_task" | "resolve_item"
-        | "reopen_item" | "run_analysis" | "create_lead" | "update_lead" | "add_lead_note" => {
-            Some(Scope::Write)
-        }
+        | "reopen_item" | "run_analysis" => Some(Scope::Write),
+        _ if crate::leads::actions::handles(name) => Some(Scope::Write),
         _ => None,
     }
 }
@@ -287,7 +286,8 @@ fn all_tools() -> Vec<Value> {
                 "properties": {
                     "chat": {"type": "string", "description": "Chat name, part of it, or id."},
                     "since_hours": {"type": "number", "description": "Only messages from the last N hours. Without it, the latest `limit` messages."},
-                    "limit": {"type": "number", "description": "At most this many messages (default 200, max 2000)."}
+                    "limit": {"type": "number", "description": "At most this many messages (default 200, max 2000)."},
+                    "project": {"type": "string", "description": "Only the messages that belong to this project (name or id), by the chat's mode in its sources (a smart chat gives only the project's messages), with people named as the project's members sheet says."}
                 },
                 "required": ["chat"]
             },
@@ -301,7 +301,8 @@ fn all_tools() -> Vec<Value> {
                 "properties": {
                     "hours": {"type": "number", "description": "How far back (default 24)."},
                     "kind": {"type": "string", "enum": ["all", "group", "direct"]},
-                    "limit": {"type": "number", "description": "At most this many messages (default 1500, max 5000)."}
+                    "limit": {"type": "number", "description": "At most this many messages (default 1500, max 5000)."},
+                    "project": {"type": "string", "description": "Only this project's chats and messages (name or id), by each source's mode, with people named as its members sheet says."}
                 }
             },
             "annotations": {"readOnlyHint": true}
@@ -416,7 +417,7 @@ fn all_tools() -> Vec<Value> {
                     "name": {"type": "string"},
                     "context": {"type": "string", "description": "What the project is about, in plain words; the analysis reads it."},
                     "sources": {"type": "array", "description": "Chats to follow. mode: all (the whole chat, for chats only about this project), smart (the analysis keeps the project's messages, for chats that also talk about other things), selected (only messages picked by hand). Without mode, Whats Pro picks by the kind of chat.", "items": {"type": "object", "properties": {"chat": {"type": "string", "description": "Chat id from list_chats."}, "mode": {"type": "string", "enum": ["all", "smart", "selected"]}}, "required": ["chat"]}},
-                    "members": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string", "description": "WhatsApp id or phone number."}, "role": {"type": "string"}, "about": {"type": "string", "description": "Who they are and how to deal with them."}}, "required": ["name"]}},
+                    "members": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string", "description": "WhatsApp id or phone number."}, "role": {"type": "string"}, "about": {"type": "string", "description": "Who they are and how to deal with them."}, "aliases": {"type": "array", "items": {"type": "string"}, "description": "Other names they show up as: the shop account they write from, their saved name in another chat."}, "chats": {"type": "array", "items": {"type": "string"}, "description": "Other WhatsApp ids or numbers they write from."}}, "required": ["name"]}},
                     "color": {"type": "string", "description": "Hex color, optional."}
                 },
                 "required": ["name"]
@@ -435,7 +436,7 @@ fn all_tools() -> Vec<Value> {
                     "color": {"type": "string"},
                     "add_sources": {"type": "array", "items": {"type": "object", "properties": {"chat": {"type": "string"}, "mode": {"type": "string", "enum": ["all", "smart", "selected"]}}, "required": ["chat"]}},
                     "remove_sources": {"type": "array", "items": {"type": "string", "description": "Chat id."}},
-                    "members": {"type": "array", "description": "Added, or updated when the id or name matches.", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string"}, "role": {"type": "string"}, "about": {"type": "string"}}, "required": ["name"]}},
+                    "members": {"type": "array", "description": "Added, or updated when the id or name matches (aliases and chats are added to theirs).", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string"}, "role": {"type": "string"}, "about": {"type": "string"}, "aliases": {"type": "array", "items": {"type": "string"}}, "chats": {"type": "array", "items": {"type": "string"}}}, "required": ["name"]}},
                     "remove_members": {"type": "array", "items": {"type": "string", "description": "Member id or name."}}
                 },
                 "required": ["project"]
@@ -506,58 +507,10 @@ fn all_tools() -> Vec<Value> {
             },
             "annotations": {"readOnlyHint": false, "destructiveHint": false}
         }),
-        json!({
-            "name": "create_lead",
-            "description": "Add a sales lead to a project: the person, their chat or phone, stage (new, contacted, quoted, customer, lost), the sale's value, the next action with its day, and a first note.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "project": {"type": "string"},
-                    "name": {"type": "string"},
-                    "chat": {"type": "string", "description": "Chat id from list_chats."},
-                    "phone": {"type": "string"},
-                    "stage": {"type": "string", "enum": ["new", "contacted", "quoted", "customer", "lost"]},
-                    "value": {"type": "string", "description": "What the sale is worth, as written."},
-                    "next": {"type": "string", "description": "Next action."},
-                    "due": {"type": "string", "description": "Its day, YYYY-MM-DD."},
-                    "note": {"type": "string"}
-                },
-                "required": ["project", "name"]
-            },
-            "annotations": {"readOnlyHint": false, "destructiveHint": false}
-        }),
-        json!({
-            "name": "update_lead",
-            "description": "Change a lead: stage (lost asks for lost_reason), value, next action and its day, chat, phone, or add a note.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {
-                    "lead": {"type": "string", "description": "Lead id, name or phone."},
-                    "name": {"type": "string"},
-                    "chat": {"type": "string"},
-                    "phone": {"type": "string"},
-                    "stage": {"type": "string", "enum": ["new", "contacted", "quoted", "customer", "lost"]},
-                    "lost_reason": {"type": "string"},
-                    "value": {"type": "string"},
-                    "next": {"type": "string"},
-                    "due": {"type": "string"},
-                    "note": {"type": "string"}
-                },
-                "required": ["lead"]
-            },
-            "annotations": {"readOnlyHint": false, "destructiveHint": false}
-        }),
-        json!({
-            "name": "add_lead_note",
-            "description": "Add a note to a lead's history.",
-            "inputSchema": {
-                "type": "object",
-                "properties": {"lead": {"type": "string"}, "text": {"type": "string"}},
-                "required": ["lead", "text"]
-            },
-            "annotations": {"readOnlyHint": false, "destructiveHint": false}
-        }),
     ]
+    .into_iter()
+    .chain(crate::leads::actions::tools())
+    .collect()
 }
 
 /// The tools currently enabled by `permissions`.
@@ -620,6 +573,72 @@ impl Bridge {
         }
         let map = crate::projects::ProjectMap::load(&self.config_dir);
         map.personal.into_iter().chain(map.ignored).collect()
+    }
+
+    /// The project a read is narrowed to, when `project` is given: its map,
+    /// itself and its analysis (for the smart sources).
+    fn project_scope(
+        &self,
+        arguments: &Value,
+    ) -> Result<
+        Option<(
+            crate::projects::ProjectMap,
+            crate::projects::Project,
+            Option<crate::projects::Analysis>,
+        )>,
+        String,
+    > {
+        let Some(wanted) = text(arguments, "project") else {
+            return Ok(None);
+        };
+        self.permissions().check(Scope::Projects)?;
+        let map = crate::projects::ProjectMap::load(&self.config_dir);
+        let project = self.resolve_project(&map, &wanted)?.clone();
+        let analysis = crate::projects::Analysis::load(&self.config_dir, &project.id);
+        Ok(Some((map, project, analysis)))
+    }
+
+    /// `message` if it belongs to the project in `scope` (or there is none),
+    /// with its sender named as the project's members sheet says. A smart
+    /// chat's message the analysis has not read yet is kept, marked.
+    fn in_project(
+        scope: &Option<(
+            crate::projects::ProjectMap,
+            crate::projects::Project,
+            Option<crate::projects::Analysis>,
+        )>,
+        message: &Value,
+    ) -> Option<Value> {
+        let Some((map, project, analysis)) = scope else {
+            return Some(message.clone());
+        };
+        let chat = message["chat"].as_str().unwrap_or("");
+        let inclusion = map.inclusion_of(
+            project,
+            chat,
+            message["id"].as_str().unwrap_or(""),
+            message["timestamp"].as_i64().unwrap_or(0),
+            analysis.as_ref(),
+        );
+        if inclusion == crate::projects::Inclusion::Out {
+            return None;
+        }
+        let mut message = message.clone();
+        if message["from_me"].as_bool() != Some(true)
+            && let Some(member) = project.member_for(
+                message["sender"].as_str().unwrap_or(""),
+                message["sender_name"].as_str(),
+                chat,
+            )
+        {
+            message["sender_name"] = Value::String(member.label());
+        }
+        if inclusion == crate::projects::Inclusion::Unsure
+            && let Some(text) = message["text"].as_str()
+        {
+            message["text"] = Value::String(format!("{text} [not sorted into the project yet]"));
+        }
+        Some(message)
     }
 
     /// A change, applied by the app through the bridge so it never races the
@@ -1004,6 +1023,15 @@ impl Bridge {
                 }
                 if !member.about.trim().is_empty() {
                     line.push_str(&format!(": {}", member.about.trim()));
+                }
+                if !member.aliases.is_empty() {
+                    line.push_str(&format!(
+                        " | also shows up as: {}",
+                        member.aliases.join(", ")
+                    ));
+                }
+                if !member.chats.is_empty() {
+                    line.push_str(&format!(" | also writes from: {}", member.chats.join(", ")));
                 }
                 out.push_str(&line);
                 out.push('\n');
@@ -1748,16 +1776,30 @@ impl Bridge {
                 let limit = number(arguments, "limit")
                     .unwrap_or(200.0)
                     .clamp(1.0, 2000.0) as usize;
-                let mut pairs = vec![("chat", id), ("limit", limit.to_string())];
+                let mut pairs = vec![("chat", id.clone()), ("limit", limit.to_string())];
                 if let Some(hours) = number(arguments, "since_hours") {
                     pairs.push(("since", (now() - (hours * 3600.0) as i64).to_string()));
                 }
                 let messages = self.get(&format!("/messages?{}", query(&pairs)))?;
+                let scope = self.project_scope(arguments)?;
+                if let Some((map, project, _)) = &scope
+                    && project.source(&id).is_none()
+                    && !map
+                        .picks
+                        .iter()
+                        .any(|p| p.project == project.id && p.chat == id)
+                {
+                    return Err(format!(
+                        "{chat_name} is not one of {}'s chats. Read it without `project`, or add it with update_project.",
+                        project.name
+                    ));
+                }
                 let lines: Vec<String> = messages
                     .as_array()
                     .into_iter()
                     .flatten()
-                    .map(|message| line(message, false))
+                    .filter_map(|message| Self::in_project(&scope, message))
+                    .map(|message| line(&message, false))
                     .collect();
                 Ok(format!(
                     "Chat: {chat_name} ({} messages)\n{}",
@@ -1787,12 +1829,17 @@ impl Bridge {
                     "/messages?{}",
                     query(&[("since", since.to_string()), ("limit", limit.to_string())])
                 ))?;
+                let scope = self.project_scope(arguments)?;
                 let mut by_chat: Vec<(String, Vec<String>)> = Vec::new();
                 for message in messages.as_array().into_iter().flatten() {
                     let chat = message["chat"].as_str().unwrap_or("");
                     if excluded.contains(chat) {
                         continue;
                     }
+                    let Some(message) = Self::in_project(&scope, message) else {
+                        continue;
+                    };
+                    let message = &message;
                     let wanted = match kind.as_deref() {
                         Some("group") => kinds.get(chat).is_some_and(|k| k == "group"),
                         Some("direct") => kinds.get(chat).is_some_and(|k| k == "direct"),
@@ -2335,6 +2382,7 @@ mod tests {
                 "create_lead",
                 "update_lead",
                 "add_lead_note",
+                "link_chat_to_lead",
             ]
         );
         assert!(
@@ -2439,6 +2487,8 @@ mod tests {
                 name: "Diego".into(),
                 role: "Taller".into(),
                 about: "Entrega los viernes".into(),
+                aliases: Vec::new(),
+                chats: Vec::new(),
             }],
         });
         map.save(config).unwrap();

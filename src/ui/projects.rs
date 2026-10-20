@@ -3217,6 +3217,7 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
     let mut remove = None;
     let mut roles: Vec<(usize, String)> = Vec::new();
     let mut abouts: Vec<(usize, String)> = Vec::new();
+    let mut others: Vec<(usize, String)> = Vec::new();
     egui::ScrollArea::vertical()
         .id_salt(("project-context", &project.id))
         .auto_shrink([false, false])
@@ -3375,6 +3376,40 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                     ui.ctx().data_mut(|d| d.insert_temp(key, about.clone()));
                                 }
                             });
+                            // The other names and numbers they show up as, so
+                            // the analysis knows "Bordados JAS" is Katy.
+                            let key = egui::Id::new(("others", &project.id, &member.id));
+                            let saved = member
+                                .aliases
+                                .iter()
+                                .map(String::as_str)
+                                .chain(member.chats.iter().map(|chat| chat.split('@').next().unwrap_or(chat)))
+                                .collect::<Vec<&str>>()
+                                .join(", ");
+                            let mut other = ui
+                                .ctx()
+                                .data(|d| d.get_temp::<String>(key))
+                                .unwrap_or_else(|| saved.clone());
+                            ui.horizontal(|ui| {
+                                ui.add_space(40.0);
+                                let field = field_frame(ui, &palette, |ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut other)
+                                            .hint_text(gettext(locale, "Also shows up as: other names or numbers, separated by commas").as_ref())
+                                            .font(theme::regular(13.0))
+                                            .frame(Frame::NONE)
+                                            .desired_width(f32::INFINITY),
+                                    )
+                                });
+                                if field.lost_focus() {
+                                    ui.ctx().data_mut(|d| d.remove_temp::<String>(key));
+                                    if other != saved {
+                                        others.push((index, other.clone()));
+                                    }
+                                } else if field.changed() {
+                                    ui.ctx().data_mut(|d| d.insert_temp(key, other.clone()));
+                                }
+                            });
                             ui.add_space(8.0);
                         }
                         ui.add_space(4.0);
@@ -3429,6 +3464,22 @@ fn context(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
         for (index, about) in abouts {
             if let Some(member) = project.members.get_mut(index) {
                 member.about = about.trim().to_owned();
+                changed = true;
+            }
+        }
+        // Numbers go to the chats they write from; anything else is a name.
+        for (index, other) in others {
+            if let Some(member) = project.members.get_mut(index) {
+                member.aliases.clear();
+                member.chats.clear();
+                for item in other.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+                    let digits: String = item.chars().filter(char::is_ascii_digit).collect();
+                    if digits.len() >= 8 && digits.len() * 2 >= item.len() {
+                        member.chats.push(digits);
+                    } else {
+                        member.aliases.push(item.to_owned());
+                    }
+                }
                 changed = true;
             }
         }

@@ -5273,3 +5273,6 @@ msgstr "Lo hizo {who}"
 
 msgid "by {who}"
 msgstr "por {who}"
+
+msgid "Also shows up as: other names or numbers, separated by commas"
+msgstr "También aparece como: otros nombres o números, separados por coma"

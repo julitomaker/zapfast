@@ -1844,6 +1844,8 @@ mod tests {
             name: "Socia".into(),
             role: String::new(),
             about: String::new(),
+            aliases: Vec::new(),
+            chats: Vec::new(),
         });
         let hint = |person: &str| crate::projects::LeadHint {
             id: format!("lead:{person}"),

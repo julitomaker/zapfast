@@ -33,9 +33,7 @@ pub fn apply(config: &Path, action: &str, args: &Value, client: &str) -> Answer 
         "resolve_item" => judge(config, args, by, true),
         "reopen_item" => judge(config, args, by, false),
         "run_analysis" => run_analysis(config, args),
-        "create_lead" => create_lead(config, args, by),
-        "update_lead" => update_lead(config, args, by),
-        "add_lead_note" => add_lead_note(config, args, by),
+        _ if crate::leads::actions::handles(action) => lead_action(config, action, args, client),
         _ => Err(format!("Unknown action {action}.")),
     }
 }
@@ -131,7 +129,28 @@ fn sources(args: &Value, name: &str) -> Vec<(String, Option<Mode>)> {
         .unwrap_or_default()
 }
 
-/// `members: [{id?, name, role?, about?}]`. A bare phone becomes its digits.
+/// A list given as an array or as one comma-separated text.
+fn list(args: &Value, name: &str) -> Vec<String> {
+    match args.get(name) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Some(Value::String(text)) => text
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// `members: [{id?, name, role?, about?, aliases?, chats?}]`. A bare phone
+/// becomes its digits.
 fn members(args: &Value) -> Vec<Member> {
     args.get("members")
         .and_then(Value::as_array)
@@ -155,6 +174,8 @@ fn members(args: &Value) -> Vec<Member> {
                         name,
                         role: text(item, "role").unwrap_or_default(),
                         about: text(item, "about").unwrap_or_default(),
+                        aliases: list(item, "aliases"),
+                        chats: list(item, "chats"),
                     })
                 })
                 .collect()
@@ -245,6 +266,16 @@ fn update_project(config: &Path, args: &Value) -> Answer {
                 }
                 if !member.about.is_empty() {
                     existing.about = member.about;
+                }
+                for alias in member.aliases {
+                    if !existing.aliases.contains(&alias) {
+                        existing.aliases.push(alias);
+                    }
+                }
+                for chat in member.chats {
+                    if !existing.chats.contains(&chat) {
+                        existing.chats.push(chat);
+                    }
                 }
             }
             None => project.members.push(member),
@@ -391,130 +422,30 @@ fn run_analysis(config: &Path, args: &Value) -> Answer {
 
 // ------------------------------------------------------------------ leads
 
-fn stage(value: &str) -> Option<crate::leads::Stage> {
-    use crate::leads::Stage;
-    Some(match value.to_lowercase().as_str() {
-        "new" | "nuevo" => Stage::New,
-        "contacted" | "contactado" => Stage::Contacted,
-        "quoted" | "cotizado" => Stage::Quoted,
-        "customer" | "cliente" => Stage::Customer,
-        "lost" | "perdido" => Stage::Lost,
-        _ => return None,
-    })
+/// The app's context, for sending lead changes on to ElevaLeads.
+static CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// Called by the app once it has a window.
+pub fn set_ctx(ctx: &egui::Context) {
+    let _ = CTX.set(ctx.clone());
 }
 
-fn find_lead(store: &crate::leads::Leads, wanted: &str) -> Result<String, String> {
-    if store.get(wanted).is_some() {
-        return Ok(wanted.to_owned());
-    }
-    let lower = wanted.to_lowercase();
-    let digits: String = wanted.chars().filter(char::is_ascii_digit).collect();
-    let matches: Vec<&crate::leads::Lead> = store
-        .leads
-        .iter()
-        .filter(|lead| {
-            lead.name.to_lowercase().contains(&lower)
-                || (digits.len() >= 6
-                    && lead.phone.as_deref().is_some_and(|p| p.ends_with(&digits)))
-                || lead.chat.as_deref() == Some(wanted)
-        })
-        .collect();
-    match matches.as_slice() {
-        [] => Err(format!("No lead matches \"{wanted}\". Use list_leads.")),
-        [one] => Ok(one.id.clone()),
-        many => Err(format!(
-            "\"{wanted}\" matches several leads: {}. Use its id.",
-            many.iter()
-                .map(|l| format!("{} ({})", l.name, l.id))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
-}
-
-fn note_by(text: &str, by: &Option<String>) -> String {
-    match by {
-        Some(by) => format!("{text} ({by})"),
-        None => text.to_owned(),
-    }
-}
-
-fn create_lead(config: &Path, args: &Value, by: Option<String>) -> Answer {
-    let project = project_id(config, args)?;
-    let name = required(args, "name")?;
-    let chat = text(args, "chat");
-    let phone =
-        text(args, "phone").map(|p| p.chars().filter(char::is_ascii_digit).collect::<String>());
+/// The lead tools live with the leads (src/leads/actions.rs): applied on the
+/// shared store, then sent on to ElevaLeads like a change made in the app.
+fn lead_action(config: &Path, action: &str, args: &Value, client: &str) -> Answer {
+    let map = ProjectMap::load(config);
     let mut store = crate::leads::Store::open(config);
-    if let Some(existing) = chat
-        .as_deref()
-        .and_then(|chat| store.by_chat(&project, chat))
-        .or_else(|| phone.as_deref().and_then(|p| store.by_phone(&project, p)))
+    let answer = crate::leads::actions::apply(&mut store, &map, action, args, client);
+    if answer.is_ok() {
+        store.save();
+    }
+    drop(store);
+    if answer.is_ok()
+        && let Some(ctx) = CTX.get()
     {
-        return Err(format!(
-            "{} is already a lead in this project (id {}). Use update_lead.",
-            existing.name, existing.id
-        ));
+        crate::eleva::push(ctx, config);
     }
-    let mut lead = crate::leads::Lead::new(&project, &name, chat, phone);
-    if let Some(stage) = text(args, "stage").as_deref().and_then(stage) {
-        lead.set_stage(stage, text(args, "lost_reason").as_deref());
-    }
-    if let Some(value) = text(args, "value") {
-        lead.value = Some(value);
-    }
-    if let Some(next) = text(args, "next") {
-        lead.set_next(&next, text(args, "due"));
-    }
-    if let Some(note) = text(args, "note") {
-        lead.add(crate::leads::Kind::Note, &note_by(&note, &by));
-    }
-    let id = store.add(lead);
-    store.save();
-    Ok(json!({"lead": id, "project": project, "message": format!("Lead \"{name}\" created.")}))
-}
-
-fn update_lead(config: &Path, args: &Value, by: Option<String>) -> Answer {
-    let mut store = crate::leads::Store::open(config);
-    let id = find_lead(&store, &required(args, "lead")?)?;
-    let lead = store.get_mut(&id).expect("found");
-    if let Some(name) = text(args, "name") {
-        lead.name = name;
-    }
-    if let Some(chat) = text(args, "chat") {
-        lead.chat = Some(chat);
-    }
-    if let Some(phone) = text(args, "phone") {
-        lead.phone = Some(phone.chars().filter(char::is_ascii_digit).collect());
-    }
-    if let Some(stage) = text(args, "stage").as_deref().and_then(stage) {
-        lead.set_stage(stage, text(args, "lost_reason").as_deref());
-    }
-    if let Some(value) = text(args, "value") {
-        lead.value = Some(value);
-    }
-    if let Some(next) = text(args, "next") {
-        lead.set_next(&next, text(args, "due"));
-    }
-    if let Some(note) = text(args, "note") {
-        lead.add(crate::leads::Kind::Note, &note_by(&note, &by));
-    }
-    let name = lead.name.clone();
-    let stage = lead.stage;
-    store.save();
-    Ok(json!({"lead": id, "name": name, "stage": stage, "message": "Lead updated."}))
-}
-
-fn add_lead_note(config: &Path, args: &Value, by: Option<String>) -> Answer {
-    let mut store = crate::leads::Store::open(config);
-    let id = find_lead(&store, &required(args, "lead")?)?;
-    let note = required(args, "text")?;
-    store
-        .get_mut(&id)
-        .expect("found")
-        .add(crate::leads::Kind::Note, &note_by(&note, &by));
-    store.save();
-    Ok(json!({"lead": id, "message": "Note added to the lead's history."}))
+    answer.map(|message| json!({ "message": message }))
 }
 
 #[cfg(test)]
@@ -614,5 +545,49 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("list_projects"), "{error}");
+    }
+
+    #[test]
+    fn the_people_sheet_knows_a_member_by_number_alias_or_their_own_chat() {
+        let project = Project {
+            id: "jas".into(),
+            name: "JAS".into(),
+            color: String::new(),
+            sources: Vec::new(),
+            chats: Vec::new(),
+            context: String::new(),
+            members: vec![
+                Member {
+                    id: "5491111111111@s.whatsapp.net".into(),
+                    name: "Katy".into(),
+                    role: "socia".into(),
+                    about: String::new(),
+                    aliases: vec!["Bordados JAS".into(), "Katherine Garcia".into()],
+                    chats: vec!["5491122223333".into()],
+                },
+                Member {
+                    id: "5491144445555".into(),
+                    name: "Papá".into(),
+                    role: "producción".into(),
+                    ..Member::default()
+                },
+            ],
+        };
+        let katy = |sender: &str, name: Option<&str>, chat: &str| {
+            project.member_for(sender, name, chat).map(|m| m.label())
+        };
+        assert_eq!(
+            katy("5491122223333@s.whatsapp.net", None, "x@g.us").as_deref(),
+            Some("Katy (socia)")
+        );
+        assert_eq!(
+            katy("999@lid", Some("Bordados JAS"), "x@g.us").as_deref(),
+            Some("Katy (socia)")
+        );
+        assert_eq!(
+            katy("", None, "5491144445555@s.whatsapp.net").as_deref(),
+            Some("Papá (producción)")
+        );
+        assert_eq!(katy("777@s.whatsapp.net", Some("Julio"), "x@g.us"), None);
     }
 }

@@ -720,6 +720,20 @@ fn prompt(
                 line.push_str(&format!(": {}", member.role.trim()));
             }
             line.push_str(&format!(" ({phone})"));
+            if !member.aliases.is_empty() {
+                line.push_str(&format!(
+                    ", también aparece como: {}",
+                    member.aliases.join(", ")
+                ));
+            }
+            if !member.chats.is_empty() {
+                let numbers: Vec<&str> = member
+                    .chats
+                    .iter()
+                    .map(|chat| chat.split('@').next().unwrap_or(chat))
+                    .collect();
+                line.push_str(&format!(", también escribe desde: {}", numbers.join(", ")));
+            }
             if !member.about.trim().is_empty() {
                 line.push_str(&format!(". {}", clip(member.about.trim())));
             }
@@ -891,14 +905,15 @@ fn prompt(
                     .picked(&message.chat, &message.id, &project.id)
                     .is_none();
             let phone = message.sender.split('@').next().unwrap_or("");
-            let member = project.members.iter().find(|m| {
-                m.id == message.sender
-                    || (!phone.is_empty() && m.id.split('@').next() == Some(phone))
-            });
+            let member = project.member_for(
+                &message.sender,
+                message.sender_name.as_deref(),
+                &message.chat,
+            );
             let who = if message.from_me {
                 "Yo".to_owned()
             } else if let Some(member) = member {
-                member.name.clone()
+                member.label()
             } else {
                 message
                     .sender_name

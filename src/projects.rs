@@ -89,6 +89,65 @@ pub struct Member {
     /// them.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub about: String,
+    /// Other names they show up as: a shop's account they write from
+    /// ("Bordados JAS"), their saved name in another chat ("Katherine
+    /// Garcia").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
+    /// Other WhatsApp ids or numbers they write from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chats: Vec<String>,
+}
+
+/// A WhatsApp id's or a written number's digits, to compare them.
+fn digits(id: &str) -> String {
+    id.split('@')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect()
+}
+
+impl Member {
+    /// Whether a message from `sender` (WhatsApp id), shown as
+    /// `sender_name`, is theirs. Numbers match by their last 8 digits, so a
+    /// written "+54 9 11…" matches the id.
+    pub fn is(&self, sender: &str, sender_name: Option<&str>) -> bool {
+        let sender_digits = digits(sender);
+        let same_number = |id: &str| {
+            let mine = digits(id);
+            mine.len() >= 8
+                && sender_digits.len() >= 8
+                && mine[mine.len() - 8..] == sender_digits[sender_digits.len() - 8..]
+        };
+        if (!self.id.is_empty() && (self.id == sender || same_number(&self.id)))
+            || self
+                .chats
+                .iter()
+                .any(|chat| chat == sender || same_number(chat))
+        {
+            return true;
+        }
+        let Some(name) = sender_name
+            .map(|n| n.trim().to_lowercase())
+            .filter(|n| !n.is_empty())
+        else {
+            return false;
+        };
+        self.aliases
+            .iter()
+            .any(|alias| alias.trim().to_lowercase() == name)
+    }
+
+    /// "Katy (socia)": how the analysis and other AIs call them.
+    pub fn label(&self) -> String {
+        if self.role.trim().is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} ({})", self.name, self.role.trim())
+        }
+    }
 }
 
 impl Project {
@@ -98,6 +157,25 @@ impl Project {
 
     pub fn source(&self, chat: &str) -> Option<&Source> {
         self.sources.iter().find(|source| source.chat == chat)
+    }
+
+    /// Who in the project wrote a message: by id or number first, then by
+    /// an alias; in a chat with one person, that person.
+    pub fn member_for(
+        &self,
+        sender: &str,
+        sender_name: Option<&str>,
+        chat: &str,
+    ) -> Option<&Member> {
+        self.members
+            .iter()
+            .find(|m| m.is(sender, None))
+            .or_else(|| {
+                chat.ends_with("@s.whatsapp.net")
+                    .then(|| self.members.iter().find(|m| m.is(chat, None)))
+                    .flatten()
+            })
+            .or_else(|| self.members.iter().find(|m| m.is("", sender_name)))
     }
 
     pub fn chat_ids(&self) -> Vec<String> {
@@ -189,6 +267,13 @@ impl ProjectMap {
     }
 
     /// The projects that draw on `chat`, with their mode.
+    /// Whether `chat` is a source of any project.
+    pub fn is_source(&self, chat: &str) -> bool {
+        self.projects
+            .iter()
+            .any(|project| project.source(chat).is_some())
+    }
+
     pub fn projects_of(&self, chat: &str) -> Vec<(&Project, Mode)> {
         self.projects
             .iter()
@@ -309,19 +394,37 @@ impl ProjectMap {
         message: &FeedMessage,
         analysis: Option<&Analysis>,
     ) -> Inclusion {
-        if let Some(include) = self.picked(&message.chat, &message.id, &project.id) {
+        self.inclusion_of(
+            project,
+            &message.chat,
+            &message.id,
+            message.timestamp,
+            analysis,
+        )
+    }
+
+    /// [`Self::inclusion`] for a message known only by its chat, id and time.
+    pub fn inclusion_of(
+        &self,
+        project: &Project,
+        chat: &str,
+        id: &str,
+        timestamp: i64,
+        analysis: Option<&Analysis>,
+    ) -> Inclusion {
+        if let Some(include) = self.picked(chat, id, &project.id) {
             return if include {
                 Inclusion::In
             } else {
                 Inclusion::Out
             };
         }
-        match project.source(&message.chat).map(|source| source.mode) {
+        match project.source(chat).map(|source| source.mode) {
             None | Some(Mode::Selected) => Inclusion::Out,
             Some(Mode::All) => Inclusion::In,
             Some(Mode::Smart) => match analysis {
-                Some(analysis) if analysis.read_through(&message.chat) >= message.timestamp => {
-                    if analysis.is_relevant(&message.chat, &message.id) {
+                Some(analysis) if analysis.read_through(chat) >= timestamp => {
+                    if analysis.is_relevant(chat, id) {
                         Inclusion::In
                     } else {
                         Inclusion::Out

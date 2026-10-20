@@ -39,6 +39,7 @@ use crate::model::{Action, Page, SidebarDisplayMode, ToastKind};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    crate::project_actions::set_ctx(ui.ctx());
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
     track_keyboard_focus(ctx);

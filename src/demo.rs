@@ -1977,6 +1977,8 @@ fn projects_sample(app: &mut App, tab: &'static str, pending: bool) {
                 name: "Ada".into(),
                 role: "Clienta".into(),
                 about: "Pide cotizaciones formales por correo.".into(),
+                aliases: Vec::new(),
+                chats: Vec::new(),
             },
             Member {
                 id: "5491100000000@s.whatsapp.net".into(),
