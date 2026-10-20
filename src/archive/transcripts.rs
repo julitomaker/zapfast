@@ -67,6 +67,41 @@ impl Archive {
             .optional()
     }
 
+    /// Messages of `chats` since `since` (Unix seconds) with speech, or a
+    /// picture when `pictures`, that nothing was read out of yet; newest first.
+    pub fn untranscribed(
+        &self,
+        chats: &[String],
+        since: i64,
+        pictures: bool,
+        limit: usize,
+    ) -> Result<Vec<(String, String)>> {
+        if chats.is_empty() {
+            return Ok(Vec::new());
+        }
+        let marks = vec!["?"; chats.len()].join(",");
+        let sql = format!(
+            "SELECT m.chat, m.id FROM messages m
+             LEFT JOIN transcripts t ON t.chat = m.chat AND t.id = m.id
+             WHERE t.id IS NULL AND m.timestamp >= ? AND m.chat IN ({marks})
+               AND json_valid(m.content)
+               AND (json_extract(m.content, '$.kind') = 'audio'
+                    OR (json_extract(m.content, '$.kind') = 'video'
+                        AND coalesce(json_extract(m.content, '$.gif'), 0) = 0)
+                    OR (? AND json_extract(m.content, '$.kind') = 'image'))
+             ORDER BY m.timestamp DESC LIMIT ?"
+        );
+        let mut values: Vec<rusqlite::types::Value> = vec![since.into()];
+        values.extend(chats.iter().map(|chat| chat.clone().into()));
+        values.push((pictures as i64).into());
+        values.push((limit as i64).into());
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(values), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        rows.collect()
+    }
+
     /// The transcripts of some of a chat's messages, by message id.
     pub fn transcripts_for(&self, chat: &str, ids: &[&str]) -> Result<HashMap<String, Transcript>> {
         let mut found = HashMap::new();

@@ -209,7 +209,7 @@ impl Permissions {
 fn tool_scope(name: &str) -> Option<Scope> {
     match name {
         "list_chats" | "read_chat" | "recent_activity" | "search_messages" | "list_media"
-        | "get_media" => Some(Scope::Chats),
+        | "get_media" | "transcribe_chat" => Some(Scope::Chats),
         "list_projects" | "project_overview" | "project_notes" => Some(Scope::Projects),
         "list_calls" | "read_call" => Some(Scope::Calls),
         "list_leads" | "read_lead" => Some(Scope::Leads),
@@ -238,6 +238,19 @@ fn all_tools() -> Vec<Value> {
                 "required": ["chat"]
             },
             "annotations": {"readOnlyHint": true}
+        }),
+        json!({
+            "name": "transcribe_chat",
+            "description": "Start reading every voice message, audio, video and picture of a chat that has no text yet (speech transcribed, picture text read), with the engines chosen in Whats Pro. Returns at once with how many were started; they appear in read_chat as [transcript: …] as each one finishes (local Whisper does about a minute of audio in a few seconds).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "since_hours": {"type": "number", "description": "Only from the last N hours (default: everything)."}
+                },
+                "required": ["chat"]
+            },
+            "annotations": {"readOnlyHint": false}
         }),
         json!({
             "name": "get_media",
@@ -295,15 +308,19 @@ fn all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "search_messages",
-            "description": "Search WhatsApp messages by text, caption or file name, newest first.",
+            "description": "Search WhatsApp messages by text, caption, file name or transcript, newest first. Narrow it by chat, time, who said it and kind; with only filters (no query) it lists what matches them, e.g. every PDF of a chat this month.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string"},
+                    "query": {"type": "string", "description": "Words to look for (optional when a filter is given)."},
                     "chat": {"type": "string", "description": "Only in this chat (name or id)."},
+                    "since_hours": {"type": "number", "description": "Only from the last N hours."},
+                    "since": {"type": "string", "description": "Only from this date on (YYYY-MM-DD)."},
+                    "until": {"type": "string", "description": "Only before this date (YYYY-MM-DD)."},
+                    "from": {"type": "string", "description": "Only from this person: part of their name or number, or \"me\"."},
+                    "kind": {"type": "string", "enum": ["text", "image", "video", "audio", "document", "sticker"], "description": "Only this kind of message."},
                     "limit": {"type": "number", "description": "Default 50, max 500."}
-                },
-                "required": ["query"]
+                }
             },
             "annotations": {"readOnlyHint": true}
         }),
@@ -740,11 +757,23 @@ fn line(message: &Value, with_chat: bool) -> String {
             )
     };
     let mut text = message["text"].as_str().unwrap_or("").to_owned();
-    if let Some(transcript) = message["transcript"].as_str().filter(|t| !t.is_empty()) {
-        text = format!("{text} [transcript: {transcript}]");
+    match message["transcript"].as_str() {
+        Some(transcript) if !transcript.trim().is_empty() => {
+            text = format!("{text} [transcript: {transcript}]");
+        }
+        Some(_) if matches!(message["kind"].as_str(), Some("audio" | "video")) => {
+            text = format!("{text} [no speech in it]");
+        }
+        _ => {}
     }
     if let Some(reply) = message["reply_to"]["text"].as_str() {
         text = format!("(replying to \"{reply}\") {text}");
+    }
+    if message["pending"].as_bool() == Some(true) {
+        text = "(pending: WhatsApp has not delivered this message to this computer yet; it arrives when the phone is online)".to_owned();
+    }
+    if message["forwarded"].as_bool() == Some(true) {
+        text = format!("↪ forwarded (written by someone else first): {text}");
     }
     if let Some(kind) = message["kind"].as_str()
         && matches!(kind, "image" | "video" | "audio" | "document" | "sticker")
@@ -1474,7 +1503,7 @@ impl Bridge {
         let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
         let message = text(arguments, "message_id").ok_or("`message_id` is required.")?;
         let (chat, chat_name) = self.resolve(&wanted, &excluded)?;
-        let (bytes, mime) = self.get_bytes(&format!(
+        let (bytes, mime, on_disk, file_name) = self.get_bytes(&format!(
             "/media?{}",
             query(&[("chat", chat), ("id", message.clone())])
         ))?;
@@ -1506,14 +1535,44 @@ impl Bridge {
                 format!("{what} from {chat_name}, message {message}, transcribed: {said}")
             }})]);
         }
+        let named = if file_name.is_empty() {
+            String::new()
+        } else {
+            format!(" \"{file_name}\"")
+        };
+        if mime == "application/pdf" {
+            let text = crate::ocr::pdf_text(&bytes).unwrap_or_default();
+            return Ok(vec![json!({"type": "text", "text": if text.is_empty() {
+                format!("PDF{named} from {chat_name}, message {message} ({} KB): it has no text layer (a scan or a picture). On disk: {on_disk}", size / 1024)
+            } else {
+                format!("PDF{named} from {chat_name}, message {message} ({} KB). On disk: {on_disk}\nText:\n{}", size / 1024, Self::clip_document(&text))
+            }})]);
+        }
+        if mime.starts_with("text/") || mime == "application/json" || mime == "text/csv" {
+            let text = String::from_utf8_lossy(&bytes);
+            return Ok(vec![json!({"type": "text", "text": format!(
+                "Document{named} from {chat_name}, message {message} ({mime}). On disk: {on_disk}\nText:\n{}",
+                Self::clip_document(&text)
+            )})]);
+        }
         Ok(vec![json!({"type": "text", "text": format!(
-            "Attachment from {chat_name}, message {message}: {mime}, {} KB. It is a document, not a picture or speech, so it cannot be shown here.",
+            "Document{named} from {chat_name}, message {message}: {mime}, {} KB. Its contents cannot be read here. On disk: {on_disk}",
             size / 1024
         )})])
     }
 
+    /// A document's text, cut where it would flood the conversation.
+    fn clip_document(text: &str) -> String {
+        const MAX: usize = 60_000;
+        if text.chars().count() <= MAX {
+            return text.to_owned();
+        }
+        let kept: String = text.chars().take(MAX).collect();
+        format!("{kept}\n… (cut: the document goes on)")
+    }
+
     /// A bridge route that answers with a file: its bytes and type.
-    fn get_bytes(&self, path: &str) -> Result<(Vec<u8>, String), String> {
+    fn get_bytes(&self, path: &str) -> Result<(Vec<u8>, String, String, String), String> {
         let config = crate::bridge::config(&self.config_dir)
             .map_err(|error| format!("Could not read Whats Pro's bridge settings: {error}"))?;
         if !config.enabled {
@@ -1538,13 +1597,27 @@ impl Bridge {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("application/octet-stream")
             .to_owned();
+        let decoded = |name: &str| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| {
+                    form_urlencoded::parse(format!("v={value}").as_bytes())
+                        .next()
+                        .map(|(_, v)| v.into_owned())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+        };
+        let (on_disk, name) = (decoded("x-path"), decoded("x-file-name"));
         let bytes = response
             .body_mut()
             .with_config()
             .limit(64 * 1024 * 1024)
             .read_to_vec()
             .map_err(|error| format!("Could not read the file: {error}"))?;
-        Ok((bytes, mime))
+        Ok((bytes, mime, on_disk, name))
     }
 
     fn call(&self, name: &str, arguments: &Value) -> Result<String, String> {
@@ -1612,6 +1685,26 @@ impl Bridge {
                     format!(
                         "name | kind | id | unread | last activity | messages\n{}",
                         lines.join("\n")
+                    )
+                })
+            }
+            "transcribe_chat" => {
+                let excluded = self.excluded_chats(&permissions);
+                let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
+                let (id, chat_name) = self.resolve(&wanted, &excluded)?;
+                let since = number(arguments, "since_hours")
+                    .map(|hours| now() - (hours * 3600.0) as i64)
+                    .unwrap_or(0);
+                let answer = self.get(&format!(
+                    "/backlog?{}",
+                    query(&[("chat", id), ("since", since.to_string())])
+                ))?;
+                let started = answer["started"].as_u64().unwrap_or(0);
+                Ok(if started == 0 {
+                    format!("Everything in {chat_name} already has its text.")
+                } else {
+                    format!(
+                        "Started reading {started} voice messages, videos and pictures of {chat_name}. Read the chat again in a minute or two to see them as [transcript: …]."
                     )
                 })
             }
@@ -1727,11 +1820,47 @@ impl Bridge {
             }
             "search_messages" => {
                 let excluded = self.excluded_chats(&permissions);
-                let needle = text(arguments, "query").ok_or("`query` is required.")?;
+                let needle = text(arguments, "query").unwrap_or_default();
                 let limit = number(arguments, "limit").unwrap_or(50.0).clamp(1.0, 500.0) as usize;
-                let mut pairs = vec![("q", needle), ("limit", limit.to_string())];
+                let mut pairs = vec![("q", needle.clone()), ("limit", limit.to_string())];
                 if let Some(wanted) = text(arguments, "chat") {
                     pairs.push(("chat", self.resolve(&wanted, &excluded)?.0));
+                }
+                let day = |name: &str| -> Result<Option<i64>, String> {
+                    text(arguments, name)
+                        .map(|value| {
+                            value
+                                .parse::<jiff::civil::Date>()
+                                .map_err(|_| format!("`{name}` must be a date like 2026-10-20"))
+                                .and_then(|date| {
+                                    date.to_zoned(jiff::tz::TimeZone::system())
+                                        .map(|at| at.timestamp().as_second())
+                                        .map_err(|error| error.to_string())
+                                })
+                        })
+                        .transpose()
+                };
+                let since = number(arguments, "since_hours")
+                    .map(|hours| now() - (hours * 3600.0) as i64)
+                    .or(day("since")?);
+                if let Some(since) = since {
+                    pairs.push(("since", since.to_string()));
+                }
+                if let Some(until) = day("until")? {
+                    pairs.push(("until", until.to_string()));
+                }
+                for name in ["from", "kind"] {
+                    if let Some(value) = text(arguments, name) {
+                        pairs.push((name, value));
+                    }
+                }
+                let filtered = pairs
+                    .iter()
+                    .any(|(name, _)| matches!(*name, "since" | "until" | "from" | "kind"));
+                if needle.is_empty() && !filtered {
+                    return Err(
+                        "Give a query, or at least one filter (since, until, from or kind). To read a whole chat use read_chat.".into(),
+                    );
                 }
                 let messages = self.get(&format!("/search?{}", query(&pairs)))?;
                 let lines: Vec<String> = messages
@@ -2183,6 +2312,7 @@ mod tests {
             names,
             [
                 "list_media",
+                "transcribe_chat",
                 "get_media",
                 "list_chats",
                 "read_chat",

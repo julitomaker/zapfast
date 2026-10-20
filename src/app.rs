@@ -644,6 +644,14 @@ pub struct App {
     /// for the account to link (only real launches ask, see `App::new`).
     pub media_setup: Option<crate::ui::media_setup::State>,
     media_setup_pending: bool,
+    /// The chats that feed a project, read from projects.json when it
+    /// changes: their speech and pictures are read without being chosen.
+    project_sources: (
+        Option<std::time::SystemTime>,
+        std::collections::HashSet<String>,
+    ),
+    /// When the backlog of unread speech and pictures was last asked for.
+    last_backlog: Option<Instant>,
     /// Places visited in this window, for the mouse's back and forward
     /// buttons. Cleared when the account on screen changes.
     nav_history: History,
@@ -1455,6 +1463,8 @@ impl App {
             dialog: None,
             media_setup: None,
             media_setup_pending: false,
+            project_sources: (None, std::collections::HashSet::new()),
+            last_backlog: None,
             nav_history: History::default(),
             forward_search: String::new(),
             forward_recipients: Vec::new(),
@@ -2142,17 +2152,80 @@ impl App {
     /// Reads a newly arrived message's speech or picture text when its chat
     /// is chosen for that (Settings > Transcription, or the chat's info).
     fn maybe_transcribe(&mut self, chat: &str, message: &Message) {
+        let source = self.is_project_source(chat);
         let settings = &self.account().settings;
+        let reads = |scope: crate::settings::ReadScope, chosen: &[String]| {
+            scope.applies(chosen, chat) || (source && scope != crate::settings::ReadScope::Off)
+        };
         let wanted = match &message.content {
             Content::Audio { .. } | Content::Video { gif: false, .. } => {
-                settings.speech.applies(&settings.speech_chats, chat)
+                reads(settings.speech, &settings.speech_chats)
             }
-            Content::Image { .. } => settings.images.applies(&settings.image_chats, chat),
+            Content::Image { .. } => reads(settings.images, &settings.image_chats),
             _ => false,
         };
         if wanted {
             self.request_transcript(chat.to_owned(), message.id.clone());
         }
+    }
+
+    /// Whether `chat` feeds any project.
+    fn is_project_source(&mut self, chat: &str) -> bool {
+        self.refresh_project_sources();
+        self.project_sources.1.contains(chat)
+    }
+
+    /// Rereads the project sources when projects.json changed.
+    fn refresh_project_sources(&mut self) {
+        let file = crate::projects::ProjectMap::file(&self.dirs.config);
+        let modified = std::fs::metadata(&file)
+            .and_then(|meta| meta.modified())
+            .ok();
+        if modified.is_some() && modified == self.project_sources.0 {
+            return;
+        }
+        let map = crate::projects::ProjectMap::load(&self.dirs.config);
+        let chats = map
+            .projects
+            .iter()
+            .flat_map(|project| project.sources.iter().map(|source| source.chat.clone()))
+            .collect();
+        self.project_sources = (modified, chats);
+    }
+
+    /// Every ten minutes while linked, asks for a batch of what is still
+    /// unread in the project sources and chosen chats from the last two
+    /// weeks, so older voice messages and pictures get read too.
+    fn ask_for_backlog(&mut self) {
+        const EVERY: Duration = Duration::from_secs(10 * 60);
+        const BACK: i64 = 14 * 86_400;
+        if !self.link.is_connected() || self.last_backlog.is_some_and(|at| at.elapsed() < EVERY) {
+            return;
+        }
+        self.last_backlog = Some(Instant::now());
+        self.refresh_project_sources();
+        let settings = &self.account().settings;
+        if settings.speech == crate::settings::ReadScope::Off {
+            return;
+        }
+        let mut chats: Vec<String> = self.project_sources.1.iter().cloned().collect();
+        if settings.speech == crate::settings::ReadScope::Chosen {
+            chats.extend(settings.speech_chats.iter().cloned());
+        }
+        chats.sort();
+        chats.dedup();
+        if chats.is_empty() {
+            return;
+        }
+        let pictures = settings.images != crate::settings::ReadScope::Off;
+        let engines = self.settings.media_engines.clone();
+        self.backend.send(Command::TranscribeBacklog {
+            chats,
+            since: crate::util::now() - BACK,
+            pictures,
+            limit: 40,
+            engines,
+        });
     }
 
     /// Asks the backend to transcribe one message, once at a time.
@@ -5724,6 +5797,7 @@ impl App {
     fn tick(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
         // Once linked, the first run asks who reads voice and pictures.
+        self.ask_for_backlog();
         if self.media_setup_pending && self.dialog.is_none() && self.link.is_connected() {
             self.media_setup_pending = false;
             self.media_setup = Some(crate::ui::media_setup::State::new(&self.dirs.state));

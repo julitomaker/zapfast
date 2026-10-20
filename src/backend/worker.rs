@@ -7558,6 +7558,23 @@ impl Worker {
                 result,
             } => self.downloaded(chat, id, card, result),
             Command::Transcribe { chat, id, engines } => self.transcribe(chat, id, engines),
+            Command::TranscribeBacklog {
+                chats,
+                since,
+                pictures,
+                limit,
+                engines,
+            } => {
+                // A batch per request: the app asks again later for the rest.
+                match self.archive.untranscribed(&chats, since, pictures, limit) {
+                    Ok(found) => {
+                        for (chat, id) in found {
+                            self.transcribe(chat, id, engines.clone());
+                        }
+                    }
+                    Err(error) => log::warn!("could not list unread attachments: {error}"),
+                }
+            }
             Command::Transcribed {
                 chat,
                 id,

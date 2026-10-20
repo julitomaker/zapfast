@@ -41,6 +41,25 @@ pub struct BridgeMessage {
     pub edited: bool,
     /// What was transcribed or read out of the message on this computer.
     pub transcript: Option<String>,
+    /// Forwarded from another chat: someone else wrote it first.
+    pub forwarded: bool,
+    /// WhatsApp has not delivered it to this computer yet (the phone must be
+    /// online to resend it).
+    pub pending: bool,
+}
+
+/// What `bridge_search_filtered` narrows a search to.
+#[derive(Debug, Default)]
+pub struct SearchFilter<'a> {
+    pub chat: Option<&'a str>,
+    /// Unix seconds, inclusive.
+    pub since: Option<i64>,
+    /// Unix seconds, exclusive.
+    pub until: Option<i64>,
+    /// Part of the sender's name or number; "me" for our own messages.
+    pub from: Option<&'a str>,
+    /// A message kind: image, video, audio, document, sticker, text…
+    pub kind: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,7 +73,7 @@ pub struct BridgeQuote {
 /// A sender behind a privacy id is named through its phone number.
 const COLUMNS: &str = "m.chat, c.name, m.id, m.sender,
     COALESCE(NULLIF(ct.full_name, ''), NULLIF(ct.push_name, ''), m.sender_name),
-    m.from_me, m.timestamp, m.content, m.quoted, m.edited, t.text
+    m.from_me, m.timestamp, m.content, m.quoted, m.edited, t.text, m.forwarded
     FROM messages m
     JOIN chats c ON c.id = m.chat
     LEFT JOIN lids l ON l.lid = m.sender
@@ -68,7 +87,9 @@ fn bridge_row(row: &Row) -> Result<BridgeMessage> {
         .ok()
         .and_then(|value| value.get("kind")?.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".into());
-    let text = match serde_json::from_str::<Content>(&content) {
+    let parsed = serde_json::from_str::<Content>(&content);
+    let pending = matches!(&parsed, Ok(Content::Unsupported { what }) if what.starts_with("Waiting for this message"));
+    let text = match parsed {
         Ok(Content::Text { text, .. } | Content::Interactive { text, .. }) => text,
         Ok(content) => content.summary(),
         Err(_) => String::new(),
@@ -92,6 +113,8 @@ fn bridge_row(row: &Row) -> Result<BridgeMessage> {
             }),
         edited: row.get(9)?,
         transcript: row.get(10)?,
+        forwarded: row.get::<_, Option<bool>>(11)?.unwrap_or(false),
+        pending,
     })
 }
 
@@ -149,7 +172,7 @@ impl Archive {
                  ORDER BY m.timestamp ASC, m.rowid ASC LIMIT ?4"
             ))?;
             let rows = statement.query_map(params![chat, since, before, limit], bridge_row)?;
-            rows.collect()
+            self.name_mentions(rows.collect::<Result<_>>()?)
         } else {
             let mut statement = self.connection.prepare(&format!(
                 "SELECT {COLUMNS}
@@ -159,7 +182,7 @@ impl Archive {
             let rows = statement.query_map(params![chat, before, limit], bridge_row)?;
             let mut messages: Vec<_> = rows.collect::<Result<_>>()?;
             messages.reverse();
-            Ok(messages)
+            self.name_mentions(messages)
         }
     }
 
@@ -171,18 +194,147 @@ impl Archive {
         chat: Option<&str>,
         limit: usize,
     ) -> Result<Vec<BridgeMessage>> {
-        let Some(pattern) = search_pattern(needle) else {
+        self.bridge_search_filtered(
+            needle,
+            &SearchFilter {
+                chat,
+                ..SearchFilter::default()
+            },
+            limit,
+        )
+    }
+
+    /// Like `bridge_search`, narrowed by time, sender and kind. An empty
+    /// needle with a filter lists what matches the filter alone.
+    pub fn bridge_search_filtered(
+        &self,
+        needle: &str,
+        filter: &SearchFilter<'_>,
+        limit: usize,
+    ) -> Result<Vec<BridgeMessage>> {
+        let pattern = search_pattern(needle);
+        let unfiltered = filter.since.is_none()
+            && filter.until.is_none()
+            && filter.from.is_none()
+            && filter.kind.is_none();
+        if pattern.is_none() && unfiltered {
             return Ok(Vec::new());
-        };
+        }
+        let from_me = filter
+            .from
+            .is_some_and(|from| from.eq_ignore_ascii_case("me"));
+        let from = filter
+            .from
+            .filter(|_| !from_me)
+            .map(|from| format!("%{}%", from.to_lowercase()));
         let mut statement = self.connection.prepare(&format!(
             "SELECT {COLUMNS}
              WHERE c.locked = 0 AND (?1 IS NULL OR m.chat = ?1)
-               AND ((json_valid(m.content) AND {SEARCHED_TEXT} LIKE ?2 ESCAPE '\\')
+               AND (?2 IS NULL
+                    OR (json_valid(m.content) AND {SEARCHED_TEXT} LIKE ?2 ESCAPE '\\')
                     OR lower(coalesce(t.text, '')) LIKE ?2 ESCAPE '\\')
+               AND (?4 IS NULL OR m.timestamp >= ?4)
+               AND (?5 IS NULL OR m.timestamp < ?5)
+               AND (?6 = 0 OR m.from_me = 1)
+               AND (?7 IS NULL OR (m.from_me = 0 AND (
+                    lower(coalesce(ct.full_name, '')) LIKE ?7
+                    OR lower(coalesce(ct.push_name, '')) LIKE ?7
+                    OR lower(coalesce(m.sender_name, '')) LIKE ?7
+                    OR lower(COALESCE(l.pn, m.sender)) LIKE ?7)))
+               AND (?8 IS NULL OR (json_valid(m.content) AND json_extract(m.content, '$.kind') = ?8))
              ORDER BY m.timestamp DESC, m.rowid DESC LIMIT ?3"
         ))?;
-        let rows = statement.query_map(params![chat, pattern, limit as i64], bridge_row)?;
-        rows.collect()
+        let rows = statement.query_map(
+            params![
+                filter.chat,
+                pattern,
+                limit as i64,
+                filter.since,
+                filter.until,
+                from_me,
+                from,
+                filter.kind
+            ],
+            bridge_row,
+        )?;
+        self.name_mentions(rows.collect::<Result<_>>()?)
+    }
+
+    /// Replaces `@<number>` mentions, which WhatsApp sends as phone numbers
+    /// or privacy ids, with the contact's name where it is known.
+    fn name_mentions(&self, mut messages: Vec<BridgeMessage>) -> Result<Vec<BridgeMessage>> {
+        let mut names: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
+        for message in &mut messages {
+            if message.text.contains('@') {
+                message.text = self.replace_mentions(&message.text, &mut names)?;
+            }
+            if let Some(reply) = &mut message.reply_to
+                && reply.text.contains('@')
+            {
+                reply.text = self.replace_mentions(&reply.text, &mut names)?;
+            }
+        }
+        Ok(messages)
+    }
+
+    fn replace_mentions(
+        &self,
+        text: &str,
+        names: &mut std::collections::HashMap<String, Option<String>>,
+    ) -> Result<String> {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find('@') {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 1..];
+            let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+            if digits.len() < 6 {
+                out.push('@');
+                rest = after;
+                continue;
+            }
+            if !names.contains_key(&digits) {
+                let name = self.mention_name(&digits)?;
+                names.insert(digits.clone(), name);
+            }
+            match &names[&digits] {
+                Some(name) => {
+                    out.push('@');
+                    out.push_str(name);
+                }
+                None => {
+                    out.push('@');
+                    out.push_str(&digits);
+                }
+            }
+            rest = &after[digits.len()..];
+        }
+        out.push_str(rest);
+        Ok(out)
+    }
+
+    /// A mentioned number's contact name: as a privacy id (`@lid`) mapped to
+    /// a phone number, or as a phone number.
+    fn mention_name(&self, digits: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        for id in [format!("{digits}@lid"), format!("{digits}@s.whatsapp.net")] {
+            let name: Option<Option<String>> = self
+                .connection
+                .query_row(
+                    "SELECT COALESCE(NULLIF(ct.full_name, ''), NULLIF(ct.push_name, ''))
+                     FROM (SELECT ?1 AS id) x
+                     LEFT JOIN lids l ON l.lid = x.id
+                     LEFT JOIN contacts ct ON ct.id = COALESCE(l.pn, x.id)",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(Some(name)) = name {
+                return Ok(Some(name));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -195,6 +347,8 @@ pub struct BridgeMedia {
     /// The downloaded file, when it is on this computer.
     pub path: Option<std::path::PathBuf>,
     pub caption: Option<String>,
+    /// A document's own name.
+    pub file_name: Option<String>,
 }
 
 impl Archive {
@@ -239,7 +393,12 @@ impl Archive {
             | Content::Document { caption, .. } => caption.clone(),
             _ => None,
         };
+        let file_name = match &parsed {
+            Content::Document { file_name, .. } => Some(file_name.clone()),
+            _ => None,
+        };
         Ok(parsed.media().map(|media| BridgeMedia {
+            file_name,
             kind,
             mime: media.mime.clone(),
             size: media.size,

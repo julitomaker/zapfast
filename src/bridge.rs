@@ -49,6 +49,13 @@ fn backends() -> &'static std::sync::Mutex<HashMap<String, Commands>> {
     BACKENDS.get_or_init(Default::default)
 }
 
+/// A header value that survives any UTF-8 text: percent-encoded.
+fn utf8_header(text: &str) -> Vec<u8> {
+    form_urlencoded::byte_serialize(text.as_bytes())
+        .collect::<String>()
+        .into_bytes()
+}
+
 /// Lets the bridge ask `account`'s backend to download or transcribe.
 pub fn register_backend(account: &str, commands: Commands) {
     backends()
@@ -171,7 +178,15 @@ impl Bridge {
         for mut request in server.incoming_requests() {
             if request.url().split('?').next() == Some("/media") {
                 let response = match self.media(&request) {
-                    Ok((bytes, mime)) => Response::from_data(bytes)
+                    Ok((bytes, mime, path, name)) => Response::from_data(bytes)
+                        .with_header(
+                            Header::from_bytes("X-Path", utf8_header(&path))
+                                .expect("encoded header"),
+                        )
+                        .with_header(
+                            Header::from_bytes("X-File-Name", utf8_header(&name))
+                                .expect("encoded header"),
+                        )
                         .with_header(
                             Header::from_bytes("Content-Type", mime.as_bytes()).unwrap_or_else(
                                 |_| {
@@ -261,7 +276,7 @@ impl Bridge {
 
     /// `/media?account=&chat=&id=`: a message's attachment as its bytes,
     /// downloaded from WhatsApp first when it is not on this computer.
-    fn media(&mut self, request: &Request) -> Result<(Vec<u8>, String), Reply> {
+    fn media(&mut self, request: &Request) -> Result<(Vec<u8>, String, String, String), Reply> {
         if let Some(refused) = self.refuse(request) {
             return Err(refused);
         }
@@ -323,7 +338,8 @@ impl Bridge {
         } else {
             found.mime
         };
-        Ok((bytes, mime))
+        let name = found.file_name.unwrap_or_default();
+        Ok((bytes, mime, path.display().to_string(), name))
     }
 
     /// `/transcript?account=&chat=&id=`: what a voice message, audio or video
@@ -380,6 +396,45 @@ impl Bridge {
         error(504, "still transcribing; ask again in a minute")
     }
 
+    /// `/backlog?account=&chat=&since=`: starts reading every voice message,
+    /// audio, video and picture of a chat that nothing was read out of yet,
+    /// and says how many.
+    fn backlog(&mut self, query: &HashMap<String, String>) -> Reply {
+        let account = query.get("account").map_or("1", String::as_str).to_owned();
+        let Some(chat) = query.get("chat").cloned() else {
+            return error(400, "chat is required");
+        };
+        let since = query
+            .get("since")
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0);
+        let settings = crate::settings::Settings::load(&self.config_dir.join("settings.json"));
+        let chats = vec![chat];
+        let pending = match self.archive(&account) {
+            Ok(archive) => archive
+                .untranscribed(&chats, since, true, 2_000)
+                .map(|found| found.len())
+                .unwrap_or(0),
+            Err(reply) => return reply,
+        };
+        if pending > 0 {
+            let asked = send(
+                &account,
+                crate::backend::Command::TranscribeBacklog {
+                    chats,
+                    since,
+                    pictures: true,
+                    limit: 2_000,
+                    engines: settings.media_engines,
+                },
+            );
+            if !asked {
+                return error(503, "Whats Pro cannot transcribe right now");
+            }
+        }
+        (200, serde_json::json!({ "started": pending }))
+    }
+
     fn answer(&mut self, request: &Request) -> Reply {
         if let Some(refused) = self.refuse(request) {
             return refused;
@@ -396,6 +451,7 @@ impl Bridge {
             "/accounts" => (200, serde_json::json!(self.accounts())),
             "/chats" | "/messages" | "/search" => self.archive_route(path, &query),
             "/transcript" => self.transcript(&query),
+            "/backlog" => self.backlog(&query),
             _ => error(404, "unknown route"),
         }
     }
@@ -486,12 +542,25 @@ impl Bridge {
             "/messages" => archive
                 .bridge_messages(chat, number("since"), number("before"), limit)
                 .map(|messages| serde_json::json!(messages)),
-            _ => match query.get("q") {
-                Some(needle) => archive
-                    .bridge_search(needle, chat, limit)
-                    .map(|messages| serde_json::json!(messages)),
-                None => return error(400, "missing q"),
-            },
+            _ => {
+                let filter = crate::archive::SearchFilter {
+                    chat,
+                    since: number("since"),
+                    until: number("until"),
+                    from: query
+                        .get("from")
+                        .map(String::as_str)
+                        .filter(|f| !f.is_empty()),
+                    kind: query
+                        .get("kind")
+                        .map(String::as_str)
+                        .filter(|k| !k.is_empty()),
+                };
+                let needle = query.get("q").map_or("", String::as_str);
+                archive
+                    .bridge_search_filtered(needle, &filter, limit)
+                    .map(|messages| serde_json::json!(messages))
+            }
         };
         match result {
             Ok(body) => (200, body),

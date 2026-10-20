@@ -959,6 +959,8 @@ mod tests {
             reply_to: None,
             edited: false,
             transcript: None,
+            forwarded: false,
+            pending: false,
         }
     }
 

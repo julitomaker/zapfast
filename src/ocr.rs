@@ -59,3 +59,27 @@ pub fn read_text(path: &Path) -> Result<String, String> {
 pub fn read_text(_path: &Path) -> Result<String, String> {
     Err("Reading text in images is only available on macOS".into())
 }
+
+/// The text of a PDF, page by page, read with macOS's PDFKit. Scanned PDFs
+/// have no text layer and come back empty.
+#[cfg(target_os = "macos")]
+pub fn pdf_text(bytes: &[u8]) -> Result<String, String> {
+    use objc2::AllocAnyThread;
+    use objc2_foundation::NSData;
+    use objc2_pdf_kit::PDFDocument;
+
+    objc2::rc::autoreleasepool(|_| {
+        let data = NSData::with_bytes(bytes);
+        let document = unsafe { PDFDocument::initWithData(PDFDocument::alloc(), &data) }
+            .ok_or("This file is not a readable PDF")?;
+        let text = unsafe { document.string() }
+            .map(|text| text.to_string())
+            .unwrap_or_default();
+        Ok(text.trim().to_owned())
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn pdf_text(_bytes: &[u8]) -> Result<String, String> {
+    Err("Reading PDFs is only available on macOS".into())
+}

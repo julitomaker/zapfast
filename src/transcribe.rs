@@ -232,9 +232,53 @@ pub fn join(segments: &[Segment]) -> String {
         .join(" ")
 }
 
+/// Whether there is any voice in the sound: a stretch of half a second loud
+/// enough to be speech. Whisper invents phrases ("Thank you.", "Gracias por
+/// ver") over silence and room noise, so silence is not handed to it.
+pub fn has_voice(audio: &[f32]) -> bool {
+    const STRETCH: usize = RATE as usize / 2;
+    const SPEECH: f32 = 0.012;
+    audio.chunks(STRETCH).any(|stretch| {
+        let rms = (stretch.iter().map(|s| s * s).sum::<f32>() / stretch.len().max(1) as f32).sqrt();
+        rms >= SPEECH
+    })
+}
+
+/// Phrases Whisper is known to make up over silence or music, in the
+/// languages it was trained on most. Dropped when Whisper itself doubts
+/// there was speech.
+fn made_up(text: &str) -> bool {
+    let plain: String = text
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace())
+        .collect();
+    let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    const PHRASES: [&str; 14] = [
+        "thank you",
+        "thanks for watching",
+        "thank you for watching",
+        "gracias",
+        "gracias por ver",
+        "gracias por ver el video",
+        "muchas gracias",
+        "suscríbete",
+        "subtítulos realizados por la comunidad de amaraorg",
+        "subtitulado por la comunidad de amaraorg",
+        "amaraorg",
+        "you",
+        "bye",
+        "obrigado",
+    ];
+    plain.is_empty() || PHRASES.contains(&plain.as_str())
+}
+
 /// Runs Whisper over 16 kHz mono samples, window by window.
 fn run(state_dir: &Path, audio: &[f32]) -> Result<Vec<Segment>, String> {
     use std::sync::atomic::Ordering;
+    if !has_voice(audio) {
+        return Ok(Vec::new());
+    }
     let model = ensure_model(state_dir)?;
     let mut loaded = CONTEXT.lock().unwrap_or_else(|p| p.into_inner());
     if loaded.as_ref().is_none_or(|(path, _)| *path != model) {
@@ -265,6 +309,8 @@ fn run(state_dir: &Path, audio: &[f32]) -> Result<Vec<Segment>, String> {
         params.set_print_special(false);
         params.set_print_timestamps(false);
         params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+        params.set_no_speech_thold(0.6);
         params.set_abort_callback_safe(|| ABORT.load(Ordering::Relaxed));
         state
             .full(params, window)
@@ -273,6 +319,7 @@ fn run(state_dir: &Path, audio: &[f32]) -> Result<Vec<Segment>, String> {
             if let Some(segment) = state.get_segment(segment)
                 && let Ok(text) = segment.to_str_lossy()
                 && !text.trim().is_empty()
+                && !(segment.no_speech_probability() > 0.3 && made_up(&text))
             {
                 found.push(Segment {
                     // Whisper counts in hundredths of a second.
@@ -299,6 +346,23 @@ mod tests {
         assert_eq!(resample(&one_second, 48_000).len(), 16_000);
         assert_eq!(resample(&one_second[..16_000], 16_000).len(), 16_000);
         assert_eq!(mono(&[1.0, 0.0, 0.5, 0.5], 2), vec![0.5, 0.5]);
+    }
+
+    #[test]
+    fn silence_has_no_voice_and_made_up_phrases_are_known() {
+        assert!(!has_voice(&vec![0.0; 16_000 * 5]));
+        assert!(
+            !has_voice(&vec![0.003; 16_000 * 5]),
+            "room noise is not speech"
+        );
+        let mut speech = vec![0.0; 16_000 * 3];
+        for (i, sample) in speech.iter_mut().enumerate().skip(16_000).take(8_000) {
+            *sample = (i as f32 * 0.05).sin() * 0.2;
+        }
+        assert!(has_voice(&speech));
+        assert!(made_up("Thank you."));
+        assert!(made_up(" ¡Gracias por ver! "));
+        assert!(!made_up("Con carne picada"), "real words are kept");
     }
 
     #[test]

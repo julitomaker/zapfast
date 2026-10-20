@@ -827,6 +827,16 @@ pub enum Command {
         id: String,
         engines: crate::media_ai::MediaEngines,
     },
+    /// Reads everything still unread in `chats` since `since` (Unix
+    /// seconds): speech, and pictures when `pictures`. A batch at a time.
+    TranscribeBacklog {
+        chats: Vec<ChatId>,
+        since: i64,
+        pictures: bool,
+        /// The most messages started by this request.
+        limit: usize,
+        engines: crate::media_ai::MediaEngines,
+    },
     /// Internal transcription result.
     Transcribed {
         chat: ChatId,
