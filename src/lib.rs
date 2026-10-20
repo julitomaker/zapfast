@@ -49,6 +49,7 @@ mod note_capture;
 pub mod notify;
 pub mod ocr;
 pub mod opener;
+pub mod outbox;
 pub mod paths;
 pub mod privacy;
 pub mod project_actions;

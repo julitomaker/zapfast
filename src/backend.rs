@@ -204,6 +204,12 @@ pub enum Command {
         chat: ChatId,
         text: String,
     },
+    /// Text an AI wrote for a chat over MCP, left in that chat's composer for
+    /// the user to read and send.
+    SuggestDraft {
+        chat: ChatId,
+        text: String,
+    },
     /// Marks a visible chat read and optionally sends receipts.
     MarkRead {
         chat: ChatId,

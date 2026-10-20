@@ -6112,6 +6112,16 @@ impl Worker {
                     eprintln!("draft not stored: {error}");
                 }
             }
+            Command::SuggestDraft { chat, text } => {
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|elapsed| elapsed.as_secs() as i64)
+                    .unwrap_or_default();
+                if let Err(error) = self.archive.set_draft(&chat, &text, at) {
+                    eprintln!("draft not stored: {error}");
+                }
+                self.emit(Event::Drafts(vec![(chat, text)]));
+            }
             Command::Composing { chat, composing } => {
                 let (Some(client), Some(jid)) = (self.client.clone(), Self::jid_of(&chat)) else {
                     return;

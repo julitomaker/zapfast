@@ -36,6 +36,10 @@ pub enum Scope {
     Leads,
     /// Creating and changing projects, notes, tasks and leads.
     Write,
+    /// Writing WhatsApp messages that wait in the chat's box for the user.
+    Messages,
+    /// Sending WhatsApp messages without the user pressing send.
+    Send,
 }
 
 impl Scope {
@@ -46,6 +50,8 @@ impl Scope {
             Self::Calls => "calls",
             Self::Leads => "leads",
             Self::Write => "write",
+            Self::Messages => "messages",
+            Self::Send => "send",
         }
     }
 
@@ -56,6 +62,8 @@ impl Scope {
             Self::Calls => "Llamadas (resúmenes)",
             Self::Leads => "Leads",
             Self::Write => "Crear y editar",
+            Self::Messages => "Escribir mensajes",
+            Self::Send => "Enviar mensajes",
         }
     }
 }
@@ -135,6 +143,13 @@ pub struct Permissions {
     /// says who made it and can be undone from the project's history.
     #[serde(default = "default_true")]
     pub write: bool,
+    /// Writing WhatsApp messages left in the chat's box for the user to send.
+    #[serde(default = "default_true")]
+    pub messages: bool,
+    /// Sending WhatsApp messages directly, to chats that already had a
+    /// conversation and at a person's pace (off by default).
+    #[serde(default)]
+    pub send: bool,
 }
 
 impl Default for Permissions {
@@ -148,6 +163,8 @@ impl Default for Permissions {
             leads: true,
             exclude_personal_and_ignored: true,
             write: true,
+            messages: true,
+            send: false,
         }
     }
 }
@@ -183,6 +200,8 @@ impl Permissions {
                 Scope::Calls => self.calls,
                 Scope::Leads => self.leads,
                 Scope::Write => self.write,
+                Scope::Messages => self.messages || self.send,
+                Scope::Send => self.send,
             }
     }
 
@@ -216,6 +235,8 @@ fn tool_scope(name: &str) -> Option<Scope> {
         "create_project" | "update_project" | "add_note" | "add_task" | "resolve_item"
         | "reopen_item" | "run_analysis" => Some(Scope::Write),
         _ if crate::leads::actions::handles(name) => Some(Scope::Write),
+        "draft_message" => Some(Scope::Messages),
+        "send_message" => Some(Scope::Send),
         _ => None,
     }
 }
@@ -444,6 +465,32 @@ fn all_tools() -> Vec<Value> {
             "annotations": {"readOnlyHint": false, "destructiveHint": false}
         }),
         json!({
+            "name": "draft_message",
+            "description": "Write a WhatsApp message and leave it in the chat's text box in Whats Pro, so the user reads it and presses send. Only for chats where someone already wrote to the user. Read the chat first (read_chat) and write as the user would, in their language and tone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "text": {"type": "string", "description": "The message, as the user would write it."}
+                },
+                "required": ["chat", "text"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "send_message",
+            "description": "Send a WhatsApp message from the user's account, as the user. Only to chats where someone already wrote to the user, one message every 20 seconds, at most 30 an hour, and the same text to at most 3 chats a day: WhatsApp bans accounts that behave like bulk senders. Read the chat first (read_chat), write as the user would, personalize every message, and when unsure what the user wants, use draft_message instead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "text": {"type": "string", "description": "The message, as the user would write it."}
+                },
+                "required": ["chat", "text"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
+        }),
+        json!({
             "name": "add_note",
             "description": "Add a note to a project's Notes: something that happened (log) or something to remember (memo). The analysis reads notes, and a note that says something was done can close it on the panel.",
             "inputSchema": {
@@ -644,13 +691,41 @@ impl Bridge {
     /// A change, applied by the app through the bridge so it never races the
     /// app's own copy of projects and leads (src/project_actions.rs).
     fn write(&self, action: &str, arguments: &Value) -> Result<String, String> {
+        let body = json!({"action": action, "args": arguments, "client": self.client_name()});
+        let answer = self.post("/action", &body)?;
+        Ok(serde_json::to_string_pretty(&answer).unwrap_or_default())
+    }
+
+    /// A message written over MCP: sent, or left in the chat's box when
+    /// `draft` or when the user only lets AIs write drafts.
+    fn message(&self, arguments: &Value, draft: bool) -> Result<String, String> {
+        let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
+        let message = text(arguments, "text").ok_or("`text` is required.")?;
+        let excluded = self.excluded_chats(&self.permissions());
+        let (chat, name) = self.resolve(&wanted, &excluded)?;
+        let body = json!({
+            "chat": chat,
+            "text": message,
+            "draft": draft,
+            "client": self.client_name(),
+        });
+        let answer = self.post("/send", &body)?;
+        Ok(if answer["status"] == "sent" {
+            format!("Sent to {name}.")
+        } else {
+            format!(
+                "Left in {name}'s text box in Whats Pro: the user reads it and presses send."
+            )
+        })
+    }
+
+    fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
         let config = crate::bridge::config(&self.config_dir)
             .map_err(|error| format!("Could not read Whats Pro's bridge settings: {error}"))?;
         if !config.enabled {
             return Err("The Whats Pro bridge is turned off in bridge.json.".into());
         }
-        let url = format!("http://127.0.0.1:{}/action", config.port);
-        let body = json!({"action": action, "args": arguments, "client": self.client_name()});
+        let url = format!("http://127.0.0.1:{}{path}", config.port);
         let mut response = ureq::post(&url)
             .header("Authorization", &format!("Bearer {}", config.token))
             .header("Content-Type", "application/json")
@@ -668,13 +743,16 @@ impl Bridge {
             .read_to_string()
             .map_err(|error| format!("Could not read Whats Pro's answer: {error}"))?;
         let answer: Value = serde_json::from_str(&text).unwrap_or(json!({"error": text}));
+        if status == 404 && path == "/send" && answer["error"] == "unknown route" {
+            return Err("This Whats Pro is older than the MCP: update the app to write messages.".into());
+        }
         if status != 200 {
             return Err(answer["error"]
                 .as_str()
                 .unwrap_or("Whats Pro could not make the change.")
                 .to_owned());
         }
-        Ok(serde_json::to_string_pretty(&answer).unwrap_or_default())
+        Ok(answer)
     }
 
     fn get(&self, path: &str) -> Result<Value, String> {
@@ -1934,6 +2012,8 @@ impl Bridge {
             "read_call" => self.read_call(arguments, &permissions),
             "list_leads" => self.list_leads(arguments),
             "read_lead" => self.read_lead(arguments, &permissions),
+            "draft_message" => self.message(arguments, true),
+            "send_message" => self.message(arguments, false),
             _ if scope == Scope::Write => self.write(name, arguments),
             _ => Err(format!("Unknown tool {name}.")),
         }
@@ -2335,6 +2415,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sending_is_listed_only_when_allowed() {
+        let listed = |permissions: &Permissions| -> Vec<String> {
+            tools(permissions)
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+                .filter(|name| name.ends_with("_message"))
+                .collect()
+        };
+        let mut permissions = Permissions::default();
+        assert_eq!(listed(&permissions), ["draft_message"]);
+        permissions.send = true;
+        assert_eq!(listed(&permissions), ["draft_message", "send_message"]);
+        permissions.messages = false;
+        permissions.send = false;
+        assert!(listed(&permissions).is_empty());
+    }
+
+    #[test]
     fn initialize_and_list_tools() {
         let bridge = Bridge::new("/nonexistent", "/nonexistent");
         let reply = answer(
@@ -2374,6 +2474,7 @@ mod tests {
                 "read_lead",
                 "create_project",
                 "update_project",
+                "draft_message",
                 "add_note",
                 "add_task",
                 "resolve_item",

@@ -210,8 +210,11 @@ impl Bridge {
                 }
                 continue;
             }
-            let (status, body) = if request.url().split('?').next() == Some("/action") {
+            let route = request.url().split('?').next().unwrap_or("").to_owned();
+            let (status, body) = if route == "/action" {
                 self.action(&mut request)
+            } else if route == "/send" {
+                self.send_message(&mut request)
             } else {
                 self.answer(&request)
             };
@@ -490,6 +493,136 @@ impl Bridge {
             Ok(answer) => (200, answer),
             Err(message) => error(422, &message),
         }
+    }
+
+    /// `POST /send` with `{"chat", "text", "draft", "client", "account"}`: a
+    /// message an AI writes over MCP. It goes to a chat that already had a
+    /// conversation, at a person's pace (src/outbox.rs); with `draft`, or
+    /// when the user only lets AIs write drafts, it waits in the chat's
+    /// composer for the user to send it.
+    fn send_message(&mut self, request: &mut Request) -> Reply {
+        if *request.method() != Method::Post {
+            return error(405, "only POST is supported here");
+        }
+        if let Some(refused) = self.refuse_host_or_token(request) {
+            return refused;
+        }
+        let mut body = String::new();
+        if std::io::Read::read_to_string(
+            &mut std::io::Read::take(request.as_reader(), 64 * 1024),
+            &mut body,
+        )
+        .is_err()
+        {
+            return error(400, "unreadable body");
+        }
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return error(400, "the body is not JSON");
+        };
+        let field = |name: &str| body.get(name).and_then(serde_json::Value::as_str);
+        let (Some(chat), Some(text)) = (field("chat"), field("text")) else {
+            return error(400, "`chat` and `text` are required");
+        };
+        let (chat, text) = (chat.to_owned(), text.trim().to_owned());
+        let client = field("client").unwrap_or("unknown").to_owned();
+        let account = field("account").unwrap_or("1").to_owned();
+        let permissions = crate::mcp::Permissions::load(&self.config_dir);
+        if !permissions.enabled || !(permissions.messages || permissions.send) {
+            return error(
+                403,
+                "Writing messages is turned off. Turn it on in Whats Pro > Ajustes > Conectar con IA.",
+            );
+        }
+        let draft = body.get("draft").and_then(serde_json::Value::as_bool) == Some(true)
+            || !permissions.send;
+        if crate::model::ChatKind::from_id(&chat) == crate::model::ChatKind::Broadcast {
+            return error(422, "Channels and broadcast lists cannot be written to.");
+        }
+        if permissions.exclude_personal_and_ignored {
+            let map = crate::projects::ProjectMap::load(&self.config_dir);
+            if map.personal.contains(&chat) || map.ignored.contains(&chat) {
+                return error(403, "That chat is marked Personal or Ignored, so no AI writes to it.");
+            }
+        }
+        let now = jiff::Timestamp::now().as_second();
+        let archive = match self.archive(&account) {
+            Ok(archive) => archive,
+            Err(reply) => return reply,
+        };
+        let Some(name) = archive
+            .bridge_chats()
+            .ok()
+            .and_then(|chats| chats.into_iter().find(|c| c.id == chat))
+            .map(|c| c.name)
+        else {
+            return error(404, "No such chat.");
+        };
+        // Writing first to someone who never wrote back is what WhatsApp
+        // reports as spam most often.
+        let talked = archive
+            .bridge_messages(Some(&chat), None, None, 500)
+            .is_ok_and(|messages| messages.iter().any(|message| !message.from_me));
+        if !talked {
+            return error(
+                422,
+                "Only chats that already had a conversation (someone wrote to you there) can be written to. Write the first message yourself from WhatsApp.",
+            );
+        }
+        if draft {
+            let waiting = archive.drafts().unwrap_or_default().into_iter().any(|(id, unsent)| {
+                id == chat && !unsent.trim().is_empty()
+            });
+            if waiting {
+                return error(
+                    409,
+                    "That chat already has unsent text in its box; ask the user before replacing it.",
+                );
+            }
+            if text.is_empty() || text.chars().count() > crate::outbox::MAX_CHARS {
+                return error(422, "The message is empty or too long.");
+            }
+            if !send(
+                &account,
+                crate::backend::Command::SuggestDraft {
+                    chat: chat.clone(),
+                    text,
+                },
+            ) {
+                return error(503, "Whats Pro is not connected to WhatsApp right now.");
+            }
+            return (
+                200,
+                serde_json::json!({ "status": "draft", "chat": chat, "chat_name": name }),
+            );
+        }
+        let history = crate::outbox::recent(&self.config_dir, now);
+        if let Some(reason) = crate::outbox::refuse(&history, &chat, &text, now) {
+            return error(429, &reason);
+        }
+        if !send(
+            &account,
+            crate::backend::Command::SendText {
+                chat: chat.clone(),
+                text: text.clone(),
+                quoting: None,
+                mentions: Vec::new(),
+            },
+        ) {
+            return error(503, "Whats Pro is not connected to WhatsApp right now.");
+        }
+        crate::outbox::record(
+            &self.config_dir,
+            &crate::outbox::Sent {
+                at: now,
+                chat: chat.clone(),
+                text,
+                client,
+            },
+        );
+        (
+            200,
+            serde_json::json!({ "status": "sent", "chat": chat, "chat_name": name }),
+        )
     }
 
     fn accounts(&self) -> Vec<String> {

@@ -5165,8 +5165,20 @@ msgstr "Texto completo de las llamadas transcriptas."
 msgid "Sales leads, stages, amounts, next actions and history."
 msgstr "Leads comerciales, etapas, montos, próximas acciones e historial."
 
-msgid "Locked chats and private calls are never shared. Read-only: no AI can send or delete anything."
-msgstr "Nunca se comparten los chats bloqueados ni las llamadas privadas. Solo lectura: ninguna IA puede mandar ni borrar nada."
+msgid "Locked chats and private calls are never shared, and no AI can delete anything."
+msgstr "Nunca se comparten los chats bloqueados ni las llamadas privadas, y ninguna IA puede borrar nada."
+
+msgid "Write messages"
+msgstr "Escribir mensajes"
+
+msgid "Leaves a message in a chat's text box for you to read and send."
+msgstr "Deja un mensaje en el cuadro de texto del chat para que lo leas y lo mandes vos."
+
+msgid "Send messages"
+msgstr "Enviar mensajes"
+
+msgid "Sends without asking, only to chats where someone already wrote to you, one message every 20 seconds and at most 30 an hour, so WhatsApp does not take it for spam. Every message sent is logged."
+msgstr "Manda sin preguntar, solo a chats donde alguien ya te escribió, un mensaje cada 20 segundos y como mucho 30 por hora, para que WhatsApp no lo tome como spam. Cada mensaje enviado queda registrado."
 
 msgid "Installed · Not connected"
 msgstr "Instalado · Sin conectar"
