@@ -514,6 +514,12 @@ pub struct Ticks {
     pub dismissed: HashSet<String>,
     #[serde(default)]
     pub feedback: Vec<Feedback>,
+    /// Items the analysis thinks were done, waiting for a yes or a no.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<Suggestion>,
+    /// Suggestions the owner said were not done: not asked again.
+    #[serde(default, skip_serializing_if = "HashSet::is_empty")]
+    pub rejected: HashSet<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -539,6 +545,25 @@ pub struct Feedback {
     pub chat: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    /// Who closed it when it was not the owner: an AI connected over MCP
+    /// ("Claude"), or the analysis itself when it saw it done.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// An open item the analysis thinks was done, but not surely enough to
+/// close it alone: the panel asks "Was it done?" with the evidence.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub id: String,
+    pub text: String,
+    /// The words that say it was done.
+    pub quote: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    pub at: i64,
 }
 
 impl Ticks {
@@ -574,6 +599,19 @@ impl Ticks {
 
     /// Records what the user made of a finding, with how it was solved.
     pub fn judge_with(&mut self, finding: &Finding, verdict: Verdict, note: Option<String>) {
+        self.judge_by(finding, verdict, note, None);
+    }
+
+    /// Records a verdict made by someone other than the owner: an AI over
+    /// MCP, or the analysis when it saw the item done.
+    pub fn judge_by(
+        &mut self,
+        finding: &Finding,
+        verdict: Verdict,
+        note: Option<String>,
+        by: Option<String>,
+    ) {
+        self.suggestions.retain(|s| s.id != finding.id);
         match verdict {
             Verdict::Done => {
                 self.done.insert(finding.id.clone());
@@ -593,10 +631,35 @@ impl Ticks {
             note: note.map(|n| n.trim().to_owned()).filter(|n| !n.is_empty()),
             chat: finding.chat.clone(),
             message: finding.message.clone(),
+            by,
         });
         // The newest 200 are plenty to learn from.
         if self.feedback.len() > 200 {
             self.feedback.drain(..self.feedback.len() - 200);
+        }
+    }
+
+    /// The owner's answer to "Was it done?": yes closes the item with the
+    /// evidence as how it was solved; no keeps it open and stops asking.
+    pub fn answer_suggestion(&mut self, finding: &Finding, done: bool) {
+        let Some(suggestion) = self
+            .suggestions
+            .iter()
+            .find(|s| s.id == finding.id)
+            .cloned()
+        else {
+            return;
+        };
+        self.suggestions.retain(|s| s.id != finding.id);
+        if done {
+            self.judge_by(
+                finding,
+                Verdict::Done,
+                Some(format!("«{}»", suggestion.quote)),
+                None,
+            );
+        } else {
+            self.rejected.insert(finding.id.clone());
         }
     }
 
@@ -628,6 +691,9 @@ pub struct Note {
     pub spoken: bool,
     #[serde(default)]
     pub kind: NoteKind,
+    /// Who wrote it when it was not the owner, such as an AI over MCP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 /// A log of what happened, or a note kept for reference.
@@ -673,12 +739,89 @@ impl Journal {
     }
 
     pub fn add_kind(&mut self, text: &str, spoken: bool, kind: NoteKind) {
+        self.add_by(text, spoken, kind, None);
+    }
+
+    pub fn add_by(&mut self, text: &str, spoken: bool, kind: NoteKind, by: Option<String>) {
         self.notes.push(Note {
             at: jiff::Timestamp::now().as_second(),
             text: text.trim().to_owned(),
             spoken,
             kind,
+            by,
         });
+    }
+}
+
+/// Tasks added by hand or by an AI over MCP: they stay on the panel's
+/// "To do" whatever the analysis says, until they are ticked off.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Tasks {
+    #[serde(default)]
+    pub items: Vec<Task>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    #[serde(flatten)]
+    pub finding: Finding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+impl Tasks {
+    fn file(config: &Path, project: &str) -> PathBuf {
+        config
+            .join("analysis")
+            .join(format!("{project}.tasks.json"))
+    }
+
+    pub fn load(config: &Path, project: &str) -> Self {
+        std::fs::read_to_string(Self::file(config, project))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, config: &Path, project: &str) -> std::io::Result<()> {
+        let path = Self::file(config, project);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, serde_json::to_vec_pretty(self)?)
+    }
+
+    /// Adds a task and returns it.
+    pub fn add(
+        &mut self,
+        text: &str,
+        who: Option<String>,
+        due: Option<String>,
+        by: Option<String>,
+    ) -> Finding {
+        let now = jiff::Timestamp::now();
+        let finding = Finding {
+            id: format!("task:{}-{}", now.as_millisecond(), self.items.len()),
+            text: text.trim().to_owned(),
+            who: who.filter(|w| !w.trim().is_empty()),
+            chat: None,
+            message: None,
+            since: Some(now.as_second()),
+            due: due.filter(|d| !d.trim().is_empty()),
+        };
+        self.items.push(Task {
+            finding: finding.clone(),
+            by,
+        });
+        finding
+    }
+
+    /// The tasks still open, by the ticks.
+    pub fn open<'a>(&'a self, ticks: &'a Ticks) -> impl Iterator<Item = &'a Finding> + 'a {
+        self.items
+            .iter()
+            .map(|task| &task.finding)
+            .filter(|finding| ticks.open(&finding.id))
     }
 }
 

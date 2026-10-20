@@ -168,7 +168,7 @@ fn error(status: u16, message: &str) -> Reply {
 
 impl Bridge {
     fn serve(mut self, server: Server) {
-        for request in server.incoming_requests() {
+        for mut request in server.incoming_requests() {
             if request.url().split('?').next() == Some("/media") {
                 let response = match self.media(&request) {
                     Ok((bytes, mime)) => Response::from_data(bytes)
@@ -195,7 +195,11 @@ impl Bridge {
                 }
                 continue;
             }
-            let (status, body) = self.answer(&request);
+            let (status, body) = if request.url().split('?').next() == Some("/action") {
+                self.action(&mut request)
+            } else {
+                self.answer(&request)
+            };
             let response = Response::from_string(body.to_string())
                 .with_status_code(status)
                 .with_header(
@@ -242,6 +246,10 @@ impl Bridge {
         if *request.method() != Method::Get {
             return Some(error(405, "only GET is supported"));
         }
+        self.refuse_host_or_token(request)
+    }
+
+    fn refuse_host_or_token(&self, request: &Request) -> Option<Reply> {
         if !self.local_host(request) {
             return Some(error(403, "unexpected Host"));
         }
@@ -389,6 +397,42 @@ impl Bridge {
             "/chats" | "/messages" | "/search" => self.archive_route(path, &query),
             "/transcript" => self.transcript(&query),
             _ => error(404, "unknown route"),
+        }
+    }
+
+    /// `POST /action` with `{"action", "args", "client"}`: a change to the
+    /// projects, their notes and tasks, or the leads, made by an AI over MCP
+    /// (src/project_actions.rs). The only route that writes.
+    fn action(&mut self, request: &mut Request) -> Reply {
+        if *request.method() != Method::Post {
+            return error(405, "only POST is supported here");
+        }
+        if let Some(refused) = self.refuse_host_or_token(request) {
+            return refused;
+        }
+        let mut body = String::new();
+        if std::io::Read::read_to_string(
+            &mut std::io::Read::take(request.as_reader(), 256 * 1024),
+            &mut body,
+        )
+        .is_err()
+        {
+            return error(400, "unreadable body");
+        }
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(&body) else {
+            return error(400, "the body is not JSON");
+        };
+        let Some(action) = body.get("action").and_then(serde_json::Value::as_str) else {
+            return error(400, "`action` is required");
+        };
+        let args = body.get("args").cloned().unwrap_or_default();
+        let client = body
+            .get("client")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        match crate::project_actions::apply(&self.config_dir, action, &args, client) {
+            Ok(answer) => (200, answer),
+            Err(message) => error(422, &message),
         }
     }
 

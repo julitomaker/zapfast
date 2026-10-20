@@ -438,7 +438,8 @@ Respondé SOLO con un objeto JSON válido, sin texto antes ni después, con esta
 \"needs\":[{\"text\":\"\",\"who\":\"\",\"ref\":0}],\
 \"highlights\":[{\"text\":\"\",\"who\":\"\",\"ref\":0}],\
 \"leads\":[{\"who\":\"\",\"ref\":0,\"why\":\"\",\"stage\":\"\",\"paid\":false,\"amount\":\"\"}],\
-\"relevant\":[0]}\n\
+\"relevant\":[0],\
+\"resolved\":[{\"item\":\"P1\",\"ref\":0,\"quote\":\"\",\"confidence\":\"high\"}]}\n\
 Reglas:\n\
 - summaries: qué pasó hoy, ayer y en la semana, 2 a 4 oraciones cada uno; vacío si no hubo nada.\n\
 - todo: lo que Yo me comprometí a hacer o me pidieron y no está hecho (\"who\" = quién lo pidió).\n\
@@ -463,7 +464,11 @@ Solo clientes o posibles clientes: no proveedores, ni compañeros, ni integrante
   * Algo prometido o acordado en el chat (precio, pago, pedido, entrega o reclamo) que no está reflejado en el CRM o en el lead → señalalo como nota en todo o needs.\n\
   * El bloque de ElevaLeads (\"del CRM de la empresa\") es solo contexto secundario de referencia: nunca uses sus ítems por sí solos como hallazgos primarios si no se cruzan con los chats, llamadas, notas o leads del proyecto.\n\
 - No vuelvas a poner lo que el dueño marcó como hecho o descartado, salvo que un mensaje posterior lo reabra.\n\
-- Evitá recomendaciones parecidas a las que el dueño marcó como malas; las marcadas como buenas muestran qué le sirve.";
+- Evitá recomendaciones parecidas a las que el dueño marcó como malas; las marcadas como buenas muestran qué le sirve.\n\
+- resolved: de la lista \"Pendientes abiertos\", los que ya se hicieron según un mensaje, una nota o una llamada. \
+\"item\" = su clave (P1, P2…); \"ref\" = el número del mensaje que lo prueba, o null si lo prueba una nota o una llamada; \
+\"quote\" = las palabras exactas que lo prueban, cortas; \"confidence\" = \"high\" si lo dice explícito (\"ya te transferí\", \"listo, enviado\", \"llegó\"), \
+\"medium\" si es probable pero no seguro. Solo claves de esa lista, y nunca algo que solo se prometió. No los repitas en las otras listas.";
 
 /// What a message says, with the speech or picture text read out of it on
 /// this computer.
@@ -504,6 +509,9 @@ struct PromptContext<'a> {
     calls: &'a [crate::call_library::Call],
     leads: &'a [crate::leads::Lead],
     crm: Option<(&'a crate::leads::Brand, &'a crate::eleva::Inbox)>,
+    /// The panel's open items, as P1, P2…, for the analysis to say which
+    /// were done.
+    open: &'a [Finding],
 }
 
 /// Formats one recorded call of the project on a single compact line.
@@ -858,6 +866,19 @@ fn prompt(
         verdicts_and_examples.push_str(&examples.join("\n"));
         verdicts_and_examples.push_str("\n\n");
     }
+    if !ctx.open.is_empty() {
+        verdicts_and_examples
+            .push_str("Pendientes abiertos (decí en resolved cuáles ya se hicieron):\n");
+        for (index, item) in ctx.open.iter().enumerate().take(MAX_OPEN) {
+            let who = item
+                .who
+                .as_deref()
+                .map(|w| format!(" ({w})"))
+                .unwrap_or_default();
+            verdicts_and_examples.push_str(&format!("P{} {}{who}\n", index + 1, clip(&item.text)));
+        }
+        verdicts_and_examples.push('\n');
+    }
 
     let message_lines: Vec<String> = messages
         .iter()
@@ -975,6 +996,21 @@ struct Reply {
     leads: Vec<ReplyLead>,
     #[serde(default)]
     relevant: Vec<serde_json::Value>,
+    #[serde(default)]
+    resolved: Vec<ReplyResolved>,
+}
+
+/// An open item the model says was done, with its evidence.
+#[derive(Default, Deserialize)]
+struct ReplyResolved {
+    #[serde(default)]
+    item: String,
+    #[serde(default)]
+    r#ref: Option<serde_json::Value>,
+    #[serde(default)]
+    quote: String,
+    #[serde(default)]
+    confidence: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -1160,7 +1196,9 @@ fn analyze(
     let messages = feed_messages(map, project, all);
     let messages = messages.as_slice();
     let journal = super::Journal::load(config, &project.id);
-    let ticks = super::Ticks::load(config, &project.id);
+    let mut ticks = super::Ticks::load(config, &project.id);
+    let tasks = super::Tasks::load(config, &project.id);
+    let open = open_items(previous, &tasks, &ticks);
     let library = crate::call_library::Library::load(state);
     let store = (*crate::leads::Store::open(config)).clone();
     let brand = store.brands.get(&project.id);
@@ -1171,6 +1209,7 @@ fn analyze(
         calls: &library.calls,
         leads: &store.leads,
         crm: brand.zip(inbox.as_ref()),
+        open: &open,
     };
     let reply = complete(
         config,
@@ -1227,7 +1266,16 @@ fn analyze(
             (source.chat.clone(), now.max(prev))
         })
         .collect();
-    let _ = config;
+    // What the analysis saw done: closed with its evidence when it is sure,
+    // asked about on the panel when it is not.
+    if settle(&mut ticks, &open, &reply.resolved, messages, now)
+        && let Err(failure) = ticks.save(config, &project.id)
+    {
+        log::warn!(
+            "analysis: {} could not save what was done: {failure}",
+            project.id
+        );
+    }
     Ok(Analysis {
         updated: all.last().map_or(now, |m| m.timestamp),
         summaries: reply
@@ -1247,6 +1295,88 @@ fn analyze(
 }
 
 // -------------------------------------------------------------- providers
+
+/// How many open items the prompt lists for the model to settle.
+const MAX_OPEN: usize = 40;
+
+/// The panel's open items before this run: the previous analysis' findings
+/// and the tasks added by hand, not ticked off.
+fn open_items(
+    previous: Option<&Analysis>,
+    tasks: &super::Tasks,
+    ticks: &super::Ticks,
+) -> Vec<Finding> {
+    let mut open: Vec<Finding> = tasks.open(ticks).cloned().collect();
+    let asked = |f: &Finding| ticks.open(&f.id) && !ticks.rejected.contains(&f.id);
+    open.retain(|f| asked(f));
+    if let Some(previous) = previous {
+        for list in [
+            &previous.todo,
+            &previous.follow_up,
+            &previous.leaks,
+            &previous.needs,
+        ] {
+            open.extend(list.iter().filter(|f| asked(f)).cloned());
+        }
+    }
+    open.truncate(MAX_OPEN);
+    open
+}
+
+/// Applies the model's `resolved`: high confidence closes the item with the
+/// quote as how it was solved, by "IA"; medium leaves a suggestion for the
+/// owner. Returns whether anything changed.
+fn settle(
+    ticks: &mut super::Ticks,
+    open: &[Finding],
+    resolved: &[ReplyResolved],
+    messages: &[&FeedMessage],
+    now: i64,
+) -> bool {
+    let mut changed = false;
+    for item in resolved {
+        let Some(finding) = item
+            .item
+            .trim()
+            .trim_start_matches(['P', 'p'])
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| n.checked_sub(1))
+            .and_then(|index| open.get(index))
+        else {
+            continue;
+        };
+        let quote = item.quote.trim();
+        if quote.is_empty() || !ticks.open(&finding.id) {
+            continue;
+        }
+        let source = item
+            .r#ref
+            .as_ref()
+            .and_then(number)
+            .and_then(|i| messages.get(i));
+        if item.confidence.eq_ignore_ascii_case("high") {
+            ticks.judge_by(
+                finding,
+                super::Verdict::Done,
+                Some(format!("«{quote}»")),
+                Some("IA".to_owned()),
+            );
+        } else {
+            ticks.suggestions.retain(|s| s.id != finding.id);
+            ticks.suggestions.push(super::Suggestion {
+                id: finding.id.clone(),
+                text: finding.text.clone(),
+                quote: quote.to_owned(),
+                chat: source.map(|m| m.chat.clone()),
+                message: source.map(|m| m.id.clone()),
+                at: now,
+            });
+        }
+        changed = true;
+    }
+    changed
+}
 
 /// What shape of answer a prompt asks the model for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2044,6 +2174,7 @@ mod tests {
                 calls: std::slice::from_ref(&call),
                 leads: std::slice::from_ref(&lead),
                 crm: Some((&brand, &inbox)),
+                open: &[],
             },
             now,
         );
@@ -2086,5 +2217,57 @@ mod tests {
             !text.contains("mensaje-0 "),
             "oldest chat messages truncated first to fit budget"
         );
+    }
+
+    #[test]
+    fn a_sure_answer_closes_the_item_and_a_maybe_asks_the_owner() {
+        let item = |id: &str, text: &str| Finding {
+            id: id.into(),
+            text: text.into(),
+            ..Finding::default()
+        };
+        let open = vec![
+            item("todo:a", "Mandar presupuesto"),
+            item("task:b", "Pagar al proveedor"),
+        ];
+        let mut ticks = super::super::Ticks::default();
+        let resolved = vec![
+            ReplyResolved {
+                item: "P1".into(),
+                r#ref: None,
+                quote: "ya te mandé el presupuesto".into(),
+                confidence: "high".into(),
+            },
+            ReplyResolved {
+                item: "P2".into(),
+                r#ref: None,
+                quote: "creo que ya está".into(),
+                confidence: "medium".into(),
+            },
+            ReplyResolved {
+                item: "P9".into(),
+                r#ref: None,
+                quote: "x".into(),
+                confidence: "high".into(),
+            },
+        ];
+        assert!(settle(&mut ticks, &open, &resolved, &[], 10));
+        assert!(!ticks.open("todo:a"));
+        let closed = ticks.feedback.last().unwrap();
+        assert_eq!(closed.by.as_deref(), Some("IA"));
+        assert_eq!(closed.note.as_deref(), Some("«ya te mandé el presupuesto»"));
+        assert!(ticks.open("task:b"));
+        assert_eq!(ticks.suggestions[0].id, "task:b");
+
+        // "No" keeps it open and it is not offered to the model again.
+        ticks.answer_suggestion(&open[1], false);
+        assert!(ticks.suggestions.is_empty() && ticks.open("task:b"));
+        let tasks = super::super::Tasks {
+            items: vec![super::super::Task {
+                finding: open[1].clone(),
+                by: None,
+            }],
+        };
+        assert!(open_items(None, &tasks, &ticks).is_empty());
     }
 }

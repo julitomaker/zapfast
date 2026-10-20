@@ -2470,7 +2470,7 @@ fn integrations_section(app: &App) -> Section {
     );
 
     type McpField = fn(&mut crate::mcp::Permissions) -> &mut bool;
-    let scopes: [(&str, &str, McpField); 5] = [
+    let scopes: [(&str, &str, McpField); 6] = [
         (
             "Chats",
             "WhatsApp chats and messages while Whats Pro is open.",
@@ -2493,6 +2493,11 @@ fn integrations_section(app: &App) -> Section {
             "Leads",
             "Sales leads, stages, amounts, next actions and history.",
             |p| &mut p.leads,
+        ),
+        (
+            "Create and edit",
+            "Create and change projects, notes, tasks and leads, close items and run the analysis. Each change says which AI made it and can be undone in the project's History.",
+            |p| &mut p.write,
         ),
     ];
     for (title, description, field) in scopes {

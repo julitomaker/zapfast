@@ -34,6 +34,8 @@ pub enum Scope {
     Projects,
     Calls,
     Leads,
+    /// Creating and changing projects, notes, tasks and leads.
+    Write,
 }
 
 impl Scope {
@@ -43,6 +45,7 @@ impl Scope {
             Self::Projects => "projects",
             Self::Calls => "calls",
             Self::Leads => "leads",
+            Self::Write => "write",
         }
     }
 
@@ -52,6 +55,7 @@ impl Scope {
             Self::Projects => "Proyectos y notas",
             Self::Calls => "Llamadas (resúmenes)",
             Self::Leads => "Leads",
+            Self::Write => "Crear y editar",
         }
     }
 }
@@ -127,6 +131,10 @@ pub struct Permissions {
     /// Never serve chats marked as Personal or Ignored in `projects.json`.
     #[serde(default = "default_true")]
     pub exclude_personal_and_ignored: bool,
+    /// Creating and changing projects, notes, tasks and leads. Every change
+    /// says who made it and can be undone from the project's history.
+    #[serde(default = "default_true")]
+    pub write: bool,
 }
 
 impl Default for Permissions {
@@ -139,6 +147,7 @@ impl Default for Permissions {
             call_transcripts: false,
             leads: true,
             exclude_personal_and_ignored: true,
+            write: true,
         }
     }
 }
@@ -173,6 +182,7 @@ impl Permissions {
                 Scope::Projects => self.projects,
                 Scope::Calls => self.calls,
                 Scope::Leads => self.leads,
+                Scope::Write => self.write,
             }
     }
 
@@ -203,6 +213,10 @@ fn tool_scope(name: &str) -> Option<Scope> {
         "list_projects" | "project_overview" | "project_notes" => Some(Scope::Projects),
         "list_calls" | "read_call" => Some(Scope::Calls),
         "list_leads" | "read_lead" => Some(Scope::Leads),
+        "create_project" | "update_project" | "add_note" | "add_task" | "resolve_item"
+        | "reopen_item" | "run_analysis" | "create_lead" | "update_lead" | "add_lead_note" => {
+            Some(Scope::Write)
+        }
         _ => None,
     }
 }
@@ -376,6 +390,156 @@ fn all_tools() -> Vec<Value> {
             },
             "annotations": {"readOnlyHint": true}
         }),
+        json!({
+            "name": "create_project",
+            "description": "Create a project in Whats Pro, for example from the chats with a possible client: its name, what it is about (context), the chats it follows (sources, by chat id from list_chats) and the people in it (members). Returns the new project's id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "context": {"type": "string", "description": "What the project is about, in plain words; the analysis reads it."},
+                    "sources": {"type": "array", "description": "Chats to follow. mode: all (the whole chat, for chats only about this project), smart (the analysis keeps the project's messages, for chats that also talk about other things), selected (only messages picked by hand). Without mode, Whats Pro picks by the kind of chat.", "items": {"type": "object", "properties": {"chat": {"type": "string", "description": "Chat id from list_chats."}, "mode": {"type": "string", "enum": ["all", "smart", "selected"]}}, "required": ["chat"]}},
+                    "members": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string", "description": "WhatsApp id or phone number."}, "role": {"type": "string"}, "about": {"type": "string", "description": "Who they are and how to deal with them."}}, "required": ["name"]}},
+                    "color": {"type": "string", "description": "Hex color, optional."}
+                },
+                "required": ["name"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "update_project",
+            "description": "Change a project: its name, context, color, add or remove chats (sources), and add, update or remove members.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string", "description": "Project name or id."},
+                    "name": {"type": "string"},
+                    "context": {"type": "string"},
+                    "color": {"type": "string"},
+                    "add_sources": {"type": "array", "items": {"type": "object", "properties": {"chat": {"type": "string"}, "mode": {"type": "string", "enum": ["all", "smart", "selected"]}}, "required": ["chat"]}},
+                    "remove_sources": {"type": "array", "items": {"type": "string", "description": "Chat id."}},
+                    "members": {"type": "array", "description": "Added, or updated when the id or name matches.", "items": {"type": "object", "properties": {"name": {"type": "string"}, "id": {"type": "string"}, "role": {"type": "string"}, "about": {"type": "string"}}, "required": ["name"]}},
+                    "remove_members": {"type": "array", "items": {"type": "string", "description": "Member id or name."}}
+                },
+                "required": ["project"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "add_note",
+            "description": "Add a note to a project's Notes: something that happened (log) or something to remember (memo). The analysis reads notes, and a note that says something was done can close it on the panel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "text": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["log", "memo"]}
+                },
+                "required": ["project", "text"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "add_task",
+            "description": "Add a task to a project's panel (To do). It stays until it is closed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "text": {"type": "string"},
+                    "who": {"type": "string", "description": "Who does it or who it waits on."},
+                    "due": {"type": "string", "description": "When, as YYYY-MM-DD or in words."}
+                },
+                "required": ["project", "text"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "resolve_item",
+            "description": "Close an item of a project's panel (a to-do, follow-up, slipping item, need or task) because it was done, saying how. Set dismiss to true when it no longer applies instead. Use the item's id from project_overview, or words of its text. It can be undone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "item": {"type": "string", "description": "Item id, or words of its text."},
+                    "how": {"type": "string", "description": "How it was solved, or why it is dismissed."},
+                    "dismiss": {"type": "boolean"}
+                },
+                "required": ["project", "item"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "reopen_item",
+            "description": "Put a closed item back on a project's panel.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": {"type": "string"}, "item": {"type": "string"}},
+                "required": ["project", "item"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "run_analysis",
+            "description": "Run the AI analysis of a project now: it rereads its chats, notes, calls and leads, updates the panel, and closes items that were done. It takes about a minute; then read project_overview.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"project": {"type": "string"}},
+                "required": ["project"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "create_lead",
+            "description": "Add a sales lead to a project: the person, their chat or phone, stage (new, contacted, quoted, customer, lost), the sale's value, the next action with its day, and a first note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "project": {"type": "string"},
+                    "name": {"type": "string"},
+                    "chat": {"type": "string", "description": "Chat id from list_chats."},
+                    "phone": {"type": "string"},
+                    "stage": {"type": "string", "enum": ["new", "contacted", "quoted", "customer", "lost"]},
+                    "value": {"type": "string", "description": "What the sale is worth, as written."},
+                    "next": {"type": "string", "description": "Next action."},
+                    "due": {"type": "string", "description": "Its day, YYYY-MM-DD."},
+                    "note": {"type": "string"}
+                },
+                "required": ["project", "name"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "update_lead",
+            "description": "Change a lead: stage (lost asks for lost_reason), value, next action and its day, chat, phone, or add a note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "lead": {"type": "string", "description": "Lead id, name or phone."},
+                    "name": {"type": "string"},
+                    "chat": {"type": "string"},
+                    "phone": {"type": "string"},
+                    "stage": {"type": "string", "enum": ["new", "contacted", "quoted", "customer", "lost"]},
+                    "lost_reason": {"type": "string"},
+                    "value": {"type": "string"},
+                    "next": {"type": "string"},
+                    "due": {"type": "string"},
+                    "note": {"type": "string"}
+                },
+                "required": ["lead"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
+        json!({
+            "name": "add_lead_note",
+            "description": "Add a note to a lead's history.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"lead": {"type": "string"}, "text": {"type": "string"}},
+                "required": ["lead", "text"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false}
+        }),
     ]
 }
 
@@ -439,6 +603,42 @@ impl Bridge {
         }
         let map = crate::projects::ProjectMap::load(&self.config_dir);
         map.personal.into_iter().chain(map.ignored).collect()
+    }
+
+    /// A change, applied by the app through the bridge so it never races the
+    /// app's own copy of projects and leads (src/project_actions.rs).
+    fn write(&self, action: &str, arguments: &Value) -> Result<String, String> {
+        let config = crate::bridge::config(&self.config_dir)
+            .map_err(|error| format!("Could not read Whats Pro's bridge settings: {error}"))?;
+        if !config.enabled {
+            return Err("The Whats Pro bridge is turned off in bridge.json.".into());
+        }
+        let url = format!("http://127.0.0.1:{}/action", config.port);
+        let body = json!({"action": action, "args": arguments, "client": self.client_name()});
+        let mut response = ureq::post(&url)
+            .header("Authorization", &format!("Bearer {}", config.token))
+            .header("Content-Type", "application/json")
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .send(body.to_string())
+            .map_err(|_| {
+                "Whats Pro is not open. Open the app and try again: changes are made by the app."
+                    .to_owned()
+            })?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|error| format!("Could not read Whats Pro's answer: {error}"))?;
+        let answer: Value = serde_json::from_str(&text).unwrap_or(json!({"error": text}));
+        if status != 200 {
+            return Err(answer["error"]
+                .as_str()
+                .unwrap_or("Whats Pro could not make the change.")
+                .to_owned());
+        }
+        Ok(serde_json::to_string_pretty(&answer).unwrap_or_default())
     }
 
     fn get(&self, path: &str) -> Result<Value, String> {
@@ -579,11 +779,9 @@ fn format_finding(finding: &crate::projects::Finding) -> String {
     if let Some(chat) = finding.chat.as_deref().filter(|c| !c.trim().is_empty()) {
         details.push(format!("chat: {chat}"));
     }
-    if details.is_empty() {
-        format!("- {}", finding.text)
-    } else {
-        format!("- {} ({})", finding.text, details.join(", "))
-    }
+    // The id lets resolve_item close exactly this one.
+    details.push(format!("id: {}", finding.id));
+    format!("- {} ({})", finding.text, details.join(", "))
 }
 
 fn stage_slug(stage: crate::leads::Stage) -> &'static str {
@@ -798,7 +996,23 @@ impl Bridge {
             out.push_str(&format!("- {label}: {summary}\n"));
         }
 
+        let tasks: Vec<crate::projects::Finding> =
+            crate::projects::Tasks::load(&self.config_dir, &project.id)
+                .items
+                .into_iter()
+                .map(|task| task.finding)
+                .collect();
+        if !ticks.suggestions.is_empty() {
+            out.push_str("\n## Maybe done (waiting for the owner's yes or no)\n");
+            for suggestion in &ticks.suggestions {
+                out.push_str(&format!(
+                    "- {} (evidence: \"{}\", id: {})\n",
+                    suggestion.text, suggestion.quote, suggestion.id
+                ));
+            }
+        }
         let sections = [
+            ("Tasks added by hand or by an AI", &tasks),
             ("Open to-dos", &analysis.todo),
             ("Follow-ups", &analysis.follow_up),
             ("Slipping", &analysis.leaks),
@@ -1544,6 +1758,7 @@ impl Bridge {
             "read_call" => self.read_call(arguments, &permissions),
             "list_leads" => self.list_leads(arguments),
             "read_lead" => self.read_lead(arguments, &permissions),
+            _ if scope == Scope::Write => self.write(name, arguments),
             _ => Err(format!("Unknown tool {name}.")),
         }
     }
@@ -1560,7 +1775,7 @@ fn answer(bridge: &Bridge, request: &Value) -> Option<Value> {
                 "protocolVersion": request["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "title": "Whats Pro", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Read-only access to the user's WhatsApp chats, projects, calls and leads in Whats Pro. Chat tools require Whats Pro to be open; projects, calls and leads work from disk."
+                "instructions": "Access to the user's WhatsApp chats, projects, calls and leads in Whats Pro. Reading projects, calls and leads works from disk; chats and every change need Whats Pro open. Changes (create_project, add_task, resolve_item, create_lead...) say who made them and can be undone in the app. To turn chats into a project: read them (read_chat, get_media), then create_project, create_lead and add_task. To refresh a project's panel: run_analysis, then project_overview."
             })
         }
         "ping" => json!({}),
@@ -1980,6 +2195,16 @@ mod tests {
                 "read_call",
                 "list_leads",
                 "read_lead",
+                "create_project",
+                "update_project",
+                "add_note",
+                "add_task",
+                "resolve_item",
+                "reopen_item",
+                "run_analysis",
+                "create_lead",
+                "update_lead",
+                "add_lead_note",
             ]
         );
         assert!(
@@ -2158,7 +2383,7 @@ mod tests {
         );
         assert!(overview.contains("- Today: Se avanzó con el taller."));
         assert!(overview.contains("- Week: Semana de entregas."));
-        assert!(overview.contains("Confirmar 500 guardapolvos (who: Diego, due: viernes)"));
+        assert!(overview.contains("Confirmar 500 guardapolvos (who: Diego, due: viernes, id: "));
         assert!(
             !overview.contains("Mandar matriz vieja"),
             "done findings are skipped"

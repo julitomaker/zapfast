@@ -1508,6 +1508,14 @@ fn panel(
         return;
     };
     let open = |list: &[Finding]| list.iter().filter(|f| ticks.open(&f.id)).count();
+    // Tasks added by hand or by an AI over MCP come first in "To do".
+    let todo: Vec<Finding> = crate::projects::Tasks::load(&app.dirs.config, &project.id)
+        .items
+        .into_iter()
+        .map(|task| task.finding)
+        .chain(analysis.todo.iter().cloned())
+        .collect();
+    let mut answered: Option<(Finding, bool)> = None;
     let mut action = None;
     let mut period = state.period;
     let mut pending = state.pending.take();
@@ -1560,8 +1568,12 @@ fn panel(
                         }
                     });
                     ui.add_space(12.0);
+                    if !ticks.suggestions.is_empty() {
+                        suggestions_card(app, ui, &ticks.suggestions, &mut answered);
+                        ui.add_space(12.0);
+                    }
                     ui.columns(4, |columns| {
-                        metric(&mut columns[0], &palette, Icon::ListChecks, gettext(locale, "To do").as_ref(), open(&analysis.todo), palette.text);
+                        metric(&mut columns[0], &palette, Icon::ListChecks, gettext(locale, "To do").as_ref(), open(&todo), palette.text);
                         metric(&mut columns[1], &palette, Icon::Clock, gettext(locale, "To follow up").as_ref(), open(&analysis.follow_up), palette.warning);
                         metric(&mut columns[2], &palette, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), open(&analysis.leaks), palette.danger);
                         metric(&mut columns[3], &palette, Icon::Bell, gettext(locale, "New needs").as_ref(), open(&analysis.needs), palette.accent);
@@ -1570,7 +1582,7 @@ fn panel(
                     sales_cards(app, ui, state, project);
                     let left = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>, pending: &mut Option<Pending>| {
                         findings_card(app, ui, Icon::CircleAlert, gettext(locale, "Slipping").as_ref(), palette.danger, &analysis.leaks, ticks, true, gettext(locale, "Nothing is slipping.").as_ref(), action, pending);
-                        findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &analysis.todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action, pending);
+                        findings_card(app, ui, Icon::ListChecks, gettext(locale, "To do · what we committed to").as_ref(), palette.text, &todo, ticks, true, gettext(locale, "Nothing pending.").as_ref(), action, pending);
                         findings_card(app, ui, Icon::Clock, gettext(locale, "To follow up · waiting on others").as_ref(), palette.warning, &analysis.follow_up, ticks, true, gettext(locale, "Nobody owes us an answer.").as_ref(), action, pending);
                     };
                     let right = |app: &App, ui: &mut egui::Ui, action: &mut Option<FindingAction>, pending: &mut Option<Pending>| {
@@ -1611,6 +1623,14 @@ fn panel(
                 });
         });
     state.period = period;
+    if let Some((finding, done)) = answered {
+        let mut fresh = Ticks::load(&app.dirs.config, &project.id);
+        fresh.answer_suggestion(&finding, done);
+        if let Err(error) = fresh.save(&app.dirs.config, &project.id) {
+            log::warn!("projects: ticks could not be saved: {error}");
+        }
+        state.analysis = None;
+    }
     let now = ui.ctx().input(|input| input.time);
     // A pending finding closes once its time is up, or when saved, unless
     // it was undone or the person is still writing how it was solved.
@@ -1726,6 +1746,73 @@ fn sales_cards(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Pr
         super::leads::select(ui.ctx(), &project.id, lead);
         state.tab = Tab::Leads;
     }
+}
+
+/// "Was it done?": items the analysis thinks were done but is not sure,
+/// with the words that suggest it, and a yes or a no.
+fn suggestions_card(
+    app: &App,
+    ui: &mut egui::Ui,
+    suggestions: &[crate::projects::Suggestion],
+    answered: &mut Option<(Finding, bool)>,
+) {
+    let palette = app.palette;
+    let locale = app.locale;
+    card_frame(&palette).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+            theme::icon(ui, Icon::CircleCheck, 16.0, palette.accent);
+            theme::text(
+                ui,
+                gettext(locale, "Was it done?"),
+                theme::semibold(14.5),
+                palette.text,
+            );
+        });
+        theme::text(
+            ui,
+            gettext(
+                locale,
+                "The analysis thinks these were done. Confirm and they close.",
+            ),
+            theme::regular(12.5),
+            palette.secondary,
+        );
+        for suggestion in suggestions {
+            ui.add_space(8.0);
+            wrapped(ui, &suggestion.text, theme::medium(14.0), palette.text);
+            wrapped(
+                ui,
+                &format!("«{}»", suggestion.quote),
+                theme::regular(13.0),
+                palette.secondary,
+            );
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let finding = Finding {
+                    id: suggestion.id.clone(),
+                    text: suggestion.text.clone(),
+                    chat: suggestion.chat.clone(),
+                    message: suggestion.message.clone(),
+                    ..Finding::default()
+                };
+                if pill_button(
+                    ui,
+                    &palette,
+                    gettext(locale, "Yes, it was done").as_ref(),
+                    true,
+                )
+                .clicked()
+                {
+                    *answered = Some((finding.clone(), true));
+                }
+                if pill_button(ui, &palette, gettext(locale, "No").as_ref(), false).clicked() {
+                    *answered = Some((finding, false));
+                }
+            });
+        }
+    });
 }
 
 /// The panel before the first analysis: what it will show, and how to turn
@@ -1932,6 +2019,14 @@ fn history(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                     theme::regular(13.0),
                                     palette.secondary,
                                 );
+                            }
+                            if let Some(by) = &item.by {
+                                let who = if by == "IA" {
+                                    gettext(locale, "Detected by the analysis").into_owned()
+                                } else {
+                                    gettext(locale, "Done by {who}").replace("{who}", by)
+                                };
+                                wrapped(ui, &who, theme::regular(12.5), palette.dim);
                             }
                         });
                         ui.add_space(8.0);
@@ -3005,6 +3100,9 @@ fn journal(app: &mut App, ui: &mut egui::Ui, state: &mut State, project: &Projec
                                 theme::text(ui, crate::util::clock(note.at), theme::regular(12.0), palette.dim);
                                 if note.kind == crate::projects::NoteKind::Memo {
                                     chip(ui, gettext(locale, "Note to keep").as_ref(), palette.accent);
+                                }
+                                if let Some(by) = &note.by {
+                                    chip(ui, &gettext(locale, "by {who}").replace("{who}", by), palette.link);
                                 }
                                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                     if theme::icon_button(

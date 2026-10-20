@@ -5249,3 +5249,27 @@ msgstr "Conseguí una clave en OpenAI"
 
 msgid "The same key is used for the project analysis, and it is kept in the macOS Keychain."
 msgstr "La misma clave sirve para el análisis de proyectos y queda guardada en el llavero de macOS."
+
+msgid "Create and edit"
+msgstr "Crear y editar"
+
+msgid "Create and change projects, notes, tasks and leads, close items and run the analysis. Each change says which AI made it and can be undone in the project's History."
+msgstr "Crear y cambiar proyectos, notas, tareas y leads, cerrar pendientes y correr el análisis. Cada cambio dice qué IA lo hizo y se puede deshacer en el Historial del proyecto."
+
+msgid "Was it done?"
+msgstr "¿Se hizo?"
+
+msgid "The analysis thinks these were done. Confirm and they close."
+msgstr "El análisis cree que esto ya se hizo. Confirmalo y se cierra."
+
+msgid "Yes, it was done"
+msgstr "Sí, se hizo"
+
+msgid "Detected by the analysis"
+msgstr "Lo detectó el análisis"
+
+msgid "Done by {who}"
+msgstr "Lo hizo {who}"
+
+msgid "by {who}"
+msgstr "por {who}"

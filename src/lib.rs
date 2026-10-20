@@ -51,6 +51,7 @@ pub mod ocr;
 pub mod opener;
 pub mod paths;
 pub mod privacy;
+pub mod project_actions;
 pub mod projects;
 pub mod proxy;
 pub mod qr;
