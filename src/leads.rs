@@ -24,6 +24,8 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+pub mod actions;
+
 /// How far a sale has gone.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
