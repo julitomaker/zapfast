@@ -520,7 +520,13 @@ impl Bridge {
             return error(400, "the body is not JSON");
         };
         let field = |name: &str| body.get(name).and_then(serde_json::Value::as_str);
-        let (Some(chat), Some(text)) = (field("chat"), field("text")) else {
+        let file = match field("file").map(|path| crate::outbox::sendable(path, &self.config_dir)) {
+            Some(Ok(file)) => Some(file),
+            Some(Err(reason)) => return error(422, &reason),
+            None => None,
+        };
+        let (Some(chat), Some(text)) = (field("chat"), field("text").or(file.as_ref().map(|_| "")))
+        else {
             return error(400, "`chat` and `text` are required");
         };
         let (chat, text) = (chat.to_owned(), text.trim().to_owned());
@@ -535,13 +541,22 @@ impl Bridge {
         }
         let draft = body.get("draft").and_then(serde_json::Value::as_bool) == Some(true)
             || !permissions.send;
+        if draft && file.is_some() {
+            return error(
+                403,
+                "Sending files needs \"Enviar mensajes\" on in Whats Pro > Ajustes > Conectar con IA.",
+            );
+        }
         if crate::model::ChatKind::from_id(&chat) == crate::model::ChatKind::Broadcast {
             return error(422, "Channels and broadcast lists cannot be written to.");
         }
         if permissions.exclude_personal_and_ignored {
             let map = crate::projects::ProjectMap::load(&self.config_dir);
             if map.personal.contains(&chat) || map.ignored.contains(&chat) {
-                return error(403, "That chat is marked Personal or Ignored, so no AI writes to it.");
+                return error(
+                    403,
+                    "That chat is marked Personal or Ignored, so no AI writes to it.",
+                );
             }
         }
         let now = jiff::Timestamp::now().as_second();
@@ -569,9 +584,11 @@ impl Bridge {
             );
         }
         if draft {
-            let waiting = archive.drafts().unwrap_or_default().into_iter().any(|(id, unsent)| {
-                id == chat && !unsent.trim().is_empty()
-            });
+            let waiting = archive
+                .drafts()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|(id, unsent)| id == chat && !unsent.trim().is_empty());
             if waiting {
                 return error(
                     409,
@@ -595,19 +612,37 @@ impl Bridge {
                 serde_json::json!({ "status": "draft", "chat": chat, "chat_name": name }),
             );
         }
+        // A file counts as its name plus caption, so one file cannot go to
+        // many chats either.
+        let logged = match &file {
+            Some(path) => format!(
+                "[{}] {text}",
+                path.file_name()
+                    .map_or_else(Default::default, |n| n.to_string_lossy())
+            ),
+            None => text.clone(),
+        };
         let history = crate::outbox::recent(&self.config_dir, now);
-        if let Some(reason) = crate::outbox::refuse(&history, &chat, &text, now) {
+        if let Some(reason) = crate::outbox::refuse(&history, &chat, &logged, now) {
             return error(429, &reason);
         }
-        if !send(
-            &account,
-            crate::backend::Command::SendText {
+        let command = match file {
+            Some(path) => crate::backend::Command::SendFiles {
                 chat: chat.clone(),
-                text: text.clone(),
+                paths: vec![path],
+                documents: false,
+                caption: (!text.is_empty()).then_some(text),
+                mentions: Vec::new(),
+                quoting: None,
+            },
+            None => crate::backend::Command::SendText {
+                chat: chat.clone(),
+                text,
                 quoting: None,
                 mentions: Vec::new(),
             },
-        ) {
+        };
+        if !send(&account, command) {
             return error(503, "Whats Pro is not connected to WhatsApp right now.");
         }
         crate::outbox::record(
@@ -615,7 +650,7 @@ impl Bridge {
             &crate::outbox::Sent {
                 at: now,
                 chat: chat.clone(),
-                text,
+                text: logged,
                 client,
             },
         );

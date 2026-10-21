@@ -236,7 +236,7 @@ fn tool_scope(name: &str) -> Option<Scope> {
         | "reopen_item" | "run_analysis" => Some(Scope::Write),
         _ if crate::leads::actions::handles(name) => Some(Scope::Write),
         "draft_message" => Some(Scope::Messages),
-        "send_message" => Some(Scope::Send),
+        "send_message" | "send_file" => Some(Scope::Send),
         _ => None,
     }
 }
@@ -491,6 +491,20 @@ fn all_tools() -> Vec<Value> {
             "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
         }),
         json!({
+            "name": "send_file",
+            "description": "Send a file over WhatsApp from the user's account: a PDF, Word or Excel file goes as a document with its name, a picture or video as media. Give a full local path, or an https link to download. Same rules as send_message: only chats where someone already wrote to the user, one send every 20 seconds, at most 30 an hour, the same file to at most 3 chats a day.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "chat": {"type": "string", "description": "Chat name, part of it, or id."},
+                    "file": {"type": "string", "description": "Full path of a file on this computer, or an https link."},
+                    "caption": {"type": "string", "description": "Optional text sent with the file."}
+                },
+                "required": ["chat", "file"]
+            },
+            "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true}
+        }),
+        json!({
             "name": "add_note",
             "description": "Add a note to a project's Notes: something that happened (log) or something to remember (memo). The analysis reads notes, and a note that says something was done can close it on the panel.",
             "inputSchema": {
@@ -713,10 +727,73 @@ impl Bridge {
         Ok(if answer["status"] == "sent" {
             format!("Sent to {name}.")
         } else {
-            format!(
-                "Left in {name}'s text box in Whats Pro: the user reads it and presses send."
-            )
+            format!("Left in {name}'s text box in Whats Pro: the user reads it and presses send.")
         })
+    }
+
+    /// A file sent over WhatsApp, from a local path or an https link.
+    fn send_file(&self, arguments: &Value) -> Result<String, String> {
+        let wanted = text(arguments, "chat").ok_or("`chat` is required.")?;
+        let file = text(arguments, "file").ok_or("`file` is required.")?;
+        let excluded = self.excluded_chats(&self.permissions());
+        let (chat, name) = self.resolve(&wanted, &excluded)?;
+        let path = if file.starts_with("https://") {
+            self.download(&file)?
+        } else {
+            file
+        };
+        let body = json!({
+            "chat": chat,
+            "file": path,
+            "text": text(arguments, "caption").unwrap_or_default(),
+            "client": self.client_name(),
+        });
+        self.post("/send", &body)?;
+        let file_name = Path::new(&path)
+            .file_name()
+            .map_or_else(|| path.clone(), |n| n.to_string_lossy().into_owned());
+        Ok(format!("Sent {file_name} to {name}."))
+    }
+
+    /// Downloads an https link into the folder files sent from links wait in,
+    /// keeping its file name; files there older than a day are removed.
+    fn download(&self, url: &str) -> Result<String, String> {
+        let folder = crate::outbox::downloads(&self.config_dir);
+        std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+        for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .is_ok_and(|at| at.elapsed().is_ok_and(|age| age.as_secs() > 86_400));
+            if old {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+        let name = url
+            .split(['?', '#'])
+            .next()
+            .and_then(|path| path.rsplit('/').next())
+            .map(|name| {
+                form_urlencoded::parse(format!("n={name}").as_bytes())
+                    .next()
+                    .map(|(_, value)| value.into_owned())
+                    .unwrap_or_default()
+            })
+            .map(|name| name.replace(['/', '\\'], "_"))
+            .filter(|name| !name.is_empty() && !name.starts_with('.'))
+            .ok_or("The link does not end in a file name.")?;
+        let mut response = ureq::get(url)
+            .call()
+            .map_err(|error| format!("Could not download {url}: {error}"))?;
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(crate::outbox::MAX_FILE_BYTES)
+            .read_to_vec()
+            .map_err(|error| format!("Could not download {url}: {error}"))?;
+        let path = folder.join(name);
+        std::fs::write(&path, bytes).map_err(|error| error.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
@@ -744,7 +821,9 @@ impl Bridge {
             .map_err(|error| format!("Could not read Whats Pro's answer: {error}"))?;
         let answer: Value = serde_json::from_str(&text).unwrap_or(json!({"error": text}));
         if status == 404 && path == "/send" && answer["error"] == "unknown route" {
-            return Err("This Whats Pro is older than the MCP: update the app to write messages.".into());
+            return Err(
+                "This Whats Pro is older than the MCP: update the app to write messages.".into(),
+            );
         }
         if status != 200 {
             return Err(answer["error"]
@@ -2014,6 +2093,7 @@ impl Bridge {
             "read_lead" => self.read_lead(arguments, &permissions),
             "draft_message" => self.message(arguments, true),
             "send_message" => self.message(arguments, false),
+            "send_file" => self.send_file(arguments),
             _ if scope == Scope::Write => self.write(name, arguments),
             _ => Err(format!("Unknown tool {name}.")),
         }
