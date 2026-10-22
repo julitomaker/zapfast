@@ -82,3 +82,102 @@ and pictures (this computer with Vision for text only, or Claude Code,
 Codex or Gemini CLI, or the Anthropic, OpenAI, Gemini or OpenRouter API,
 which also describe the picture). Models are editable; API keys live in the
 OS keyring under `com.julitomaker.whatspro.ai`, shared with Projects.
+
+## Running on a Linux server (fork addition)
+
+`zapfast serve` runs Whats Pro with no window, as a linked device of its
+own, so Claude Code on a server (Ubuntu 22.04, say) can use the `zapfast
+mcp` tools, reading and sending, while the desktop is off. It keeps the
+link, the archive, the bridge and the project analysis running; it shows
+no notifications, plays no sounds and never changes the settings file.
+
+### Building
+
+Rust comes from rustup (the version in `rust-toolchain.toml`); then:
+
+```sh
+sudo apt install build-essential cmake perl pkg-config clang libclang-dev \
+  libasound2-dev libxkbcommon-dev libwayland-dev libgl1-mesa-dev poppler-utils
+cargo build --release --locked
+sudo install -m 755 target/release/zapfast /usr/local/bin/zapfast
+```
+
+A small server may run out of memory linking; add swap or build with
+`CARGO_BUILD_JOBS=2`. `poppler-utils` is optional: its `pdftotext` lets the
+MCP read the text of PDFs, which macOS reads with PDFKit.
+
+### Keys without a keyring
+
+A server has no OS keyring, so `--secrets-dir <dir>` keeps the keys as files
+in a folder only you can read (0700, each file 0600):
+
+- `archive-<digest>.key`: the archive's 32-byte SQLCipher key, made on the
+  first start. **Back it up**: without it the archive cannot be read.
+  `WHATSPRO_ARCHIVE_KEY=<64 hex digits>` gives the key instead of the file.
+- `ai-<provider>`: an AI provider's API key (`ai-OpenAi`, `ai-Anthropic`,
+  `ai-Gemini`, `ai-OpenRouter`, `ai-Groq`), as plain text:
+  `printf '%s' "$KEY" > ~/.whatspro-secrets/ai-OpenAi`.
+
+The flag sets `WHATSPRO_SECRETS_DIR`, which the processes Whats Pro starts
+inherit. Without it, and with no D-Bus session to reach a keyring, Whats Pro
+stops and names the flag; it never opens a throwaway archive instead.
+
+### Linking
+
+Link once from an interactive terminal (ssh, tmux):
+
+```sh
+zapfast serve --secrets-dir ~/.whatspro-secrets
+```
+
+It prints a QR code to scan with WhatsApp on the phone (Linked devices >
+Link a device). Or link with a code: `--pair-phone +5491122334455` prints an
+eight-character code to enter under Link with phone number instead. With
+`--qr-png <path>` the QR code is also saved as a PNG (0600), deleted once
+linked. The log (`~/.local/state/zapfast-julito/zapfast.log`) records only
+the link's state, never the code. Ctrl-C or SIGTERM stops it cleanly.
+
+### Keeping it running
+
+As a systemd user service, after `loginctl enable-linger $USER`, in
+`~/.config/systemd/user/whatspro.service`:
+
+```ini
+[Unit]
+Description=Whats Pro (headless)
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/zapfast serve --secrets-dir %h/.whatspro-secrets
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+`systemctl --user enable --now whatspro`. Only one copy runs per user.
+
+### Files
+
+- `~/.config/zapfast-julito/`: `settings.json`, `bridge.json`, `mcp.json`,
+  `projects.json`.
+- `~/.local/state/zapfast-julito/`: `accounts/<id>/` with `session.db` and
+  `archive.db`, and `zapfast.log`.
+- `~/.cache/zapfast-julito/`: media and avatars.
+
+### Claude Code
+
+Sending is off by default. To let Claude Code send, not only draft, set
+`send` in `~/.config/zapfast-julito/mcp.json` (fields left out keep their
+defaults):
+
+```json
+{ "send": true }
+```
+
+Then add the MCP server for every project, with the same secrets folder:
+
+```sh
+claude mcp add --scope user -e WHATSPRO_SECRETS_DIR=$HOME/.whatspro-secrets \
+  whats-pro -- /usr/local/bin/zapfast mcp
+```
