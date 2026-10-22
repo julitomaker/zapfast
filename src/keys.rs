@@ -1,13 +1,17 @@
 //! API keys for AI providers, kept in the OS keyring and shared by every
 //! feature that calls them (Projects' analysis, transcription, pictures).
 //! The service and account names match `projects::engine`'s, so a key added
-//! in one place works in the other.
+//! in one place works in the other. With file secrets switched on
+//! (src/secrets.rs) they live in the secrets folder instead.
 
 use std::sync::Arc;
 
 const SERVICE: &str = "com.julitomaker.whatspro.ai";
 
 fn store() -> anyhow::Result<Arc<dyn keyring_core::api::CredentialStoreApi>> {
+    if let Some(store) = crate::secrets::file_store()? {
+        return Ok(store);
+    }
     #[cfg(target_os = "linux")]
     let store = zbus_secret_service_keyring_store::Store::new();
     #[cfg(target_os = "macos")]

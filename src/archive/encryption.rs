@@ -1,4 +1,6 @@
-//! SQLCipher archive storage and automatic OS-keyring unlock.
+//! SQLCipher archive storage and automatic OS-keyring unlock. With file
+//! secrets switched on (src/secrets.rs) the keys live in the secrets folder
+//! instead, under the same rules.
 
 use std::{fs, io::Read, path::Path};
 
@@ -27,6 +29,9 @@ fn plaintext(path: &Path) -> Result<bool> {
 pub(super) fn key_for(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
     let parent = path.parent().context("Archive has no parent directory")?;
     fs::create_dir_all(parent)?;
+    if let Some(key) = crate::secrets::archive_key_override()? {
+        return Ok(key);
+    }
     let store = platform_store()?;
     let entry = store
         .build("rocks.zapfast.ZapFast", &identity_for(parent)?, None)
@@ -37,7 +42,8 @@ pub(super) fn key_for(path: &Path) -> Result<Zeroizing<[u8; 32]>> {
 
 /// Copies the keyring entry when an archive moves to another folder.
 pub fn copy_archive_key(old_archive: &Path, new_archive: &Path) -> Result<()> {
-    if plaintext(old_archive)? {
+    // One key given for every archive has nothing to copy.
+    if plaintext(old_archive)? || crate::secrets::archive_key_override()?.is_some() {
         return Ok(());
     }
     copy_archive_key_in(old_archive, new_archive, &*platform_store()?)
@@ -140,6 +146,9 @@ fn identity_for(parent: &Path) -> Result<String> {
 }
 
 fn platform_store() -> Result<std::sync::Arc<dyn CredentialStoreApi>> {
+    if let Some(store) = crate::secrets::file_store()? {
+        return Ok(store);
+    }
     #[cfg(target_os = "linux")]
     let store = zbus_secret_service_keyring_store::Store::new();
     #[cfg(target_os = "macos")]
@@ -413,6 +422,75 @@ mod tests {
                 .contains("Unlock")
         );
         assert_eq!(fs::read(&path).unwrap(), original);
+    }
+
+    /// The secrets folder a server uses instead of a keyring keeps the
+    /// keyring's rules: a key is made only for a missing archive, reused
+    /// after, and never replaced while an encrypted archive needs it.
+    #[test]
+    fn file_secrets_reuse_keys_and_never_replace_a_missing_key() {
+        let directory = directory();
+        let path = directory.path().join("archive.db");
+        let secrets = directory.path().join("secrets");
+        let store = crate::secrets::FileStore::open(&secrets).unwrap();
+        let entry = store
+            .build("rocks.zapfast.ZapFast", "archive-fixture", None)
+            .unwrap();
+        let key = key_from_entry(&path, &entry).unwrap();
+        assert_eq!(*key, *key_from_entry(&path, &entry).unwrap());
+        assert_eq!(
+            fs::read(secrets.join("archive-fixture.key")).unwrap(),
+            key.to_vec()
+        );
+        let connection = open(&path, &key).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE example(value TEXT); INSERT INTO example VALUES ('fixture');",
+            )
+            .unwrap();
+        drop(connection);
+        let original = fs::read(&path).unwrap();
+        fs::remove_file(secrets.join("archive-fixture.key")).unwrap();
+        assert!(
+            key_from_entry(&path, &entry)
+                .unwrap_err()
+                .to_string()
+                .contains("missing")
+        );
+        assert!(!secrets.join("archive-fixture.key").exists());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::write(secrets.join("archive-fixture.key"), [1; 12]).unwrap();
+        assert!(
+            key_from_entry(&path, &entry)
+                .unwrap_err()
+                .to_string()
+                .contains("invalid")
+        );
+        assert_eq!(
+            fs::read(secrets.join("archive-fixture.key")).unwrap(),
+            [1; 12]
+        );
+        // An unreadable key file is an error, never a new key.
+        fs::remove_file(secrets.join("archive-fixture.key")).unwrap();
+        fs::create_dir(secrets.join("archive-fixture.key")).unwrap();
+        assert!(key_from_entry(&path, &entry).is_err());
+        assert_eq!(fs::read(&path).unwrap(), original);
+        fs::remove_dir(secrets.join("archive-fixture.key")).unwrap();
+
+        // A moved archive's key is copied under its new folder's name.
+        let old_identity = identity_for(directory.path()).unwrap();
+        fs::write(secrets.join(format!("{old_identity}.key")), key.as_ref()).unwrap();
+        let moved = directory
+            .path()
+            .join("accounts")
+            .join("1")
+            .join("archive.db");
+        copy_archive_key_in(&path, &moved, &store).unwrap();
+        let identity = identity_for(moved.parent().unwrap()).unwrap();
+        assert_eq!(
+            fs::read(secrets.join(format!("{identity}.key"))).unwrap(),
+            key.to_vec()
+        );
     }
 
     /// Stands in for the Windows store's private error type, whose text for
