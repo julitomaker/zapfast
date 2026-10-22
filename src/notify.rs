@@ -89,6 +89,8 @@ pub struct Notifications {
     /// What unit tests would have shown, recorded instead of shown on the
     /// desktop. Always empty outside tests.
     pub shown: Vec<Shown>,
+    /// A server (`zapfast serve`) has no desktop to show anything on.
+    silent: bool,
 }
 
 /// A notification a unit test asked for.
@@ -242,6 +244,11 @@ impl Notifications {
         self.pending.clear();
     }
 
+    /// Shows nothing from now on, whatever the settings say.
+    pub fn silence(&mut self) {
+        self.silent = true;
+    }
+
     /// Shows a notification; platform delivery runs outside the interface thread.
     #[expect(clippy::too_many_arguments)]
     pub fn show(
@@ -255,6 +262,9 @@ impl Notifications {
         wake: impl Fn() + Send + 'static,
         limited: bool,
     ) {
+        if self.silent {
+            return;
+        }
         let key = match target.message {
             Some(_) => target.chat.clone(),
             None => call_key(&target.chat),
@@ -775,6 +785,28 @@ mod tests {
             false,
         );
         std::thread::sleep(std::time::Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_silenced_server_shows_nothing() {
+        let mut notifications = Notifications::default();
+        notifications.silence();
+        notifications.show(
+            "Ada Lovelace".into(),
+            "fixture".into(),
+            None,
+            NotificationSound::System,
+            NotificationTarget {
+                account: crate::model::AccountId::first(),
+                chat: "test".into(),
+                message: Some("test-message".into()),
+            },
+            Default::default(),
+            || {},
+            false,
+        );
+        assert!(notifications.shown.is_empty());
+        assert!(notifications.pending.is_empty());
     }
 
     #[test]

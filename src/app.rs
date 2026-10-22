@@ -1132,11 +1132,18 @@ fn tray_config(lockable: bool) -> fastframe_tray::Config {
 pub struct AppOptions {
     /// Registers the system-tray item.
     pub tray: bool,
+    /// Runs as a server with no desktop (`zapfast serve`): no badge, tray,
+    /// desktop font or appearance watchers, media pausing, sounds, first-run
+    /// setup or notifications. The settings file is left as it was.
+    pub server: bool,
 }
 
 impl Default for AppOptions {
     fn default() -> Self {
-        Self { tray: true }
+        Self {
+            tray: true,
+            server: false,
+        }
     }
 }
 
@@ -1184,32 +1191,41 @@ impl App {
             .unwrap_or(0)
             .min(accounts.len() - 1);
         let mut app = Self::with_accounts(dirs, settings, roster, accounts, active, waker.clone());
-        app.media_setup_pending = !app.settings.media_setup_done;
-        app.pauses_media = true;
-        app.call_tones = crate::call_tones::Tones::new(true);
-        app.badge = Some(crate::notify::Badge::new(fastframe_desktop::desktop_entry(
-            crate::paths::APP_NAME,
-        )));
+        // A server has no desktop to draw, sound or notify on. Notifications
+        // are off in memory only, so the settings file keeps the user's own.
+        let desktop = !options.server;
+        app.media_setup_pending = desktop && !app.settings.media_setup_done;
+        app.pauses_media = desktop;
+        app.call_tones = crate::call_tones::Tones::new(desktop);
+        if options.server {
+            app.notifications.silence();
+        } else {
+            app.badge = Some(crate::notify::Badge::new(fastframe_desktop::desktop_entry(
+                crate::paths::APP_NAME,
+            )));
+        }
         app.custom_themes
             .enable_desktop_themes(crate::theme::DESKTOP_THEMES);
         app.load_custom_themes();
         // Reading the desktop's font settings may wait on D-Bus; keep it off
         // the first frame.
-        let text_waker = waker.clone();
-        std::thread::Builder::new()
-            .name("text-rendering".into())
-            .spawn(move || crate::theme::follow_text_rendering(move || text_waker.wake()))
-            .ok();
+        if desktop {
+            let text_waker = waker.clone();
+            std::thread::Builder::new()
+                .name("text-rendering".into())
+                .spawn(move || crate::theme::follow_text_rendering(move || text_waker.wake()))
+                .ok();
+        }
         let power_waker = waker.clone();
         app.power = fastframe_power::Power::spawn(move || power_waker.wake());
         #[cfg(target_os = "linux")]
-        {
+        if desktop {
             let appearance_waker = waker.clone();
             app.system_appearance = Some(crate::appearance::SystemAppearance::spawn(move || {
                 appearance_waker.wake()
             }));
         }
-        if options.tray {
+        if options.tray && desktop {
             let waker = waker.clone();
             app.tray =
                 fastframe_tray::Tray::spawn(tray_config(app.tray_lockable), move || waker.wake());

@@ -427,7 +427,7 @@ fn run() -> eframe::Result<()> {
     let mut app = if demo {
         app::App::headless(dirs, settings).0
     } else {
-        app::App::new(&waker, dirs, settings, app::AppOptions { tray: true })
+        app::App::new(&waker, dirs, settings, app::AppOptions::default())
             .map_err(|error| eframe::Error::AppCreation(error.into()))?
     };
     if cli.verbose {

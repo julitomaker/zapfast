@@ -24,7 +24,7 @@ fn main() {
         &zapfast::backend::Waker::default(),
         dirs,
         settings,
-        zapfast::app::AppOptions { tray: true },
+        zapfast::app::AppOptions::default(),
     )
     .expect("a fresh app over an empty folder");
     let ctx = egui::Context::default();
