@@ -253,7 +253,10 @@ impl Server {
                     self.show_qr(&qr);
                 }
             }
-            LinkStatus::Connected | LinkStatus::Connecting => self.remove_png(),
+            LinkStatus::Connected => {
+                self.remove_png();
+                self.last_qr = None;
+            }
             LinkStatus::LoggedOut => {
                 self.pair_asked = false;
                 self.last_qr = None;
