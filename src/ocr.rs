@@ -79,7 +79,30 @@ pub fn pdf_text(bytes: &[u8]) -> Result<String, String> {
     })
 }
 
+/// The text of a PDF through Poppler's `pdftotext`, when it is installed
+/// (`poppler-utils` on Debian and Ubuntu). Scanned PDFs come back empty.
 #[cfg(not(target_os = "macos"))]
-pub fn pdf_text(_bytes: &[u8]) -> Result<String, String> {
-    Err("Reading PDFs is only available on macOS".into())
+pub fn pdf_text(bytes: &[u8]) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let unavailable = || "Reading PDFs needs pdftotext (poppler-utils) on this system".to_owned();
+    // `-` for both ends: the PDF never touches the disk.
+    let mut child = Command::new("pdftotext")
+        .args(["-q", "-enc", "UTF-8", "-", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| unavailable())?;
+    let mut stdin = child.stdin.take().ok_or_else(unavailable)?;
+    let input = bytes.to_vec();
+    // Written from a thread so a large text answer cannot block the write.
+    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let output = child.wait_with_output().map_err(|_| unavailable())?;
+    let _ = writer.join();
+    if !output.status.success() {
+        return Err("This file is not a readable PDF".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
