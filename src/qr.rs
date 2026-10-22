@@ -55,6 +55,41 @@ impl Qr {
     }
 }
 
+/// `text` as a QR code drawn with half-block characters, two modules per
+/// line, with its quiet zone, for a terminal (`zapfast serve`). Drawn for the
+/// usual light text on a dark background: the blocks are the light modules.
+pub fn to_terminal(text: &str) -> Option<String> {
+    use qrcode::render::unicode::Dense1x2;
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    Some(
+        code.render::<Dense1x2>()
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
+/// `text` as a black-on-white PNG, `scale` pixels per module, with its quiet
+/// zone.
+pub fn to_png(text: &str, scale: u32) -> Option<Vec<u8>> {
+    let qr = Qr::encode(text)?;
+    let total = (qr.width + 2 * QUIET) as u32;
+    let side = total * scale.max(1);
+    let image = image::GrayImage::from_fn(side, side, |x, y| {
+        let (x, y) = ((x / scale.max(1)) as usize, (y / scale.max(1)) as usize);
+        let dark = (QUIET..QUIET + qr.width).contains(&x)
+            && (QUIET..QUIET + qr.width).contains(&y)
+            && qr.dark[(y - QUIET) * qr.width + (x - QUIET)];
+        image::Luma([if dark { 0 } else { 255 }])
+    });
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(png)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +102,21 @@ mod tests {
         assert_eq!(qr.dark.len(), qr.width * qr.width);
         // The finder-pattern corner is always dark.
         assert!(qr.dark[0]);
+    }
+
+    #[test]
+    fn draws_for_a_terminal_and_as_a_png() {
+        let text = "2@fixture,fixture,fixture";
+        let terminal = to_terminal(text).expect("encodes");
+        let qr = Qr::encode(text).unwrap();
+        // Two modules per line, quiet zone included.
+        assert_eq!(terminal.lines().count(), (qr.width + 2 * QUIET).div_ceil(2));
+        let png = to_png(text, 4).expect("encodes");
+        let image = image::load_from_memory(&png).unwrap().to_luma8();
+        let side = (qr.width + 2 * QUIET) as u32 * 4;
+        assert_eq!(image.dimensions(), (side, side));
+        assert_eq!(image.get_pixel(0, 0).0, [255], "quiet zone");
+        let corner = QUIET as u32 * 4;
+        assert_eq!(image.get_pixel(corner, corner).0, [0], "finder pattern");
     }
 }

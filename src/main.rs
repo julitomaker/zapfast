@@ -192,6 +192,11 @@ fn run() -> eframe::Result<()> {
         let dirs = paths::AppDirs::discover();
         std::process::exit(zapfast::mcp::run(&dirs.config, &dirs.state));
     }
+    // `serve`: run without a window on a server, as a linked device of its
+    // own, so `mcp` works with no desktop (src/server.rs).
+    if std::env::args().nth(1).as_deref() == Some("serve") {
+        std::process::exit(zapfast::server::run(std::env::args_os().skip(1)));
+    }
     // `record <seconds> [microphone|system|both]`: records a call to a WAV
     // and prints its path, for checking src/recorder.rs.
     if std::env::args().nth(1).as_deref() == Some("record") {

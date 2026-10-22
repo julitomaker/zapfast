@@ -59,6 +59,7 @@ pub mod qr;
 pub mod recorder;
 pub mod safety;
 pub mod secrets;
+pub mod server;
 pub mod settings;
 pub mod single_instance;
 pub mod sticker_meta;

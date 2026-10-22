@@ -34,7 +34,9 @@ pub fn get(account: &str) -> Option<String> {
         .ok()?
         .get_password()
         .ok()
-        .filter(|key| !key.trim().is_empty())
+        // A key file written by hand usually ends in a newline.
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty())
 }
 
 /// Saves `key` for `account`; an empty key removes it.
