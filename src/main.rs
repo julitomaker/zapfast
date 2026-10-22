@@ -2,6 +2,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use zapfast::diagnostics::{default_log_filter, redact_protocol};
 use zapfast::{app, backend, paths, settings, single_instance};
 
 use clap::Parser;
@@ -158,27 +159,6 @@ fn control(command: &Control, sent: single_instance::Sent) -> (i32, Option<Strin
             (1, Some("Whats Pro is not running.".to_owned()))
         }
         (_, Sent::Failed(error)) => (1, Some(format!("Could not reach the running Whats Pro: {error}"))),
-    }
-}
-
-/// Default log filter, used when `RUST_LOG` is unset.
-///
-/// `fastframe_fonts` logs, once at startup, which installed face draws each
-/// script Inter lacks, which is what a report of odd Arabic or CJK text
-/// needs first.
-///
-/// `arboard` warns on every clipboard open when a Wayland compositor has no
-/// data-control protocol (GNOME, mutter) and it falls back to X11, which works
-/// there. Quiet that one target so it does not fill the log file, without
-/// hiding real clipboard failures (`arboard=error`) or any other warning.
-fn default_log_filter(verbose: bool) -> &'static str {
-    if verbose {
-        "info,zapfast=debug,whatsapp_rust=debug,wacore=debug"
-    } else {
-        // env_logger treats '/' as a message-regex separator, so it cannot
-        // select the literal target Client/AppState here. Enable Client INFO;
-        // the protocol redactor reduces every such line to a fixed category.
-        "warn,zapfast=info,fastframe_fonts=info,Client=info,arboard=error"
     }
 }
 
@@ -625,18 +605,6 @@ fn startup_failure_dialog(error: &eframe::Error) {
             MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
         );
     }
-}
-
-/// Summarises the WhatsApp library's lines, which can quote protocol
-/// payloads, into fixed categories.
-fn redact_protocol(
-    record: &log::Record<'_>,
-    message: &str,
-) -> Option<std::borrow::Cow<'static, str>> {
-    use zapfast::diagnostics::{is_protocol_target, protocol_summary};
-    (is_protocol_target(record.target())
-        || is_protocol_target(record.module_path().unwrap_or_default()))
-    .then(|| protocol_summary(message))
 }
 
 /// Whether the first window starts in the tray.

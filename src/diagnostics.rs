@@ -171,6 +171,38 @@ pub fn is_protocol_target(target: &str) -> bool {
         || module == "waproto"
 }
 
+/// Default log filter, used when `RUST_LOG` is unset.
+///
+/// `fastframe_fonts` logs, once at startup, which installed face draws each
+/// script Inter lacks, which is what a report of odd Arabic or CJK text
+/// needs first.
+///
+/// `arboard` warns on every clipboard open when a Wayland compositor has no
+/// data-control protocol (GNOME, mutter) and it falls back to X11, which works
+/// there. Quiet that one target so it does not fill the log file, without
+/// hiding real clipboard failures (`arboard=error`) or any other warning.
+pub fn default_log_filter(verbose: bool) -> &'static str {
+    if verbose {
+        "info,zapfast=debug,whatsapp_rust=debug,wacore=debug"
+    } else {
+        // env_logger treats '/' as a message-regex separator, so it cannot
+        // select the literal target Client/AppState here. Enable Client INFO;
+        // the protocol redactor reduces every such line to a fixed category.
+        "warn,zapfast=info,fastframe_fonts=info,Client=info,arboard=error"
+    }
+}
+
+/// Summarises the WhatsApp library's lines, which can quote protocol
+/// payloads, into fixed categories.
+pub fn redact_protocol(
+    record: &log::Record<'_>,
+    message: &str,
+) -> Option<std::borrow::Cow<'static, str>> {
+    (is_protocol_target(record.target())
+        || is_protocol_target(record.module_path().unwrap_or_default()))
+    .then(|| protocol_summary(message))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
