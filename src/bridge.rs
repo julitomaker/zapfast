@@ -623,7 +623,8 @@ impl Bridge {
             None => text.clone(),
         };
         let history = crate::outbox::recent(&self.config_dir, now);
-        if let Some(reason) = crate::outbox::refuse(&history, &chat, &logged, now) {
+        let limits = crate::outbox::Limits::load(&self.config_dir);
+        if let Some(reason) = crate::outbox::refuse(&limits, &history, &chat, &logged, now) {
             return error(429, &reason);
         }
         let command = match file {

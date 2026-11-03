@@ -479,7 +479,7 @@ fn all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "send_message",
-            "description": "Send a WhatsApp message from the user's account, as the user. Only to chats where someone already wrote to the user, one message every 20 seconds, at most 30 an hour, and the same text to at most 3 chats a day: WhatsApp bans accounts that behave like bulk senders. Read the chat first (read_chat), write as the user would, personalize every message, and when unsure what the user wants, use draft_message instead.",
+            "description": "Send a WhatsApp message from the user's account, as the user. Only to chats where someone already wrote to the user, at the pace limits Whats Pro is set to (by default one message every 20 seconds, at most 30 an hour, and the same text to at most 3 chats a day): WhatsApp bans accounts that behave like bulk senders. Read the chat first (read_chat), write as the user would, personalize every message, and when unsure what the user wants, use draft_message instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -492,7 +492,7 @@ fn all_tools() -> Vec<Value> {
         }),
         json!({
             "name": "send_file",
-            "description": "Send a file over WhatsApp from the user's account: a PDF, Word or Excel file goes as a document with its name, a picture or video as media. Give a full local path, or an https link to download. Same rules as send_message: only chats where someone already wrote to the user, one send every 20 seconds, at most 30 an hour, the same file to at most 3 chats a day.",
+            "description": "Send a file over WhatsApp from the user's account: a PDF, Word or Excel file goes as a document with its name, a picture or video as media. Give a full local path, or an https link to download. Same rules as send_message: only chats where someone already wrote to the user, and the same pace limits.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

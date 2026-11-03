@@ -7,6 +7,10 @@
 //! same text to many chats. Every message sent is logged in
 //! `<config>/ai-sent.jsonl` with who sent it, which also keeps the limits
 //! across restarts.
+//!
+//! The pace limits can be changed in `<config>/outbox.json` or with the
+//! `ZAPFAST_GAP_SECONDS`, `ZAPFAST_PER_HOUR` and `ZAPFAST_SAME_TEXT_CHATS`
+//! environment variables; 0 turns a limit off.
 
 use std::{
     io::Write,
@@ -15,11 +19,11 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-/// Shortest gap between two messages an AI sends.
+/// Default shortest gap between two messages an AI sends.
 pub const GAP_SECONDS: i64 = 20;
-/// Most messages an AI sends in an hour.
+/// Default most messages an AI sends in an hour.
 pub const PER_HOUR: usize = 30;
-/// Most chats one text may go to in a day.
+/// Default most chats one text may go to in a day.
 pub const SAME_TEXT_CHATS: usize = 3;
 /// Longest message.
 pub const MAX_CHARS: usize = 4_000;
@@ -93,6 +97,46 @@ fn sendable_in(path: &str, home: &Path, downloaded: &Path) -> Result<PathBuf, St
     Ok(path)
 }
 
+/// The pace an AI sends at; 0 turns a limit off.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Limits {
+    pub gap_seconds: i64,
+    pub per_hour: usize,
+    pub same_text_chats: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            gap_seconds: GAP_SECONDS,
+            per_hour: PER_HOUR,
+            same_text_chats: SAME_TEXT_CHATS,
+        }
+    }
+}
+
+impl Limits {
+    /// The limits in `<config>/outbox.json`, overridden by the environment.
+    pub fn load(config: &Path) -> Self {
+        let mut limits: Self = std::fs::read_to_string(config.join("outbox.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let var = |name: &str| std::env::var(name).ok().and_then(|v| v.trim().parse().ok());
+        if let Some(gap) = var("ZAPFAST_GAP_SECONDS") {
+            limits.gap_seconds = gap as i64;
+        }
+        if let Some(per_hour) = var("ZAPFAST_PER_HOUR") {
+            limits.per_hour = per_hour;
+        }
+        if let Some(same) = var("ZAPFAST_SAME_TEXT_CHATS") {
+            limits.same_text_chats = same;
+        }
+        limits
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Sent {
     pub at: i64,
@@ -137,7 +181,13 @@ fn normalized(text: &str) -> String {
 }
 
 /// Why a message may not be sent now, or `None` when it may.
-pub fn refuse(history: &[Sent], chat: &str, text: &str, now: i64) -> Option<String> {
+pub fn refuse(
+    limits: &Limits,
+    history: &[Sent],
+    chat: &str,
+    text: &str,
+    now: i64,
+) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Some("The message is empty.".into());
@@ -147,19 +197,25 @@ pub fn refuse(history: &[Sent], chat: &str, text: &str, now: i64) -> Option<Stri
             "The message is longer than {MAX_CHARS} characters."
         ));
     }
-    if let Some(last) = history.iter().map(|sent| sent.at).max()
-        && now - last < GAP_SECONDS
+    let gap = limits.gap_seconds;
+    if gap > 0
+        && let Some(last) = history.iter().map(|sent| sent.at).max()
+        && now - last < gap
     {
         return Some(format!(
             "Wait {} more seconds: messages go out at a person's pace to keep the account safe.",
-            GAP_SECONDS - (now - last)
+            gap - (now - last)
         ));
     }
+    let per_hour = limits.per_hour;
     let last_hour = history.iter().filter(|sent| now - sent.at < 3_600).count();
-    if last_hour >= PER_HOUR {
+    if per_hour > 0 && last_hour >= per_hour {
         return Some(format!(
-            "{PER_HOUR} messages were already sent this hour; WhatsApp flags more as automated. Try later, or send it from Whats Pro."
+            "{per_hour} messages were already sent this hour; WhatsApp flags more as automated. Try later, or send it from Whats Pro."
         ));
+    }
+    if limits.same_text_chats == 0 {
+        return None;
     }
     let same = normalized(trimmed);
     let mut chats: Vec<&str> = history
@@ -169,7 +225,7 @@ pub fn refuse(history: &[Sent], chat: &str, text: &str, now: i64) -> Option<Stri
         .collect();
     chats.sort_unstable();
     chats.dedup();
-    if chats.len() >= SAME_TEXT_CHATS {
+    if chats.len() >= limits.same_text_chats {
         return Some(
             "This same text already went to several chats today; sending it to more looks like bulk messaging. Personalize it for this chat.".into(),
         );
@@ -220,11 +276,14 @@ mod tests {
     fn a_person_pace_is_kept() {
         let history = vec![sent(1_000, "a", "hola")];
         assert!(
-            refuse(&history, "b", "otra cosa", 1_010).is_some(),
+            refuse(&Limits::default(), &history, "b", "otra cosa", 1_010).is_some(),
             "too soon"
         );
-        assert!(refuse(&history, "b", "otra cosa", 1_021).is_none());
-        assert!(refuse(&[], "a", "   ", 0).is_some(), "empty");
+        assert!(refuse(&Limits::default(), &history, "b", "otra cosa", 1_021).is_none());
+        assert!(
+            refuse(&Limits::default(), &[], "a", "   ", 0).is_some(),
+            "empty"
+        );
     }
 
     #[test]
@@ -233,7 +292,7 @@ mod tests {
             .map(|i| sent(i * 60, &format!("c{i}"), &format!("texto {i}")))
             .collect();
         assert!(
-            refuse(&full, "x", "nuevo", 3_000).is_some(),
+            refuse(&Limits::default(), &full, "x", "nuevo", 3_000).is_some(),
             "30 in the hour"
         );
         let bulk = vec![
@@ -242,13 +301,67 @@ mod tests {
             sent(200, "c", "Promo de hoy"),
         ];
         assert!(
-            refuse(&bulk, "d", "Promo de hoy", 1_000).is_some(),
+            refuse(&Limits::default(), &bulk, "d", "Promo de hoy", 1_000).is_some(),
             "same text to a fourth chat"
         );
         assert!(
-            refuse(&bulk, "a", "Promo de hoy", 1_000).is_none(),
+            refuse(&Limits::default(), &bulk, "a", "Promo de hoy", 1_000).is_none(),
             "again to a chat it went to"
         );
-        assert!(refuse(&bulk, "d", "Hola Dani, ¿cómo va?", 1_000).is_none());
+        assert!(
+            refuse(
+                &Limits::default(),
+                &bulk,
+                "d",
+                "Hola Dani, ¿cómo va?",
+                1_000
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_limit_at_zero_is_off() {
+        let off = Limits {
+            gap_seconds: 0,
+            per_hour: 0,
+            same_text_chats: 0,
+        };
+        let history = vec![sent(1_000, "a", "hola")];
+        assert!(refuse(&off, &history, "b", "otra cosa", 1_001).is_none());
+        let full: Vec<Sent> = (0..100)
+            .map(|i| sent(i, &format!("c{i}"), "Promo de hoy"))
+            .collect();
+        assert!(refuse(&off, &full, "x", "Promo de hoy", 100).is_none());
+        assert!(
+            refuse(&off, &[], "a", "   ", 0).is_some(),
+            "still not empty"
+        );
+        let long = "x".repeat(MAX_CHARS + 1);
+        assert!(
+            refuse(&off, &[], "a", &long, 0).is_some(),
+            "still not too long"
+        );
+        let hourly = Limits { per_hour: 5, ..off };
+        let five: Vec<Sent> = (0..5)
+            .map(|i| sent(i, &format!("c{i}"), &format!("texto {i}")))
+            .collect();
+        assert!(refuse(&hourly, &five, "x", "nuevo", 10).is_some());
+        assert!(refuse(&hourly, &five[..4], "x", "nuevo", 10).is_none());
+    }
+
+    #[test]
+    fn limits_come_from_outbox_json() {
+        let folder = std::env::temp_dir().join(format!("outbox-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        assert_eq!(Limits::load(&folder), Limits::default());
+        std::fs::write(folder.join("outbox.json"), r#"{"per_hour": 0}"#).unwrap();
+        let limits = Limits::load(&folder);
+        assert_eq!(limits.per_hour, 0);
+        assert_eq!(
+            limits.gap_seconds, GAP_SECONDS,
+            "missing keys keep the default"
+        );
+        std::fs::remove_dir_all(folder).unwrap();
     }
 }
