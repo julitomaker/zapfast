@@ -77,6 +77,25 @@ const RELINK_GRACE: Duration = Duration::from_millis(3_000);
 /// moving and nothing on screen to explain it, so the pump stops trusting the name it was given and
 /// says so.
 const UNPLAYED_RESTARTS_BEFORE_DEFAULT: usize = 3;
+/// The longest pause between reopening a speaker that never plays.
+const UNPLAYED_PAUSE_LIMIT: Duration = Duration::from_secs(30);
+
+/// How long to wait before reopening a speaker that has been reopened `unplayed` times in a row
+/// without playing anything.
+///
+/// The first few reopens are quick, since a stream that never started is usually one bad moment.
+/// Past that the device is not about to start, and reopening it every two seconds for the rest of
+/// the call (533 times in one call) left this process unable to open any sound output at all,
+/// voice messages included, until Whats Pro was restarted. So the pause doubles up to half a
+/// minute.
+fn unplayed_pause(unplayed: usize) -> Duration {
+    if unplayed <= UNPLAYED_RESTARTS_BEFORE_DEFAULT {
+        return Duration::from_millis(100);
+    }
+    let doublings = (unplayed - UNPLAYED_RESTARTS_BEFORE_DEFAULT - 1).min(5) as u32;
+    (Duration::from_secs(1) * 2_u32.pow(doublings)).min(UNPLAYED_PAUSE_LIMIT)
+}
+
 /// How long a pump waits before reopening a device that would not open.
 const RETRY: Duration = Duration::from_millis(500);
 /// How long a reader waits for room in the engine's channel before looking at its stop flag again.
@@ -1096,7 +1115,10 @@ async fn play_pump(
             while let Ok(frame) = rx.try_recv() {
                 tape.them(&frame);
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(unplayed_pause(unplayed)).await;
+            while let Ok(frame) = rx.try_recv() {
+                tape.them(&frame);
+            }
             continue;
         }
         if played {
@@ -1312,6 +1334,29 @@ fn relink_left(relink: &Mutex<Option<Instant>>) -> Option<Duration> {
 /// stall handling above stay exactly what a call runs, so these tests cover the real behaviour
 /// instead of a second implementation of it, and a machine with no microphone or no speaker no
 /// longer decides what they see.
+#[cfg(test)]
+mod unplayed_tests {
+    use super::*;
+
+    #[test]
+    fn a_speaker_that_never_plays_is_reopened_less_and_less_often() {
+        assert_eq!(unplayed_pause(1), Duration::from_millis(100));
+        assert_eq!(
+            unplayed_pause(UNPLAYED_RESTARTS_BEFORE_DEFAULT),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            unplayed_pause(UNPLAYED_RESTARTS_BEFORE_DEFAULT + 1),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            unplayed_pause(UNPLAYED_RESTARTS_BEFORE_DEFAULT + 3),
+            Duration::from_secs(4)
+        );
+        assert_eq!(unplayed_pause(500), UNPLAYED_PAUSE_LIMIT);
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod fake {
     use super::*;
