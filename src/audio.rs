@@ -64,22 +64,67 @@ impl Output {
 ///
 /// This is rodio's `open_default_sink` with our error callback: the default
 /// device, else the first other device (not the null one) that opens.
+/// A sink builder for `device` whose buffer fits what the device takes now.
+///
+/// rodio asks for about 50 ms (2048 frames at 48 kHz) whatever the device
+/// says. AirPods take at most 960 frames in some modes, so the OS refused
+/// the stream ("Error opening the stream with the OS") and voice messages,
+/// videos and calls went silent until the headphones changed mode.
+pub fn sink_builder(
+    device: rodio::cpal::Device,
+) -> Result<rodio::DeviceSinkBuilder, rodio::DeviceSinkError> {
+    use rodio::cpal::traits::DeviceTrait;
+    let fitted =
+        device
+            .default_output_config()
+            .ok()
+            .and_then(|config| match *config.buffer_size() {
+                rodio::cpal::SupportedBufferSize::Range { min, max } => {
+                    Some(fitting_buffer(config.sample_rate(), min, max))
+                }
+                rodio::cpal::SupportedBufferSize::Unknown => None,
+            });
+    let builder = rodio::DeviceSinkBuilder::from_device(device)?;
+    Ok(match fitted {
+        Some(frames) => builder.with_buffer_size(rodio::cpal::BufferSize::Fixed(frames)),
+        None => builder,
+    })
+}
+
+/// About 50 ms of frames at `rate`, as rodio picks it (the nearest power of
+/// two), kept inside the `min..=max` the device takes.
+fn fitting_buffer(rate: u32, min: u32, max: u32) -> u32 {
+    let wanted = (rate / 20).max(1);
+    let up = wanted.next_power_of_two();
+    let down = (up / 2).max(1);
+    let nearest = if up - wanted < wanted - down {
+        up
+    } else {
+        down
+    };
+    nearest.clamp(min, max.max(min))
+}
+
 pub fn open_output(health: Health) -> Result<Output, rodio::DeviceSinkError> {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
-    let opened = rodio::DeviceSinkBuilder::from_default_device()
+    let opened = rodio::cpal::default_host()
+        .default_output_device()
+        .ok_or(rodio::DeviceSinkError::NoDevice)
+        .and_then(sink_builder)
         .and_then(|builder| builder.with_error_callback(health.callback()).open_stream());
     let mut sink = opened.or_else(|original| {
         let Ok(devices) = rodio::cpal::default_host().output_devices() else {
             return Err(original);
         };
         devices
+            // macOS names no driver, so only a named null driver is skipped.
             .filter(|device| {
                 device
                     .description()
-                    .is_ok_and(|about| about.driver().is_some_and(|driver| driver != "null"))
+                    .is_ok_and(|about| about.driver() != Some("null"))
             })
             .find_map(|device| {
-                rodio::DeviceSinkBuilder::from_device(device)
+                sink_builder(device)
                     .and_then(|builder| {
                         builder
                             .with_error_callback(health.callback())
@@ -1013,6 +1058,14 @@ pub fn recording_path(dir: &Path) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_buffer_fits_what_the_device_takes() {
+        // AirPods in some modes take at most 960 frames.
+        assert_eq!(super::fitting_buffer(48_000, 15, 960), 960);
+        assert_eq!(super::fitting_buffer(48_000, 15, 4096), 2048);
+        assert_eq!(super::fitting_buffer(44_100, 4096, 8192), 4096);
+    }
+
     use super::*;
 
     /// A stepped recorder keeps recording, but its levels stop asking the

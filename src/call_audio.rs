@@ -491,7 +491,7 @@ fn open_sink(device: Option<&str>) -> Result<Sink, String> {
                         .is_some_and(|description| description.name() == name)
                 })
                 .ok_or_else(|| format!("the speaker {name} is not available"))?;
-            rodio::DeviceSinkBuilder::from_device(output)
+            crate::audio::sink_builder(output)
                 .map_err(|error| format!("the speaker {name} could not be used: {error}"))?
                 .with_error_callback(health.callback())
                 .open_stream()
