@@ -488,6 +488,11 @@ pub fn find_cli(name: &str) -> Option<PathBuf> {
     crate::ai_tools::find(name)
 }
 
+/// How long a CLI may take on one picture or recording before it is
+/// stopped. A CLI waiting on a prompt never ends on its own: 324 Gemini CLIs
+/// once sat for days, each holding memory.
+const CLI_LIMIT: Duration = Duration::from_secs(300);
+
 fn run_cli(name: &str, args: &[&str], stdin: Option<&str>) -> Result<String, String> {
     let binary =
         find_cli(name).ok_or_else(|| format!("{name} is not installed on this computer"))?;
@@ -496,6 +501,8 @@ fn run_cli(name: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Str
     let mut child = std::process::Command::new(&binary)
         .args(args)
         .env("PATH", path)
+        // Gemini CLI refuses, or asks, outside a folder the user trusted.
+        .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -507,19 +514,53 @@ fn run_cli(name: &str, args: &[&str], stdin: Option<&str>) -> Result<String, Str
         let _ = pipe.write_all(input.as_bytes());
     }
     drop(child.stdin.take());
-    let output = child
-        .wait_with_output()
-        .map_err(|e| format!("{name}: {e}"))?;
-    if !output.status.success() {
-        let error = String::from_utf8_lossy(&output.stderr);
+    let read = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut text);
+            }
+            String::from_utf8_lossy(&text).into_owned()
+        })
+    };
+    let stdout = read(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let stderr = read(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn std::io::Read + Send>),
+    );
+    let started = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|e| format!("{name}: {e}"))? {
+            Some(status) => break status,
+            None if started.elapsed() > CLI_LIMIT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{name} took more than {} minutes and was stopped",
+                    CLI_LIMIT.as_secs() / 60
+                ));
+            }
+            None => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    let output = stdout.join().unwrap_or_default();
+    let error = stderr.join().unwrap_or_default();
+    if !status.success() {
         let line = error
             .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
             .unwrap_or("");
-        return Err(format!("{name} stopped ({}): {line}", output.status));
+        return Err(format!("{name} stopped ({status}): {line}"));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(output)
 }
 
 #[cfg(test)]
