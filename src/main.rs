@@ -209,6 +209,14 @@ fn run() -> eframe::Result<()> {
     // `mcp`: serve the Model Context Protocol on stdio for Claude Desktop and
     // exit, without a window, the instance lock or the account (src/mcp.rs).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
+        // It runs from inside the app bundle, so the first AppKit call (a
+        // keychain prompt, reading a picture) would make macOS show it in
+        // the Dock as a second Whats Pro. It has no window: keep it out.
+        #[cfg(target_os = "macos")]
+        if let Some(main) = objc2::MainThreadMarker::new() {
+            objc2_app_kit::NSApplication::sharedApplication(main)
+                .setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Prohibited);
+        }
         let dirs = paths::AppDirs::discover();
         std::process::exit(zapfast::mcp::run(&dirs.config, &dirs.state));
     }
